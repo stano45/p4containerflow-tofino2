@@ -151,41 +151,28 @@ parser SwitchIngressParser(
 
 
 
-control Ipv4Hash(in ipv4_t ipv4_hdr, in tcp_t tcp_hdr, out switch_ecmp_hash_t hash) {
-    @name(".ipv4_hash")
-    Hash<switch_ecmp_hash_t>(SwitchEcmpHashAlgorithm) ipv4_hash;
-
-    apply {
-        hash = ipv4_hash.get({
-            ipv4_hdr.src_addr,
-            ipv4_hdr.dst_addr,
-            ipv4_hdr.protocol,
-            tcp_hdr.src_port,
-            tcp_hdr.dst_port
-        });
-    }
-}
-
 
 control SwitchIngress(
         inout header_t hdr,
         inout metadata_t ig_md,
-        out egress_intrinsic_metadata_t eg_intr_md,
         in ingress_intrinsic_metadata_t ig_intr_md,
         in ingress_intrinsic_metadata_from_parser_t ig_prsr_md,
         inout ingress_intrinsic_metadata_for_deparser_t ig_dprsr_md,
         inout ingress_intrinsic_metadata_for_tm_t ig_tm_md) {
 
-    Ipv4Hash() ipv4_hash;
+    Hash<switch_ecmp_hash_t>(SwitchEcmpHashAlgorithm) ipv4_hash;
 
 
-    action set_ecmp_select(bit<32> ecmp_base, bit<32> ecmp_count) {
-        switch_ecmp_hash_t hash;
-        ipv4_hash.apply(hdr.ipv4, hdr.tcp, hash);
+    action set_ecmp_select() {
+        switch_ecmp_hash_t hash = ipv4_hash.get({
+            hdr.ipv4.src_addr,
+            hdr.ipv4.dst_addr,
+            hdr.ipv4.protocol,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port
+        });
         
-        bit<32> hash_val = hash;
-        bit<32> ecmp_index = (hash_val % (ecmp_count - ecmp_base)) + ecmp_base;
-        
+        bit<32> ecmp_index = hash % 2;
         ig_md.ecmp_select = ecmp_index;
     }
     action set_rewrite_src(bit<32> new_src) {
@@ -195,9 +182,13 @@ control SwitchIngress(
     action set_nhop(bit<48> nhop_dmac, bit<32> nhop_ipv4, bit<9> port) {
         hdr.ethernet.dst_addr = nhop_dmac;
         hdr.ipv4.dst_addr = nhop_ipv4;
-        eg_intr_md.egress_port = port;
+        ig_tm_md.ucast_egress_port = port;
         hdr.ipv4.ttl = hdr.ipv4.ttl - 1;
-        ig_md.tcp_length = hdr.ipv4.total_len - (bit<16>)(hdr.ipv4.ihl)*4;
+        bit<16> ihl = (bit<16>)hdr.ipv4.ihl;
+        bit<16> res = ihl << 2;
+        bit<16> len = hdr.ipv4.total_len;
+        bit<16> final_len = len - res;
+        ig_md.tcp_length = len;
     }
     table ecmp_group {
         key = {
