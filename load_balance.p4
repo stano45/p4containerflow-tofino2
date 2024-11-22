@@ -4,17 +4,52 @@
 #define switch_ecmp_hash_width 32
 #define SwitchEcmpHashAlgorithm HashAlgorithm_t.CRC16
 typedef bit<switch_ecmp_hash_width> switch_ecmp_hash_t;
-#define ETHERTYPE_IPV4 0x0800
+typedef bit<48> mac_addr_t;
+typedef bit<32> ipv4_addr_t;
+typedef bit<128> ipv6_addr_t;
+typedef bit<16> tcp_port_type_t;
 
+
+typedef bit<16> ether_type_t;
+const ether_type_t ETHERTYPE_IPV4 = 16w0x0800;
+const ether_type_t ETHERTYPE_IPV6 = 16w0x86dd;
+const ether_type_t ETHERTYPE_VLAN = 16w0x8100;
+const ether_type_t ETHERTYPE_QINQ = 16w0x9100;
+const ether_type_t ETHERTYPE_MPLS = 16w0x8847;
+const ether_type_t ETHERTYPE_LLDP = 16w0x88cc;
+const ether_type_t ETHERTYPE_LACP = 16w0x8809;
+const ether_type_t ETHERTYPE_NSH = 16w0x894f;
+const ether_type_t ETHERTYPE_ROCE = 16w0x8915;
+const ether_type_t ETHERTYPE_FCOE = 16w0x8906;
+const ether_type_t ETHERTYPE_ETHERNET = 16w0x6658;
+const ether_type_t ETHERTYPE_ARP = 16w0x0806;
+const ether_type_t ETHERTYPE_VNTAG = 16w0x8926;
+const ether_type_t ETHERTYPE_TRILL = 16w0x22f3;
+
+typedef bit<8> ip_protocol_t;
+const ip_protocol_t IP_PROTOCOLS_ICMP = 1;
+const ip_protocol_t IP_PROTOCOLS_IPV4 = 4;
+const ip_protocol_t IP_PROTOCOLS_TCP = 6;
+const ip_protocol_t IP_PROTOCOLS_UDP = 17;
+const ip_protocol_t IP_PROTOCOLS_IPV6 = 41;
+const ip_protocol_t IP_PROTOCOLS_GRE = 47;
+const ip_protocol_t IP_PROTOCOLS_ICMPV6 = 58;
+const ip_protocol_t IP_PROTOCOLS_EIGRP = 88;
+const ip_protocol_t IP_PROTOCOLS_OSPF = 89;
+const ip_protocol_t IP_PROTOCOLS_PIM = 103;
+const ip_protocol_t IP_PROTOCOLS_VRRP = 112;
+const ip_protocol_t IP_PROTOCOLS_MPLS = 137;
+
+typedef bit<9> switch_port_id_t;
 /*************************************************************************
 *********************** H E A D E R S  ***********************************
 *************************************************************************/
 
 
 header ethernet_t {
-    bit<48> dst_addr;
-    bit<48> src_addr;
-    bit<16> ether_type;
+    mac_addr_t dst_addr;
+    mac_addr_t src_addr;
+    ether_type_t ether_type;
 }
 
 header ipv4_t {
@@ -28,13 +63,13 @@ header ipv4_t {
     bit<8>  ttl;
     bit<8>  protocol;
     bit<16> hdr_checksum;
-    bit<32> src_addr;
-    bit<32> dst_addr;
+    ipv4_addr_t src_addr;
+    ipv4_addr_t dst_addr;
 }
 
 header tcp_t {
-    bit<16> src_port;
-    bit<16> dst_port;
+    tcp_port_type_t src_port;
+    tcp_port_type_t dst_port;
     bit<32> seq_no;
     bit<32> ack_no;
     bit<4>  data_offset;
@@ -55,7 +90,7 @@ header tcp_t {
 }
 
 struct metadata_t {
-    bit<32> ecmp_select;
+    ipv4_addr_t ecmp_select;
     bit<16> tcp_length;
 }
 
@@ -88,7 +123,7 @@ parser TofinoIngressParser(
 
     state parse_port_metadata {
         pkt.advance(PORT_METADATA_SIZE);
-        transition accept;
+        transition accept; 
     }
 }
 
@@ -117,7 +152,7 @@ parser SwitchIngressParser(
     state parse_ipv4 {
         pkt.extract(hdr.ipv4);
         transition select(hdr.ipv4.protocol) {
-            6: parse_tcp;
+            IP_PROTOCOLS_TCP: parse_tcp;
             default: accept;
         }
     }
@@ -172,17 +207,19 @@ control SwitchIngress(
             hdr.tcp.dst_port
         });
         
-        bit<32> ecmp_index = hash % 2;
+        ipv4_addr_t ecmp_index = hash % 2;
         ig_md.ecmp_select = ecmp_index;
     }
-    action set_rewrite_src(bit<32> new_src) {
+    action set_rewrite_src(ipv4_addr_t new_src) {
         hdr.ipv4.src_addr = new_src;
         ig_md.ecmp_select = 0;
     }
-    action set_nhop(bit<48> nhop_dmac, bit<32> nhop_ipv4, bit<9> port) {
+    action set_nhop(mac_addr_t nhop_dmac, ipv4_addr_t nhop_ipv4, switch_port_id_t port) {
         hdr.ethernet.dst_addr = nhop_dmac;
         hdr.ipv4.dst_addr = nhop_ipv4;
         ig_tm_md.ucast_egress_port = port;
+
+
         hdr.ipv4.ttl = hdr.ipv4.ttl - 1;
         bit<16> ihl = (bit<16>)hdr.ipv4.ihl;
         bit<16> res = ihl << 2;
@@ -192,7 +229,7 @@ control SwitchIngress(
     }
     table ecmp_group {
         key = {
-            hdr.ipv4.dst_addr: lpm;
+            hdr.ipv4.dst_addr: exact;
         }
         actions = {
             NoAction;
@@ -285,7 +322,7 @@ control SwitchEgress(
         inout egress_intrinsic_metadata_for_output_port_t eg_intr_md_for_oport) {
 
 
-    action rewrite_mac(bit<48> smac) {
+    action rewrite_mac(mac_addr_t smac) {
         hdr.ethernet.src_addr = smac;
     }
     action drop() {
@@ -365,22 +402,6 @@ control SwitchEgress(
 // }
 
 
-/*************************************************************************
-***********************  D E P A R S E R  *******************************
-*************************************************************************/
-
-
-
-// Empty egress parser/control blocks
-parser EmptyEgressParser(
-        packet_in pkt,
-        out header_t hdr,
-        out metadata_t eg_md,
-        out egress_intrinsic_metadata_t eg_intr_md) {
-    state start {
-        transition accept;
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Egress Deparser
