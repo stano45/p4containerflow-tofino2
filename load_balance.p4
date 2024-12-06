@@ -228,10 +228,10 @@ control SwitchIngress(
                 compute_ecmp_offset();
             }
 
-            // Step 4: Set next-hop port.
+            // Step 4: Set next-hop IP & egress port.
             ecmp_nhop.apply();
 
-            // Step 5: Checksum checks
+            // Step 5: Checksum
             // Detect checksum errors in the ingress parser and tag the packets
             if (ig_md.checksum_err_ipv4_igprs) {
                 hdr.ethernet.dst_addr = 0x0000deadbeef;

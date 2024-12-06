@@ -190,7 +190,8 @@ class TestRewriteSource(AbstractTest):
             ip_dst="10.0.0.0",
             tcp_sport="12345",
             tcp_dport="6789",
-            with_tcp_chksum=True
+            with_tcp_chksum=True,
+            ip_ttl=64
         )
         send_packet(self, self.server_port, server_pkt)
 
@@ -200,7 +201,8 @@ class TestRewriteSource(AbstractTest):
             ip_dst="10.0.0.0",
             tcp_sport="12345",
             tcp_dport="6789",
-            with_tcp_chksum=True
+            with_tcp_chksum=True,
+            ip_ttl=63
         )
         verify_packet(self, expected_pkt_to_client, self.client_port)
 
@@ -256,7 +258,8 @@ class TestForwarding(AbstractTest):
             ip_dst="10.0.0.1",
             tcp_sport="12345",
             tcp_dport="6789",
-            with_tcp_chksum=True
+            with_tcp_chksum=True,
+            ip_ttl=64
         )
         send_packet(self, self.client_port, server_pkt)
 
@@ -266,7 +269,8 @@ class TestForwarding(AbstractTest):
             ip_dst="10.0.0.2",
             tcp_sport="12345",
             tcp_dport="6789",
-            with_tcp_chksum=True
+            with_tcp_chksum=True,
+            ip_ttl=63
 
         )
         verify_packet(self, expected_pkt_to_server, self.server_port)
