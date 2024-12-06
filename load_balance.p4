@@ -11,6 +11,16 @@
 #include "common/util.p4"
 
 struct metadata_t {
+    bit<16> checksum_ipv4_tmp;
+    bit<16> checksum_tcp_tmp;
+    bit<16> checksum_udp_tmp;
+
+    bool checksum_upd_ipv4;
+    bool checksum_upd_tcp;
+    bool checksum_upd_udp;
+
+    bool checksum_err_ipv4_igprs;
+
     // Step 1
     bit<32> hash;
     
@@ -19,6 +29,7 @@ struct metadata_t {
 
     // Step 3
     bit<32> ecmp_select;
+    bool to_client;
 
     // Step 4
     bit<9>  egress_port;
@@ -31,6 +42,9 @@ parser SwitchIngressParser(
         out ingress_intrinsic_metadata_t ig_intr_md) {
 
     TofinoIngressParser() tofino_parser;
+    Checksum() ipv4_checksum;
+    Checksum() tcp_checksum;
+    Checksum() udp_checksum;
 
     state start {
         tofino_parser.apply(pkt, ig_intr_md);
@@ -47,20 +61,40 @@ parser SwitchIngressParser(
 
     state parse_ipv4 {
         pkt.extract(hdr.ipv4);
+        ipv4_checksum.add(hdr.ipv4);
+        ig_md.checksum_err_ipv4_igprs = ipv4_checksum.verify();
+
+        tcp_checksum.subtract({hdr.ipv4.src_addr});
+        udp_checksum.subtract({hdr.ipv4.src_addr});
+
         transition select(hdr.ipv4.protocol) {
-            IP_PROTOCOLS_TCP: parse_tcp;
+            IP_PROTOCOLS_TCP : parse_tcp;
             IP_PROTOCOLS_UDP : parse_udp;
-            default : reject;
+            default : accept;
         }
     }
 
     state parse_tcp {
+        // The tcp checksum cannot be verified, since we cannot compute
+        // the payload's checksum.
         pkt.extract(hdr.tcp);
+
+        tcp_checksum.subtract({hdr.tcp.checksum});
+        tcp_checksum.subtract({hdr.tcp.src_port});
+        ig_md.checksum_tcp_tmp = tcp_checksum.get();
+
         transition accept;
     }
 
     state parse_udp {
+        // The tcp checksum cannot be verified, since we cannot compute
+        // the payload's checksum.
         pkt.extract(hdr.udp);
+
+        udp_checksum.subtract({hdr.udp.checksum});
+        udp_checksum.subtract({hdr.udp.src_port});
+        ig_md.checksum_udp_tmp = udp_checksum.get();
+
         transition accept;
     }
 }
@@ -73,8 +107,27 @@ control SwitchIngress(
         inout ingress_intrinsic_metadata_for_deparser_t ig_dprsr_md,
         inout ingress_intrinsic_metadata_for_tm_t ig_tm_md) {
 
-    CRCPolynomial<bit<32>>(32w0x04C11DB7, true, false, false, 32w0xFFFFFFFF, 32w0xFFFFFFFF) poly;
-    Hash<bit<32>>(HashAlgorithm_t.CUSTOM, poly) hash;
+    Hash<bit<32>>(HashAlgorithm_t.CRC16) hash;
+    BypassEgress() bypass_egress;
+
+    action checksum_upd_ipv4(bool update) {
+        ig_md.checksum_upd_ipv4 = update; 
+    }
+    
+    action checksum_upd_tcp(bool update) {
+        ig_md.checksum_upd_tcp = update; 
+    }
+
+    action checksum_upd_udp(bool update) {
+        ig_md.checksum_upd_udp = update; 
+    }
+
+    action checksum_upd_ipv4_tcp_udp(bool update) {
+        checksum_upd_ipv4(update);
+        checksum_upd_tcp(update);
+        checksum_upd_udp(update);
+    }
+
 
     action compute_hash() {
         ig_md.hash = hash.get({
@@ -101,7 +154,9 @@ control SwitchIngress(
         // (The client only knows the load balancer address.)
         hdr.ipv4.src_addr = new_src;
         // Index 0 is the client.
+        ig_md.to_client = true;
         ig_md.ecmp_select = 0;
+        checksum_upd_ipv4_tcp_udp(true);
     }
 
     action set_egress_port(bit<9> port) {
@@ -176,29 +231,85 @@ control SwitchIngress(
             // Step 1: Apply ECMP group logic.
             ecmp_group.apply();
 
-            // Step 2: Compute hash and bucket.
-            compute_hash_table.apply();
+            if (!ig_md.to_client) {
+                // Step 2: Compute hash and bucket.
+                compute_hash_table.apply();
 
-            // Step 3: Compute ECMP select.
-            compute_ecmp_table.apply();
+                // Step 3: Compute ECMP select.
+                compute_ecmp_table.apply();
+            }
 
             // Step 4: Set next-hop port.
             ecmp_nhop.apply();
+
+            // Step 5: Checksum checks
+
+            // Ensure the UDP checksum is only checked if it was set in the incoming
+            // packet or if its a udp special case 
+            if (hdr.udp.checksum == 0 && ig_md.checksum_upd_udp) {
+                checksum_upd_udp(false);
+            }
+
+            // Detect checksum errors in the ingress parser and tag the packets
+            if (ig_md.checksum_err_ipv4_igprs) {
+                hdr.ethernet.dst_addr = 0x0000deadbeef;
+            }
+
+            // Nothing to be done for egress, skip it completely.
+            bypass_egress.apply(ig_tm_md);
         }
     }
 
 }
 
-control SwitchIngressDeparser(
-        packet_out pkt,
-        inout header_t hdr,
-        in metadata_t ig_md,
-        in ingress_intrinsic_metadata_for_deparser_t ig_intr_dprsr_md) {
+control SwitchIngressDeparser(packet_out pkt,
+                              inout header_t hdr,
+                              in metadata_t ig_md,
+                              in ingress_intrinsic_metadata_for_deparser_t 
+                                ig_intr_dprsr_md
+                              ) {
+
+    Checksum() ipv4_checksum;
+    Checksum() tcp_checksum;
+    Checksum() udp_checksum;
 
     apply {
+        // Updating and checking of the checksum is done in the deparser.
+        // Checksumming units are only available in the parser sections of 
+        // the program.
+        if (ig_md.checksum_upd_ipv4) {
+            hdr.ipv4.hdr_checksum = ipv4_checksum.update(
+                {hdr.ipv4.version,
+                 hdr.ipv4.ihl,
+                 hdr.ipv4.diffserv,
+                 hdr.ipv4.total_len,
+                 hdr.ipv4.identification,
+                 hdr.ipv4.flags,
+                 hdr.ipv4.frag_offset,
+                 hdr.ipv4.ttl,
+                 hdr.ipv4.protocol,
+                 hdr.ipv4.src_addr,
+                 hdr.ipv4.dst_addr});
+        }
+        if (ig_md.checksum_upd_tcp) {
+            hdr.tcp.checksum = tcp_checksum.update({
+                hdr.ipv4.src_addr,
+                hdr.tcp.src_port,
+                ig_md.checksum_tcp_tmp
+            });
+        }
+        if (ig_md.checksum_upd_udp) {
+            hdr.udp.checksum = udp_checksum.update(data = {
+                hdr.ipv4.src_addr,
+                hdr.udp.src_port,
+                ig_md.checksum_udp_tmp
+            }, zeros_as_ones = true);
+            // UDP specific checksum handling
+        }
         pkt.emit(hdr);
     }
 }
+
 
 Pipeline(SwitchIngressParser(),
          SwitchIngress(),
