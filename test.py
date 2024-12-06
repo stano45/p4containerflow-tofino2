@@ -20,6 +20,10 @@ swports = get_sw_ports()
 print("SW Ports: ", swports)
 
 
+def ip(ip_string) -> int:
+    return int(ip_address(ip_string))
+
+
 class AbstractTest(BfRuntimeTest):
     def setUp(self):
         BfRuntimeTest.setUp(self, 0, "t2na_load_balancer")
@@ -142,12 +146,20 @@ class AbstractTest(BfRuntimeTest):
 
 
 class TestRewriteSource(AbstractTest):
+    # Test rewriting source IP when server sends packet to client
+    # this is essentially NAT
+
     client_port = swports[0]
     server_port = swports[1]
+
     def setupCtrlPlane(self):
         self.cleanupCtrlPlane()
 
-        logger.info("Using client port: %s and server port: %s ", self.client_port, self.server_port)
+        logger.info(
+            "Using client port: %s and server port: %s ",
+            self.client_port,
+            self.server_port,
+        )
         self.insertTableEntry(
             "SwitchIngress.ecmp_group",
             [
@@ -165,8 +177,8 @@ class TestRewriteSource(AbstractTest):
             [
                 gc.KeyTuple("ig_md.ecmp_select", 0),
             ],
-            "set_egress_port",
-            [gc.DataTuple("port", self.client_port)],
+            "set_ecmp_nhop",
+            [gc.DataTuple("nhop_ipv4", ip("10.0.0.0")), gc.DataTuple("port", self.client_port)],
         )
 
     def cleanupCtrlPlane(self):
@@ -174,17 +186,21 @@ class TestRewriteSource(AbstractTest):
 
     def sendPacket(self):
         server_pkt = simple_tcp_packet(
-            eth_dst="69:69:69:69:69:69",
             ip_src="10.0.0.2",
             ip_dst="10.0.0.0",
+            tcp_sport="12345",
+            tcp_dport="6789",
+            with_tcp_chksum=True
         )
         send_packet(self, self.server_port, server_pkt)
 
     def verifyPackets(self):
         expected_pkt_to_client = simple_tcp_packet(
-            eth_dst="69:69:69:69:69:69",
             ip_src="10.0.0.1",
             ip_dst="10.0.0.0",
+            tcp_sport="12345",
+            tcp_dport="6789",
+            with_tcp_chksum=True
         )
         verify_packet(self, expected_pkt_to_client, self.client_port)
 
@@ -192,5 +208,68 @@ class TestRewriteSource(AbstractTest):
         self.runTestImpl()
 
 
-def ip(ip_string) -> int:
-    return int(ip_address(ip_string))
+class TestForwarding(AbstractTest):
+    client_port = swports[0]
+    server_port = swports[1]
+
+    def setupCtrlPlane(self):
+        self.cleanupCtrlPlane()
+
+        logger.info(
+            "Using client port: %s and server port: %s ",
+            self.client_port,
+            self.server_port,
+        )
+        self.insertTableEntry(
+            "SwitchIngress.ecmp_group",
+            [
+                # Server IP
+                gc.KeyTuple("hdr.ipv4.dst_addr", ip("10.0.0.1"), prefix_len=0),
+            ],
+            "NoAction",
+            [],
+        )
+        self.insertTableEntry(
+            "SwitchIngress.ecmp_nhop",
+            [
+                gc.KeyTuple("ig_md.ecmp_select", 1),
+            ],
+            "set_ecmp_nhop",
+            [gc.DataTuple("nhop_ipv4", ip("10.0.0.2")), gc.DataTuple("port", self.server_port)],
+        )
+        self.insertTableEntry(
+            "SwitchIngress.ecmp_nhop",
+            [
+                gc.KeyTuple("ig_md.ecmp_select", 2),
+            ],
+            "set_ecmp_nhop",
+            [gc.DataTuple("nhop_ipv4", ip("10.0.0.2")), gc.DataTuple("port", self.server_port)],
+        )
+        
+
+    def cleanupCtrlPlane(self):
+        return super().cleanupCtrlPlane()
+
+    def sendPacket(self):
+        server_pkt = simple_tcp_packet(
+            ip_src="10.0.0.0",
+            ip_dst="10.0.0.1",
+            tcp_sport="12345",
+            tcp_dport="6789",
+            with_tcp_chksum=True
+        )
+        send_packet(self, self.client_port, server_pkt)
+
+    def verifyPackets(self):
+        expected_pkt_to_server = simple_tcp_packet(
+            ip_src="10.0.0.0",
+            ip_dst="10.0.0.2",
+            tcp_sport="12345",
+            tcp_dport="6789",
+            with_tcp_chksum=True
+
+        )
+        verify_packet(self, expected_pkt_to_server, self.server_port)
+
+    def runTest(self):
+        self.runTestImpl()
