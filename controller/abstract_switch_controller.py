@@ -16,7 +16,7 @@ class AbstractSwitchController(ABC):
         else:
             self.client_id = 0
 
-        self.load_nalancer_ip = load_balancer_ip
+        self.load_balancer_ip = load_balancer_ip
 
     @abstractmethod
     def __del__(self):

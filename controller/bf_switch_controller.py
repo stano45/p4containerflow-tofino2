@@ -2,6 +2,7 @@ from abstract_switch_controller import AbstractSwitchController
 import bfrt_grpc.client as gc
 
 from utils import ip_to_int
+from internal_types import UpdateType
 
 
 class SwitchController(AbstractSwitchController):
@@ -52,16 +53,19 @@ class SwitchController(AbstractSwitchController):
         dataList = [testTable.make_data(dataFields, actionName)]
         testTable.entry_mod(self.target, keyList, dataList)
 
-    def getUpdateFn(self, update_type):
+    def getUpdateFn(self, update_type: UpdateType):
         updateFn = None
-        if update_type == "INSERT":
-            updateFn = self.insertTableEntry
-        else:
-            updateFn = self.modifyTableEntry
+        match update_type:
+            case UpdateType.INSERT:
+                updateFn = self.insertTableEntry
+            case UpdateType.MODIFY:
+                updateFn = self.modifyTableEntry
+            case _: 
+                self.insertTableEntry
         return updateFn
 
     def insertEcmpGroupSelectEntry(
-        self, matchDstAddr, ecmp_base, ecmp_count, update_type="INSERT"
+        self, matchDstAddr, ecmp_base, ecmp_count, update_type: UpdateType
     ):
         self.getUpdateFn(update_type)(
             "SwitchIngress.ecmp_group",
@@ -71,7 +75,7 @@ class SwitchController(AbstractSwitchController):
         )
 
     def insertEcmpGroupRewriteSrcEntry(
-        self, matchDstAddr, new_src, update_type="INSERT"
+        self, matchDstAddr, new_src, update_type: UpdateType
     ):
         self.getUpdateFn(update_type)(
             "SwitchIngress.ecmp_group",
@@ -80,7 +84,7 @@ class SwitchController(AbstractSwitchController):
             [gc.DataTuple("new_src", ip_to_int(new_src))],
         )
 
-    def insertEcmpNhopEntry(self, ecmp_select, dmac, ipv4, port, update_type="INSERT"):
+    def insertEcmpNhopEntry(self, ecmp_select, dmac, ipv4, port, update_type: UpdateType):
         self.getUpdateFn(update_type)(
             "SwitchIngress.ecmp_nhop",
             [gc.KeyTuple("ig_md.ecmp_select", ecmp_select)],
@@ -94,7 +98,7 @@ class SwitchController(AbstractSwitchController):
     def deleteEcmpNhopEntry(self, ecmp_select):
         pass
 
-    def insertSendFrameEntry(self, egress_port, smac, update_type="INSERT"):
+    def insertSendFrameEntry(self, egress_port, smac, update_type: UpdateType):
         pass
 
     def deleteSendFrameEntry(self, egress_port):

@@ -5,18 +5,6 @@
     "name": "t2na_load_balancer",
     "addr": "0.0.0.0:50052",
     "master": true,
-    "load_balancer_ip": "10.0.0.1",
-    "lb_nodes": [
-      {
-        "ip": "10.0.0.2",
-        "mac": "08:00:00:00:00:02",
-        "port": 2
-      },
-      {
-        "ip": "10.0.0.3",
-        "mac": "08:00:00:00:00:03",
-        "port": 3
-      }
-    ]
+    "load_balancer_ip": "10.0.0.1"
   }
 ]
