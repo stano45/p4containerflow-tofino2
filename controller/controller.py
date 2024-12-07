@@ -17,7 +17,7 @@ global nodeManager
 # Configure logger
 logger = logging.getLogger("P4RuntimeController")
 logger.setLevel(logging.DEBUG)  # Set log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
@@ -55,16 +55,15 @@ def main(config_file_path):
                 sw_name=config["name"],
                 sw_addr=config["addr"],
                 sw_id=config["id"],
-                client_id=config["client_id"]
+                client_id=config["client_id"],
+                load_balancer_ip=config["load_balancer_ip"],
                 # proto_dump_file=config["proto_dump_file"],
                 # initial_table_rules_file=config["runtime_file"],
             )
             switch_controllers.append(switch_controller)
 
         if master_config is None:
-            raise Exception(
-                "No master switch specified" "in the configuration file."
-            )
+            raise Exception("No master switch specified" "in the configuration file.")
         lb_nodes = master_config.get("lb_nodes", None)
 
         master_controller = SwitchController(
@@ -74,7 +73,8 @@ def main(config_file_path):
             sw_name=master_config["name"],
             sw_addr=master_config["addr"],
             sw_id=master_config["id"],
-            client_id=master_config["client_id"]
+            client_id=master_config["client_id"],
+            load_balancer_ip=master_config["load_balancer_ip"],
             # proto_dump_file=master_config["proto_dump_file"],
             # initial_table_rules_file=master_config["runtime_file"],
         )
@@ -102,10 +102,7 @@ def printGrpcError(e):
     print("(%s)" % status_code.name, end=" ")
     traceback = sys.exc_info()[2]
     if traceback:
-        print(
-            "[%s:%d]"
-            % (traceback.tb_frame.f_code.co_filename, traceback.tb_lineno)
-        )
+        print("[%s:%d]" % (traceback.tb_frame.f_code.co_filename, traceback.tb_lineno))
 
 
 @app.route("/update_node", methods=["POST"])
@@ -121,7 +118,7 @@ def update_node():
     except ValueError:
         return jsonify({"error": "Invalid eport parameter"}), 400
 
-    if not all([old_ipv4, new_ipv4, dest_mac, egress_port]):
+    if not all([old_ipv4, new_ipv4, egress_port]):
         return jsonify({"error": "Missing parameters"}), 400
 
     try:

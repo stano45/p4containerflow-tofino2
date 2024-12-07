@@ -1,8 +1,5 @@
 from bf_switch_controller import SwitchController
 
-# TODO: pass this in a config file
-LB_IP = "10.244.1.244"
-
 
 class NodeManager(object):
     def __init__(self, switch_controller: SwitchController, lb_nodes):
@@ -26,7 +23,7 @@ class NodeManager(object):
                     update_type="INSERT",
                 )
             self.switch_controller.insertEcmpGroupSelectEntry(
-                matchDstAddr=[LB_IP, 32],
+                matchDstAddr=self.switch_controller.load_nalancer_ip,
                 ecmp_base=1,
                 ecmp_count=len(lb_nodes),
             )
@@ -63,7 +60,7 @@ class NodeManager(object):
         self.node_map[ip] = ecmp_select_id
 
         self.switch_controller.insertEcmpGroupSelectEntry(
-            matchDstAddr=[LB_IP, 32],
+            matchDstAddr=self.switch_controller.load_nalancer_ip,
             ecmp_base=1,
             ecmp_count=len(self.node_map),
             update_type="MODIFY",
@@ -85,8 +82,8 @@ class NodeManager(object):
         )
 
         self.switch_controller.insertEcmpGroupRewriteSrcEntry(
-            matchDstAddr=[ip, 32],
-            new_src=LB_IP,
+            matchDstAddr=ip,
+            new_src=self.switch_controller.load_nalancer_ip,
             update_type="INSERT",
         )
 
@@ -100,9 +97,7 @@ class NodeManager(object):
         if ip in self.node_map:
             raise Exception(f"Node with IP {ip} already exists")
 
-        addNodeHandlerFn = (
-            self._addClientNode if isClient else self._addServerNode
-        )
+        addNodeHandlerFn = self._addClientNode if isClient else self._addServerNode
         addNodeHandlerFn(ip, smac, dmac, port)
 
         self.switch_controller.readTableRules()
