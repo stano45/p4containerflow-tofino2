@@ -1,14 +1,12 @@
-# Import P4Runtime lib from parent utils dir
-# Probably there's a better way of doing this.
 import json
-
+from controller.base_switch_controller import AbstractSwitchController
 import p4runtime_lib.bmv2
 import p4runtime_lib.helper
 from p4runtime_lib.simple_controller import program_from_file
 from p4runtime_lib.switch import ShutdownAllSwitchConnections
 
 
-class SwitchController(object):
+class SwitchController(AbstractSwitchController):
     def __init__(
         self,
         p4info_file_path,
@@ -19,11 +17,9 @@ class SwitchController(object):
         proto_dump_file,
         initial_table_rules_file=None,
     ):
+        super().__init__(sw_name, sw_addr, sw_id)
         self.p4info_file_path = p4info_file_path
         self.bmv2_file_path = bmv2_file_path
-        self.sw_name = sw_name
-        self.sw_addr = sw_addr
-        self.sw_id = sw_id
         self.proto_dump_file = proto_dump_file
         self.initial_table_rules_file = initial_table_rules_file
 

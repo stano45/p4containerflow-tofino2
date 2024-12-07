@@ -1,0 +1,10 @@
+[
+  {
+    "id": 0,
+    "name": "t2na_load_balancer",
+    "addr": "0.0.0.0:50052",
+    "master": true,
+    "lb_nodes": [{ "ip": "10.0.2.2", "mac": "08:00:00:00:02:02", "port": 2 }],
+    "client_id": 0
+  }
+]

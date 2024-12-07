@@ -1,4 +1,4 @@
-from switch_controller import SwitchController
+from bf_switch_controller import SwitchController
 
 # TODO: pass this in a config file
 LB_IP = "10.244.1.244"

@@ -3,15 +3,29 @@ import argparse
 import json
 import os
 import sys
+import logging
 
 import grpc
 from flask import Flask, jsonify, request
 from node_manager import NodeManager
-from switch_controller import SwitchController
+from bf_switch_controller import SwitchController
 
 app = Flask(__name__)
 
 global nodeManager
+
+# Configure logger
+logger = logging.getLogger("P4RuntimeController")
+logger.setLevel(logging.DEBUG)  # Set log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
+
+# Optionally log to a file
+file_handler = logging.FileHandler("controller.log")
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
 
 
 def main(config_file_path):
@@ -35,13 +49,15 @@ def main(config_file_path):
                 continue
 
             switch_controller = SwitchController(
-                p4info_file_path=config["p4info_file_path"],
-                bmv2_file_path=config["bmv2_file_path"],
+                # p4info_file_path=config["p4info_file_path"],
+                # bmv2_file_path=config["bmv2_file_path"],
+                logger=logger,
                 sw_name=config["name"],
                 sw_addr=config["addr"],
                 sw_id=config["id"],
-                proto_dump_file=config["proto_dump_file"],
-                initial_table_rules_file=config["runtime_file"],
+                client_id=config["client_id"]
+                # proto_dump_file=config["proto_dump_file"],
+                # initial_table_rules_file=config["runtime_file"],
             )
             switch_controllers.append(switch_controller)
 
@@ -52,13 +68,15 @@ def main(config_file_path):
         lb_nodes = master_config.get("lb_nodes", None)
 
         master_controller = SwitchController(
-            p4info_file_path=master_config["p4info_file_path"],
-            bmv2_file_path=master_config["bmv2_file_path"],
+            # p4info_file_path=master_config["p4info_file_path"],
+            # bmv2_file_path=master_config["bmv2_file_path"],
+            logger=logger,
             sw_name=master_config["name"],
             sw_addr=master_config["addr"],
             sw_id=master_config["id"],
-            proto_dump_file=master_config["proto_dump_file"],
-            initial_table_rules_file=master_config["runtime_file"],
+            client_id=master_config["client_id"]
+            # proto_dump_file=master_config["proto_dump_file"],
+            # initial_table_rules_file=master_config["runtime_file"],
         )
 
         global nodeManager
