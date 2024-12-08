@@ -1,3 +1,4 @@
+from logging import Logger
 from bf_switch_controller import SwitchController
 from internal_types import Node, UpdateType
 
@@ -5,22 +6,27 @@ ECMP_BASE = 1
 ECMP_COUNT = 2
 
 class NodeManager(object):
-    def __init__(self, logger, switch_controller: SwitchController, lb_nodes):
+    def __init__(self, logger: Logger, switch_controller: SwitchController, lb_nodes):
         self.switch_controller = switch_controller
         self.logger = logger
         # ipv4 -> Node
         self.node_map = {}
         self.client_node = None
 
-        self.switch_controller.insertEcmpGroupSelectEntry(
-            matchDstAddr=self.switch_controller.load_balancer_ip,
-            ecmp_base=ECMP_BASE,
-            ecmp_count=len(lb_nodes) if lb_nodes is not None else ECMP_COUNT,
-            update_type=UpdateType.INSERT
-        )
-        self.logger.info(
-            f"Initialized load balancer with IP: {self.switch_controller.load_balancer_ip}"
-        )
+        try:
+            self.switch_controller.insertEcmpGroupSelectEntry(
+                matchDstAddr=self.switch_controller.load_balancer_ip,
+                ecmp_base=ECMP_BASE,
+                ecmp_count=len(lb_nodes) if lb_nodes is not None else ECMP_COUNT,
+                update_type=UpdateType.INSERT
+            )
+            self.logger.info(
+                f"Initialized load balancer with IP: {self.switch_controller.load_balancer_ip}"
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"Load balancer ecmp_group entry (ipv4={self.switch_controller.load_balancer_ip}) already exists, skipping: {e}"
+            )
 
         if lb_nodes is not None:
             for i, lb_node in enumerate(lb_nodes):
@@ -106,33 +112,50 @@ class NodeManager(object):
         self, old_node: Node, new_node: Node, is_client: bool, update_type: UpdateType
     ):
         if update_type == UpdateType.INSERT:
-            id = len(self.node_map) + ECMP_BASE
+            id = len(self.node_map)
+            if id == 0:
+                id = 1
         else:
             id = old_node.id
         new_node.id = id
-
-        self.switch_controller.insertEcmpNhopEntry(
-            ecmp_select=id,
-            dmac=new_node.dmac,
-            ipv4=new_node.ipv4,
-            port=new_node.sw_port,
-            update_type=update_type,
-        )
-
-        self.switch_controller.insertSendFrameEntry(
-            egress_port=new_node.sw_port, smac=new_node.smac, update_type=update_type
-        )
-
         if is_client:
-            self.switch_controller.insertEcmpGroupRewriteSrcEntry(
-                matchDstAddr=new_node.ipv4,
-                new_src=self.switch_controller.load_balancer_ip,
+            new_node.id = 0
+
+        try:
+            self.switch_controller.insertEcmpNhopEntry(
+                ecmp_select=new_node.id,
+                dmac=new_node.dmac,
+                ipv4=new_node.ipv4,
+                port=new_node.sw_port,
                 update_type=update_type,
             )
-            self.client_node = new_node
+        except Exception as e:
+            raise Exception(f"Failed to insert ecmp_nhop entry of {new_node=}, {update_type=}: {e}")
+
+
+        try:
+            self.switch_controller.insertSendFrameEntry(
+                egress_port=new_node.sw_port, smac=new_node.smac, update_type=update_type
+            )
+        except Exception as e:
+            raise Exception(f"Failed to insert send_frame entry of {new_node=}, {update_type=}: {e}")
+
+
+        if is_client:
+            try:
+                self.switch_controller.insertEcmpGroupRewriteSrcEntry(
+                    matchDstAddr=new_node.ipv4,
+                    new_src=self.switch_controller.load_balancer_ip,
+                    update_type=update_type,
+                )
+                self.client_node = new_node
+            except Exception as e:
+                raise Exception(f"Failed to insert ecmp_group entry of {new_node=}, load_balancer_ip={self.switch_controller.load_balancer_ip} {update_type=}: {e}")
 
         self.node_map[new_node.ipv4] = new_node
-        del self.node_map[old_node.ipv4]
+        if old_node is not None:
+            del self.node_map[old_node.ipv4]
+        self.logger.info(f"Successfully added node {new_node=}.")
 
         # TODO: check for bmv2
         # self.switch_controller.insertEcmpGroupSelectEntry(

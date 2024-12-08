@@ -10,7 +10,10 @@ switch:
 controller:
 	cd ./pkgsrc/p4-examples/p4_16_programs/t2na_load_balancer/controller && ./run.sh
 
-test:
-	./run_p4_tests.sh --arch tf2 -s t2na_load_balancer_custom -p t2na_load_balancer
+test-dataplane:
+	./run_p4_tests.sh --arch tf2 -t ./pkgsrc/p4-examples/p4_16_programs/t2na_load_balancer/tests -s t2na_load_balancer_dataplane -p t2na_load_balancer
 
-.PHONY: build model switch controller test
+test-controller:
+	./run_p4_tests.sh --arch tf2 -t ./pkgsrc/p4-examples/p4_16_programs/t2na_load_balancer/tests -s t2na_load_balancer_controller -p t2na_load_balancer
+
+.PHONY: build model switch test-dataplane test-controller

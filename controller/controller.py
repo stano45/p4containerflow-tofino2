@@ -104,6 +104,7 @@ def update_node():
 
     old_ipv4 = data.get("old_ipv4")
     new_ipv4 = data.get("new_ipv4")
+    source_mac = data.get("smac")
     dest_mac = data.get("dmac")
     is_client = data.get("is_client")
 
@@ -122,7 +123,7 @@ def update_node():
         return jsonify({"error": "Missing parameters"}), 400
 
     try:
-        nodeManager.updateNode(old_ipv4, new_ipv4, dest_mac, egress_port, is_client)
+        nodeManager.updateNode(old_ipv4, new_ipv4, source_mac, dest_mac, egress_port, is_client)
         logger.info(f"Successfully updated node {old_ipv4} with {new_ipv4}")
         return jsonify({"status": "success"}), 200
     except grpc.RpcError as e:

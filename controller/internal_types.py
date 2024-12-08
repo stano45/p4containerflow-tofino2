@@ -10,7 +10,7 @@ class Node(object):
         self.is_client = is_client
 
     def __repr__(self):
-        return f"Node(is_client={self.is_client}, ipv4={self.ipv4}, sw_port={self.sw_port}, smac={self.smac}, dmac={self.dmac})"
+        return f"Node(id={self.id}, is_client={self.is_client}, ipv4={self.ipv4}, sw_port={self.sw_port}, smac={self.smac}, dmac={self.dmac})"
     
 class UpdateType(Enum):
     INSERT = "INSERT"

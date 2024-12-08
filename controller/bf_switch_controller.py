@@ -1,19 +1,19 @@
+from logging import Logger
 from abstract_switch_controller import AbstractSwitchController
 import bfrt_grpc.client as gc
 
-from utils import ip_to_int
 from internal_types import UpdateType
 
 
 class SwitchController(AbstractSwitchController):
     def __init__(
         self,
-        logger,
-        sw_name,
-        sw_addr,
-        sw_id,
-        client_id,
-        load_balancer_ip,
+        logger: Logger,
+        sw_name: str,
+        sw_addr: str,
+        sw_id: str | int,
+        client_id: str | int,
+        load_balancer_ip: str,
     ):
         super().__init__(sw_name, sw_addr, sw_id, client_id, load_balancer_ip)
 
@@ -60,38 +60,52 @@ class SwitchController(AbstractSwitchController):
                 updateFn = self.insertTableEntry
             case UpdateType.MODIFY:
                 updateFn = self.modifyTableEntry
-            case _: 
-                self.insertTableEntry
+            case _:
+                updateFn = self.insertTableEntry
         return updateFn
 
     def insertEcmpGroupSelectEntry(
         self, matchDstAddr, ecmp_base, ecmp_count, update_type: UpdateType
     ):
         self.getUpdateFn(update_type)(
-            "SwitchIngress.ecmp_group",
-            [gc.KeyTuple("hdr.ipv4.dst_addr", ip_to_int(matchDstAddr), prefix_len=0)],
-            "NoAction",
-            [],
+            tableName="SwitchIngress.ecmp_group",
+            keyFields=[
+                gc.KeyTuple(
+                    name="hdr.ipv4.dst_addr",
+                    value=gc.ipv4_to_bytes(matchDstAddr),
+                    prefix_len=32,
+                )
+            ],
+            actionName="NoAction",
+            dataFields=[],
         )
 
     def insertEcmpGroupRewriteSrcEntry(
         self, matchDstAddr, new_src, update_type: UpdateType
     ):
         self.getUpdateFn(update_type)(
-            "SwitchIngress.ecmp_group",
-            [gc.KeyTuple("hdr.ipv4.dst_addr", ip_to_int(matchDstAddr), prefix_len=0)],
-            "set_rewrite_src",
-            [gc.DataTuple("new_src", ip_to_int(new_src))],
+            tableName="SwitchIngress.ecmp_group",
+            keyFields=[
+                gc.KeyTuple(
+                    name="hdr.ipv4.dst_addr",
+                    value=gc.ipv4_to_bytes(matchDstAddr),
+                    prefix_len=0,
+                )
+            ],
+            actionName="set_rewrite_src",
+            dataFields=[gc.DataTuple(name="new_src", val=gc.ipv4_to_bytes(new_src))],
         )
 
-    def insertEcmpNhopEntry(self, ecmp_select, dmac, ipv4, port, update_type: UpdateType):
+    def insertEcmpNhopEntry(
+        self, ecmp_select, dmac, ipv4, port, update_type: UpdateType
+    ):
         self.getUpdateFn(update_type)(
-            "SwitchIngress.ecmp_nhop",
-            [gc.KeyTuple("ig_md.ecmp_select", ecmp_select)],
-            "set_ecmp_nhop",
-            [
-                gc.DataTuple("nhop_ipv4", ip_to_int(ipv4)),
-                gc.DataTuple("port", port),
+            tableName="SwitchIngress.ecmp_nhop",
+            keyFields=[gc.KeyTuple(name="ig_md.ecmp_select", value=ecmp_select)],
+            actionName="set_ecmp_nhop",
+            dataFields=[
+                gc.DataTuple(name="nhop_ipv4", val=gc.ipv4_to_bytes(ipv4)),
+                gc.DataTuple(name="port", val=port),
             ],
         )
 

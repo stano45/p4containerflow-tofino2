@@ -1,7 +1,4 @@
 import random
-import bfrt_grpc.bfruntime_pb2 as bfruntime_pb2
-import bfrt_grpc.client as gc
-from ipaddress import ip_address
 from bfruntime_client_base_tests import BfRuntimeTest
 from p4testutils.misc_utils import get_logger, get_sw_ports, simple_tcp_packet
 from ptf.testutils import (
@@ -11,19 +8,18 @@ from ptf.testutils import (
     verify_any_packet_any_port,
 )
 import requests
+import ptf
 
 logger = get_logger()
 swports = get_sw_ports()
 
 print("SW Ports: ", swports)
 
-def ip(ip_string) -> int:
-    return int(ip_address(ip_string))
-
-
 class AbstractTest(BfRuntimeTest):
     def setUp(self):
-        pass
+        # Setting up PTF dataplane
+        self.dataplane = ptf.dataplane_instance
+        self.dataplane.flush()
 
     def tearDown(self):
         pass
@@ -78,7 +74,7 @@ class AbstractTest(BfRuntimeTest):
         ), f"Traffic imbalance too high: {imbalance_percentage:.2f}%"
 
     def verifyNoOtherPackets(self):
-        verify_no_other_packets(self, self.devId, timeout=2)
+        verify_no_other_packets(self, 0, timeout=2)
 
     def runTestImpl(self):
         self.setupCtrlPlane()
@@ -107,6 +103,7 @@ class TestController(AbstractTest):
     # Test normal load balancing, change ports dynamically, and verify load balancing
 
     def setUp(self):
+        super().setUp()
         self.clientPort = swports[0]
         self.serverPorts = [swports[1], swports[2], swports[3], swports[4]]
         self.numPackets = 300
@@ -157,7 +154,7 @@ class TestController(AbstractTest):
                 [expectedPktToServer1, expectedPktToServer2],
                 server_ports,
             )
-            logger.info("Packet %d received on port %d...", i, server_ports[rcvIdx])
+            logger.info("Server packet %d received on port %d!", i, server_ports[rcvIdx])
             if rcvIdx == 0:
                 self.server1Counter += 1
             else:
@@ -187,6 +184,7 @@ class TestController(AbstractTest):
             )
             logger.info("Verifying packet on client port %d...", self.clientPort)
             verify_packet(self, expectedPktToClient, self.clientPort)
+            logger.info("Client packet received on port %d!", self.clientPort)
 
     def sendPacket(self):
         # First phase: initial two servers
@@ -203,7 +201,7 @@ class TestController(AbstractTest):
 
         # Modify first next-hop entry to point to a new server (10.0.0.4)
         resp = self.update_node(source_ip="10.0.0.2", target_ip="10.0.0.4", target_idx=self.serverPorts[2],is_client=False)
-        assert resp is not None, "Response is nil, is the controller running?"
+        assert resp, "Response is nil, is the controller running?"
         assert resp.status_code == 200, f"Response is {resp.status_code}: {resp.text}"
 
         self.sendPackets(

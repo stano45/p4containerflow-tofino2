@@ -16,8 +16,8 @@ swports = get_sw_ports()
 
 print("SW Ports: ", swports)
 
-def ip(ip_string) -> int:
-    return int(ip_address(ip_string))
+def ip(ip_string):
+    return gc.ipv4_to_bytes(ip_string)
 
 
 class AbstractTest(BfRuntimeTest):
