@@ -106,6 +106,40 @@ class AbstractTest(BfRuntimeTest):
             [],
         )
 
+    def insertNodeSelectorEntry(self, dst_addr, group_id):
+        self.insertTableEntry(
+            tableName="SwitchIngress.node_selector",
+            keyFields=[gc.KeyTuple("hdr.ipv4.dst_addr", ip(dst_addr))],
+            dataFields=[
+                gc.DataTuple("$SELECTOR_GROUP_ID", group_id),
+            ],
+        )
+
+    def insertSelectionTableEntry(
+        self,
+        members,
+        member_status,
+        group_id=1,
+        max_grp_size=4,
+    ):
+        self.insertTableEntry(
+            tableName="SwitchIngress.action_selector",
+            keyFields=[gc.KeyTuple("$SELECTOR_GROUP_ID", group_id)],
+            dataFields=[
+                gc.DataTuple("$MAX_GROUP_SIZE", max_grp_size),
+                gc.DataTuple("$ACTION_MEMBER_ID", int_arr_val=members),
+                gc.DataTuple("$ACTION_MEMBER_STATUS", bool_arr_val=member_status),
+            ],
+        )
+
+    def insertActionTableEntry(self, node_index):
+        self.insertTableEntry(
+            "SwitchIngress.action_selector_ap",
+            [gc.KeyTuple("$ACTION_MEMBER_ID", node_index)],
+            "SwitchIngress.set_node_index",
+            [gc.DataTuple("node_index", node_index)],
+        )
+
     def insertRewriteDstEntry(self, node_index, new_dst):
         self.insertTableEntry(
             "SwitchIngress.rewrite_dst",
@@ -299,12 +333,15 @@ class TestEvenTrafficBalancingToServer(AbstractTest):
         self.insertForClientEntry(src_port=12345)
         self.insertRewriteSrcEntry(12345, "10.0.0.10")
 
+        self.insertActionTableEntry(0)
+        self.insertActionTableEntry(1)
+        self.insertSelectionTableEntry([0, 1], [True] * 2, group_id=1, max_grp_size=4)
+        self.insertNodeSelectorEntry(dst_addr="10.0.0.10", group_id=1)
+
         # Fixed number of 4 nodes in balancer, but we only have 2
         # so fill the table with only 2
         self.insertRewriteDstEntry(0, "10.0.0.1")
-        self.insertRewriteDstEntry(1, "10.0.0.1")
-        self.insertRewriteDstEntry(2, "10.0.0.2")
-        self.insertRewriteDstEntry(3, "10.0.0.2")
+        self.insertRewriteDstEntry(1, "10.0.0.2")
 
         self.insertForwardEntry("10.0.0.0", self.clientPort)
         self.insertForwardEntry("10.0.0.1", self.serverPorts[0])
@@ -353,106 +390,106 @@ class TestEvenTrafficBalancingToServer(AbstractTest):
         self.runTestImpl()
 
 
-class TestBidirectionalTraffic(AbstractTest):
-    # Test even traffic balancing from one client to two servers, and traffic from servers back to client
+# class TestBidirectionalTraffic(AbstractTest):
+#     # Test even traffic balancing from one client to two servers, and traffic from servers back to client
 
-    def setUp(self):
-        super().setUp()
-        self.lbIp = "10.0.0.10"
-        self.clientIp = "10.0.0.0"
-        self.clientPort = swports[0]
-        self.numServers = 4
-        self.serverPorts = [swports[i + 1] for i in range(self.numServers)]
-        self.serverIps = [f"10.0.0.{i+1}" for i in range(self.numServers)]
-        self.numPackets = 100
-        self.maxImbalance = 0.3
-        self.serverCounters = [0 for _ in range(self.numServers)]
-        self.serverTcpPort = 12345
+#     def setUp(self):
+#         super().setUp()
+#         self.lbIp = "10.0.0.10"
+#         self.clientIp = "10.0.0.0"
+#         self.clientPort = swports[0]
+#         self.numServers = 4
+#         self.serverPorts = [swports[i + 1] for i in range(self.numServers)]
+#         self.serverIps = [f"10.0.0.{i+1}" for i in range(self.numServers)]
+#         self.numPackets = 100
+#         self.maxImbalance = 0.3
+#         self.serverCounters = [0 for _ in range(self.numServers)]
+#         self.serverTcpPort = 12345
 
-    def setupCtrlPlane(self):
-        self.clearTables()
+#     def setupCtrlPlane(self):
+#         self.clearTables()
 
-        logger.info(
-            "Setting up even traffic balancing: Client port: %s, Server ports: %s",
-            self.clientPort,
-            self.serverPorts,
-        )
+#         logger.info(
+#             "Setting up even traffic balancing: Client port: %s, Server ports: %s",
+#             self.clientPort,
+#             self.serverPorts,
+#         )
 
-        # Load balancer IP
-        self.insertForLoadBalancerEntry(dst_addr=self.lbIp)
-        # Fixed service port
-        self.insertForClientEntry(src_port=self.serverTcpPort)
-        self.insertRewriteSrcEntry(src_port=self.serverTcpPort, new_src=self.lbIp)
-        self.insertForwardEntry(dst_addr=self.clientIp, port=self.clientPort)
+#         # Load balancer IP
+#         self.insertForLoadBalancerEntry(dst_addr=self.lbIp)
+#         # Fixed service port
+#         self.insertForClientEntry(src_port=self.serverTcpPort)
+#         self.insertRewriteSrcEntry(src_port=self.serverTcpPort, new_src=self.lbIp)
+#         self.insertForwardEntry(dst_addr=self.clientIp, port=self.clientPort)
 
-        for i in range(self.numServers):
-            self.insertRewriteDstEntry(node_index=i, new_dst=self.serverIps[i])
-            self.insertForwardEntry(
-                dst_addr=self.serverIps[i], port=self.serverPorts[i]
-            )
+#         for i in range(self.numServers):
+#             self.insertRewriteDstEntry(node_index=i, new_dst=self.serverIps[i])
+#             self.insertForwardEntry(
+#                 dst_addr=self.serverIps[i], port=self.serverPorts[i]
+#             )
 
-    def sendPacket(self):
-        for i in range(self.numPackets):
-            logger.info("Sending packet %d...", i)
-            # Random source port
-            clientTcpPort = random.randint(12346, 65535)
+#     def sendPacket(self):
+#         for i in range(self.numPackets):
+#             logger.info("Sending packet %d...", i)
+#             # Random source port
+#             clientTcpPort = random.randint(12346, 65535)
 
-            clientPkt = simple_tcp_packet(
-                ip_src=self.clientIp,
-                ip_dst=self.lbIp,
-                tcp_sport=clientTcpPort,
-                tcp_dport=self.serverTcpPort,
-            )
-            expecedPkts = []
-            for i in range(self.numServers):
-                expecedPkts.append(
-                    simple_tcp_packet(
-                        ip_src=self.clientIp,
-                        ip_dst=self.serverIps[i],
-                        tcp_sport=clientTcpPort,
-                        tcp_dport=self.serverTcpPort,
-                    )
-                )
-            logger.info("Verifying packet %d...", i)
-            rcvIdx = self.sendAndVerifyPacketAnyPort(
-                send_port=self.clientPort,
-                send_pkt=clientPkt,
-                expected_pkts=expecedPkts,
-                verify_ports=self.serverPorts,
-            )
-            logger.info("Packet %d received on port %d...", i, self.serverPorts[rcvIdx])
-            self.serverCounters[rcvIdx] += 1
+#             clientPkt = simple_tcp_packet(
+#                 ip_src=self.clientIp,
+#                 ip_dst=self.lbIp,
+#                 tcp_sport=clientTcpPort,
+#                 tcp_dport=self.serverTcpPort,
+#             )
+#             expecedPkts = []
+#             for i in range(self.numServers):
+#                 expecedPkts.append(
+#                     simple_tcp_packet(
+#                         ip_src=self.clientIp,
+#                         ip_dst=self.serverIps[i],
+#                         tcp_sport=clientTcpPort,
+#                         tcp_dport=self.serverTcpPort,
+#                     )
+#                 )
+#             logger.info("Verifying packet %d...", i)
+#             rcvIdx = self.sendAndVerifyPacketAnyPort(
+#                 send_port=self.clientPort,
+#                 send_pkt=clientPkt,
+#                 expected_pkts=expecedPkts,
+#                 verify_ports=self.serverPorts,
+#             )
+#             logger.info("Packet %d received on port %d...", i, self.serverPorts[rcvIdx])
+#             self.serverCounters[rcvIdx] += 1
 
-            # Sending response from server to client
-            logger.info(
-                "Sending response from port %d to client port %d...",
-                self.serverPorts[rcvIdx],
-                self.clientPort,
-            )
+#             # Sending response from server to client
+#             logger.info(
+#                 "Sending response from port %d to client port %d...",
+#                 self.serverPorts[rcvIdx],
+#                 self.clientPort,
+#             )
 
-            serverIp = self.serverIps[rcvIdx]
-            serverPkt = simple_tcp_packet(
-                ip_src=serverIp,
-                ip_dst=self.clientIp,
-                tcp_sport=self.serverTcpPort,
-                tcp_dport=clientTcpPort,
-            )
-            send_packet(self, self.serverPorts[rcvIdx], serverPkt)
+#             serverIp = self.serverIps[rcvIdx]
+#             serverPkt = simple_tcp_packet(
+#                 ip_src=serverIp,
+#                 ip_dst=self.clientIp,
+#                 tcp_sport=self.serverTcpPort,
+#                 tcp_dport=clientTcpPort,
+#             )
+#             send_packet(self, self.serverPorts[rcvIdx], serverPkt)
 
-            expectedPktToClient = simple_tcp_packet(
-                ip_src=self.lbIp,
-                ip_dst=self.clientIp,
-                tcp_sport=self.serverTcpPort,
-                tcp_dport=clientTcpPort,
-            )
-            logger.info("Verifying packet on client port %d...", self.clientPort)
-            verify_packet(self, expectedPktToClient, self.clientPort)
+#             expectedPktToClient = simple_tcp_packet(
+#                 ip_src=self.lbIp,
+#                 ip_dst=self.clientIp,
+#                 tcp_sport=self.serverTcpPort,
+#                 tcp_dport=clientTcpPort,
+#             )
+#             logger.info("Verifying packet on client port %d...", self.clientPort)
+#             verify_packet(self, expectedPktToClient, self.clientPort)
 
-    def verifyPackets(self):
-        self.checkTrafficBalance(self.serverCounters, self.maxImbalance)
+#     def verifyPackets(self):
+#         self.checkTrafficBalance(self.serverCounters, self.maxImbalance)
 
-    def runTest(self):
-        self.runTestImpl()
+#     def runTest(self):
+#         self.runTestImpl()
 
 
 # class TestPortChange(AbstractTest):

@@ -10,10 +10,7 @@
 #include "common/headers.p4"
 #include "common/util.p4"
 
-const bit<16> NODE_COUNT = 4;
-
 struct metadata_t {
-    bit<16> hash;
     bit<16> node_index;
     bool is_packet_for_load_balancer;
     bool is_packet_for_client;
@@ -80,7 +77,15 @@ control SwitchIngress(
         inout ingress_intrinsic_metadata_for_deparser_t ig_dprsr_md,
         inout ingress_intrinsic_metadata_for_tm_t ig_tm_md) {
 
-    Hash<bit<16>>(HashAlgorithm_t.CRC16) hash;
+    Hash<bit<16>>(HashAlgorithm_t.CRC16) sel_hash;
+    // Action Profile Size = max group size x max number of groups
+    ActionProfile(4) action_selector_ap;
+    ActionSelector(action_selector_ap, // action profile
+                   sel_hash, // hash extern
+                   SelectorMode_t.FAIR, // Selector algorithm
+                   4, // max group size
+                   1 // max number of groups
+                   ) action_selector;
     BypassEgress() bypass_egress;
 
     action checksum_upd_ipv4(bool update) {
@@ -96,19 +101,8 @@ control SwitchIngress(
         checksum_upd_tcp(update);
     }
 
-    action compute_node_index() {
-        ig_md.hash = hash.get({
-            hdr.ipv4.src_addr,
-            hdr.ipv4.dst_addr,
-            hdr.ipv4.protocol,
-            hdr.tcp.src_port,
-            hdr.tcp.dst_port
-        });
-
-        // Use bitwise AND instead of modulo
-        // hash % 2^n == hash & (2^n - 1)
-        // Adjust NODE_COUNT as a power of 2 (e.g. 2^1, 2^2...)
-        ig_md.node_index = ig_md.hash & (NODE_COUNT - 1);
+    action set_node_index(bit<16> node_index) {
+        ig_md.node_index = node_index;
     }
 
     action set_is_packet_for_load_balancer() {
@@ -145,9 +139,9 @@ control SwitchIngress(
         ig_tm_md.ucast_egress_port = port;
     }
 
-    // action drop() {
-    //     ig_dprsr_md.drop_ctl = 0x1;
-    // }
+    action drop() {
+        ig_dprsr_md.drop_ctl = 0x1;
+    }
 
     table for_load_balancer {
         key = {
@@ -171,6 +165,24 @@ control SwitchIngress(
         }
         const default_action = NoAction;
         size = 1024;
+    }
+
+    table node_selector {
+        key = {
+            hdr.ipv4.dst_addr: exact;
+            hdr.ipv4.src_addr: selector;
+            hdr.ipv4.dst_addr: selector;
+            hdr.ipv4.protocol: selector;
+            hdr.tcp.src_port:  selector;
+            hdr.tcp.dst_port:  selector;
+        }
+        actions = {
+            set_node_index;
+            drop;
+        }
+        const default_action = drop;
+        size = 1024;
+        implementation = action_selector;
     }
 
     table rewrite_dst {
@@ -225,7 +237,7 @@ control SwitchIngress(
         // Only load-balance client -> server packets
         // For now we only have one client
         if (ig_md.is_packet_for_load_balancer) {
-            compute_node_index();
+            node_selector.apply();
             rewrite_dst.apply();            
         }
         else if (ig_md.is_packet_for_client) {
