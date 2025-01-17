@@ -261,75 +261,85 @@ class TestForwarding(AbstractTest):
         self.runTestImpl()
 
 
-# class TestEvenTrafficBalancingToServer(AbstractTest):
-#     # Test even traffic balancing from one client to two servers
+class TestEvenTrafficBalancingToServer(AbstractTest):
+    # Test even traffic balancing from one client to two servers
 
-#     def setUp(self):
-#         super().setUp()
-#         self.clientPort = swports[0]
-#         self.serverPorts = [swports[1], swports[2]]
-#         self.numPackets = 200
-#         self.maxImbalancePercent = 20
-#         self.server1Counter = 0
-#         self.server2Counter = 0
+    def setUp(self):
+        super().setUp()
+        self.clientPort = swports[0]
+        self.serverPorts = [swports[1], swports[2]]
+        self.numPackets = 200
+        self.maxImbalancePercent = 20
+        self.server1Counter = 0
+        self.server2Counter = 0
 
-#     def setupCtrlPlane(self):
-#         self.clearTables()
+    def setupCtrlPlane(self):
+        self.clearTables()
 
-#         logger.info(
-#             "Setting up even traffic balancing: Client port: %s, Server ports: %s",
-#             self.clientPort,
-#             self.serverPorts,
-#         )
+        logger.info(
+            "Setting up even traffic balancing: Client port: %s, Server ports: %s",
+            self.clientPort,
+            self.serverPorts,
+        )
 
-#         # Insert ECMP group entry pointing to the load balancer IP (10.0.0.1)
-#         self.insertEcmpGroupNoAction("10.0.0.1", 32, "NoAction", [])
+        # Load balancer IP
+        self.insertForLoadBalancerEntry(dst_addr="10.0.0.10")
+        # Fixed service port
+        self.insertForClientEntry(src_port=12345)
+        self.insertRewriteSrcEntry(12345, "10.0.0.10")
 
-#         # Add next-hop entries for both server IPs (10.0.0.2 and 10.0.0.3) and their respective ports
-#         self.insertEcmpNhop(1, "10.0.0.2", self.serverPorts[0])
-#         self.insertEcmpNhop(2, "10.0.0.3", self.serverPorts[1])
+        # Fixed number of 4 nodes in balancer, but we only have 2
+        # so fill the table with only 2
+        self.insertRewriteDstEntry(0, "10.0.0.1")
+        self.insertRewriteDstEntry(1, "10.0.0.1")
+        self.insertRewriteDstEntry(2, "10.0.0.2")
+        self.insertRewriteDstEntry(3, "10.0.0.2")
 
-#     def sendPacket(self):
-#         for i in range(self.numPackets):
-#             logger.info("Sending packet %d...", i)
-#             srcPort = random.randint(1024, 65535)  # Random source port
+        self.insertForward("10.0.0.0", self.clientPort)
+        self.insertForward("10.0.0.1", self.serverPorts[0])
+        self.insertForward("10.0.0.2", self.serverPorts[1])
 
-#             clientPkt = simple_tcp_packet(
-#                 ip_src="10.0.0.0",
-#                 ip_dst="10.0.0.1",
-#                 tcp_sport=srcPort,  # Set the random source port
-#             )
-#             expectedPktToServer1 = simple_tcp_packet(
-#                 ip_src="10.0.0.0",
-#                 ip_dst="10.0.0.2",
-#                 tcp_sport=srcPort,
-#             )
-#             expectedPktToServer2 = simple_tcp_packet(
-#                 ip_src="10.0.0.0",
-#                 ip_dst="10.0.0.3",
-#                 tcp_sport=srcPort,
-#             )
+    def sendPacket(self):
+        for i in range(self.numPackets):
+            logger.info("Sending packet %d...", i)
+            srcPort = random.randint(12346, 65535)  # Random source port
 
-#             logger.info("Verifying packet %d...", i)
-#             rcvIdx = self.sendAndVerifyPacketAnyPort(
-#                 self.clientPort,
-#                 clientPkt,
-#                 [expectedPktToServer1, expectedPktToServer2],
-#                 self.serverPorts,
-#             )
-#             logger.info("Packet %d received on port %d...", i, self.serverPorts[rcvIdx])
-#             if rcvIdx == 0:
-#                 self.server1Counter += 1
-#             else:
-#                 self.server2Counter += 1
+            clientPkt = simple_tcp_packet(
+                ip_src="10.0.0.0",
+                ip_dst="10.0.0.10",
+                tcp_sport=srcPort,  # Set the random source port
+            )
+            expectedPktToServer1 = simple_tcp_packet(
+                ip_src="10.0.0.0",
+                ip_dst="10.0.0.1",
+                tcp_sport=srcPort,
+            )
+            expectedPktToServer2 = simple_tcp_packet(
+                ip_src="10.0.0.0",
+                ip_dst="10.0.0.2",
+                tcp_sport=srcPort,
+            )
 
-#     def verifyPackets(self):
-#         self.checkTrafficBalance(
-#             self.server1Counter, self.server2Counter, self.maxImbalancePercent
-#         )
+            logger.info("Verifying packet %d...", i)
+            rcvIdx = self.sendAndVerifyPacketAnyPort(
+                self.clientPort,
+                clientPkt,
+                [expectedPktToServer1, expectedPktToServer2],
+                self.serverPorts,
+            )
+            logger.info("Packet %d received on port %d...", i, self.serverPorts[rcvIdx])
+            if rcvIdx == 0:
+                self.server1Counter += 1
+            else:
+                self.server2Counter += 1
 
-#     def runTest(self):
-#         self.runTestImpl()
+    def verifyPackets(self):
+        self.checkTrafficBalance(
+            self.server1Counter, self.server2Counter, self.maxImbalancePercent
+        )
+
+    def runTest(self):
+        self.runTestImpl()
 
 
 # class TestBidirectionalTraffic(AbstractTest):
