@@ -225,39 +225,40 @@ class TestRewriteSource(AbstractTest):
         self.runTestImpl()
 
 
-# class TestForwarding(AbstractTest):
-#     clientPort = swports[0]
-#     serverPort = swports[1]
+class TestForwarding(AbstractTest):
+    # Test basic L3 forwarding (required for k8s traffic)
+    num_nodes = 4
+    ports = [swports[i] for i in range(num_nodes)]
+    ips = [f"10.0.0.{i}" for i in range(num_nodes)]
 
-#     def setupCtrlPlane(self):
-#         self.clearTables()
+    def setupCtrlPlane(self):
+        self.clearTables()
 
-#         logger.info(
-#             "Using client port: %s and server port: %s ",
-#             self.clientPort,
-#             self.serverPort,
-#         )
-#         self.insertEcmpGroupNoAction("10.0.0.1", 0, "NoAction", [])
+        for port in self.ports:
+            logger.info("Using port: %s", port)
 
-#         self.insertEcmpNhop(1, "10.0.0.2", self.serverPort)
-#         self.insertEcmpNhop(2, "10.0.0.2", self.serverPort)
+        for i in range(self.num_nodes):
+            self.insertForward(self.ips[i], self.ports[i])
 
-#     def sendPacket(self):
-#         serverPkt = simple_tcp_packet(
-#             ip_src="10.0.0.0",
-#             ip_dst="10.0.0.1",
-#         )
-#         send_packet(self, self.clientPort, serverPkt)
+    def sendPacket(self):
+        for i in range(self.num_nodes):
+            for j in range(i + 1, self.num_nodes):
+                pkt = simple_tcp_packet(
+                    ip_src=self.ips[i],
+                    ip_dst=self.ips[j],
+                )
+                send_packet(self, self.ports[i], pkt)
+                verify_packet(self, pkt, self.ports[j])
 
-#     def verifyPackets(self):
-#         expectedPktToServer = simple_tcp_packet(
-#             ip_src="10.0.0.0",
-#             ip_dst="10.0.0.2",
-#         )
-#         verify_packet(self, expectedPktToServer, self.serverPort)
+                pkt = simple_tcp_packet(
+                    ip_src=self.ips[j],
+                    ip_dst=self.ips[i],
+                )
+                send_packet(self, self.ports[j], pkt)
+                verify_packet(self, pkt, self.ports[i])
 
-#     def runTest(self):
-#         self.runTestImpl()
+    def runTest(self):
+        self.runTestImpl()
 
 
 # class TestEvenTrafficBalancingToServer(AbstractTest):
