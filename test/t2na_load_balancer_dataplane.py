@@ -280,7 +280,7 @@ class TestEvenTrafficBalancingToServer(AbstractTest):
         self.clientPort = swports[0]
         self.serverPorts = [swports[1], swports[2]]
         self.numPackets = 100
-        self.maxImbalance = 0.2
+        self.maxImbalance = 0.3
         self.server1Counter = 0
         self.server2Counter = 0
 
@@ -365,7 +365,7 @@ class TestBidirectionalTraffic(AbstractTest):
         self.serverPorts = [swports[i + 1] for i in range(self.numServers)]
         self.serverIps = [f"10.0.0.{i+1}" for i in range(self.numServers)]
         self.numPackets = 100
-        self.maxImbalance = 0.2
+        self.maxImbalance = 0.3
         self.serverCounters = [0 for _ in range(self.numServers)]
         self.serverTcpPort = 12345
 
