@@ -10,14 +10,14 @@
 #include "common/headers.p4"
 #include "common/util.p4"
 
-const bit<16> ECMP_BASE = 1;
-const bit<16> ECMP_COUNT = 2;
+const bit<16> ECMP_COUNT = 4;
 
 struct metadata_t {
     bit<16> hash;
     bit<16> bucket;
-    bit<16> ecmp_select;
-    bool to_client;
+    bit<16> node_index;
+    bool is_packet_for_load_balancer;
+    bool is_packet_for_client;
     bit<9>  egress_port;
     
     bool checksum_err_ipv4_igprs;
@@ -97,7 +97,7 @@ control SwitchIngress(
         checksum_upd_tcp(update);
     }
 
-    action compute_hash() {
+    action compute_node_index() {
         ig_md.hash = hash.get({
             hdr.ipv4.src_addr,
             hdr.ipv4.dst_addr,
@@ -112,8 +112,23 @@ control SwitchIngress(
         ig_md.bucket = ig_md.hash & (ECMP_COUNT - 1);
     }
 
-    action compute_ecmp_offset() {
-        ig_md.ecmp_select = ig_md.bucket + ECMP_BASE;
+    action set_is_packet_for_load_balancer() {
+        ig_md.is_packet_for_load_balancer = true;
+    }
+
+    action set_is_packet_for_client() {
+        ig_md.is_packet_for_client = true;
+    }
+
+    action set_rewrite_dst(bit<32> new_dst) {
+        // Rewrite with load balancer IP,
+        // so that the client can receive the packet.
+        // (The client only knows the load balancer address.)
+        hdr.ipv4.dst_addr = new_dst;
+
+        // Source address changed, 
+        // mark to update checksum in deparser
+        checksum_upd_ipv4_tcp(true);
     }
 
     action set_rewrite_src(bit<32> new_src) {
@@ -121,88 +136,104 @@ control SwitchIngress(
         // so that the client can receive the packet.
         // (The client only knows the load balancer address.)
         hdr.ipv4.src_addr = new_src;
-        // Index 0 is the client.
-        ig_md.to_client = true;
-        ig_md.ecmp_select = 0;
 
         // Source address changed, 
         // mark to update checksum in deparser
         checksum_upd_ipv4_tcp(true);
     }
 
-    action set_ecmp_nhop(bit<32> nhop_ipv4, bit<9> port) {
-        hdr.ipv4.dst_addr = nhop_ipv4;
+    action set_egress_port(bit<9> port) {
         ig_tm_md.ucast_egress_port = port;
-        
-        // Destination address changed, 
-        // mark to update checksum in deparser
-        checksum_upd_ipv4_tcp(true);
     }
 
-    action drop() {
-        ig_dprsr_md.drop_ctl = 0x1;
-    }
+    // action drop() {
+    //     ig_dprsr_md.drop_ctl = 0x1;
+    // }
 
-    table ecmp_group {
+    table for_load_balancer {
         key = {
-            hdr.ipv4.dst_addr: lpm;
+            hdr.ipv4.dst_addr: exact;
         }
         actions = {
-            // Case 1: Packet sent to client,
-            // rewrite IP to load balancer IP.
-            set_rewrite_src;
-            // Case 2: Continue in pipeline, do nothing here.
-            NoAction;
-            // Default: Unrecognized host ip, drop packet.
-            drop;
-        }
-        const default_action = drop;
-        size = 1024;
-    }
-
-    table ecmp_nhop {
-        key = {
-            ig_md.ecmp_select: exact;
-        }
-        actions = {
-            set_ecmp_nhop;
+            set_is_packet_for_load_balancer;
             NoAction;
         }
         const default_action = NoAction;
         size = 1024;
     }
 
+    table for_client {
+        key = {
+            hdr.tcp.src_port: exact;
+        }
+        actions = {
+            set_is_packet_for_client;
+            NoAction;
+        }
+        const default_action = NoAction;
+        size = 1024;
+    }
+
+    table rewrite_dst {
+        key = {
+            ig_md.node_index: exact;
+        }
+        actions = {
+            set_rewrite_dst;
+            NoAction;
+        }
+        const default_action = NoAction;
+        size = 1024;
+    }
+
+    table rewrite_src {
+        key = {
+            hdr.tcp.src_port: exact;
+        }
+        actions = {
+            set_rewrite_src;
+            NoAction;
+        }
+        const default_action = NoAction;
+        size = 1024;
+    }
+
+    table forward {
+        key = {
+            hdr.ipv4.dst_addr: exact;
+        }
+        actions = {
+            set_egress_port;
+            NoAction;
+        }
+        const default_action = NoAction;
+        size = 1024;
+    }
+
+
     apply {
         // Ignore invalid packets
         if (!hdr.ipv4.isValid() || hdr.ipv4.ttl < 1) {
             return;
         }
-
-        // Multi-action pipeline since Tofino only
-        // supports a single stage per action. Fixes this compile error:
-        // `[--Werror=unsupported] error: add: action spanning multiple stages. 
-        // Operations on operand 2 ($tmp3[0..31]) in action set_ecmp_select
-        // require multiple stages for a single action.
-        // We currently support only single stage actions.
-        // Please rewrite the action to be a single stage action.`
-
-        ig_md.to_client = false;
         
-        // Step 1: Apply ECMP group logic.
-        ecmp_group.apply();
+        ig_md.is_packet_for_load_balancer = false;
+        for_load_balancer.apply();
+
+        ig_md.is_packet_for_client = false;
+        for_client.apply();
 
         // Only load-balance client -> server packets
         // For now we only have one client
-        if (!ig_md.to_client) {
-            // Step 2: Compute hash and bucket.
-            compute_hash();
-
-            // Step 3: Compute ECMP offset.
-            compute_ecmp_offset();
+        if (ig_md.is_packet_for_load_balancer) {
+            compute_node_index();
+            rewrite_dst.apply();            
+        }
+        else if (ig_md.is_packet_for_client) {
+            rewrite_src.apply();
         }
 
-        // Step 4: Set next-hop port.
-        ecmp_nhop.apply();
+        forward.apply();
 
         // Detect checksum errors in the ingress parser and tag the packets
         if (ig_md.checksum_err_ipv4_igprs) {
