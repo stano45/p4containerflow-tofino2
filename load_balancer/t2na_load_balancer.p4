@@ -11,11 +11,7 @@
 #include "common/util.p4"
 
 struct metadata_t {
-    bit<16> node_index;
-    bool is_packet_for_load_balancer;
-    bool is_packet_for_client;
-    bit<9>  egress_port;
-    
+    bool is_lb_packet;
     bool checksum_err_ipv4_igprs;
     bit<16> checksum_tcp_tmp;
     bool checksum_upd_ipv4;
@@ -101,23 +97,12 @@ control SwitchIngress(
         checksum_upd_tcp(update);
     }
 
-    action set_node_index(bit<16> node_index) {
-        ig_md.node_index = node_index;
-    }
-
-    action set_is_packet_for_load_balancer() {
-        ig_md.is_packet_for_load_balancer = true;
-    }
-
-    action set_is_packet_for_client() {
-        ig_md.is_packet_for_client = true;
-    }
-
     action set_rewrite_dst(bit<32> new_dst) {
         // Rewrite with load balancer IP,
         // so that the client can receive the packet.
         // (The client only knows the load balancer address.)
         hdr.ipv4.dst_addr = new_dst;
+        ig_md.is_lb_packet = true;
 
         // Source address changed, 
         // mark to update checksum in deparser
@@ -139,28 +124,12 @@ control SwitchIngress(
         ig_tm_md.ucast_egress_port = port;
     }
 
-    action drop() {
-        ig_dprsr_md.drop_ctl = 0x1;
-    }
-
-    table for_load_balancer {
-        key = {
-            hdr.ipv4.dst_addr: exact;
-        }
-        actions = {
-            set_is_packet_for_load_balancer;
-            NoAction;
-        }
-        const default_action = NoAction;
-        size = 1024;
-    }
-
-    table for_client {
+    table client_snat {
         key = {
             hdr.tcp.src_port: exact;
         }
         actions = {
-            set_is_packet_for_client;
+            set_rewrite_src;
             NoAction;
         }
         const default_action = NoAction;
@@ -177,36 +146,12 @@ control SwitchIngress(
             hdr.tcp.dst_port:  selector;
         }
         actions = {
-            set_node_index;
-            drop;
-        }
-        const default_action = drop;
-        size = 1024;
-        implementation = action_selector;
-    }
-
-    table rewrite_dst {
-        key = {
-            ig_md.node_index: exact;
-        }
-        actions = {
             set_rewrite_dst;
             NoAction;
         }
         const default_action = NoAction;
         size = 1024;
-    }
-
-    table rewrite_src {
-        key = {
-            hdr.tcp.src_port: exact;
-        }
-        actions = {
-            set_rewrite_src;
-            NoAction;
-        }
-        const default_action = NoAction;
-        size = 1024;
+        implementation = action_selector;
     }
 
     table forward {
@@ -228,20 +173,11 @@ control SwitchIngress(
             return;
         }
         
-        ig_md.is_packet_for_load_balancer = false;
-        for_load_balancer.apply();
+        ig_md.is_lb_packet = false;
+        node_selector.apply();
 
-        ig_md.is_packet_for_client = false;
-        for_client.apply();
-
-        // Only load-balance client -> server packets
-        // For now we only have one client
-        if (ig_md.is_packet_for_load_balancer) {
-            node_selector.apply();
-            rewrite_dst.apply();            
-        }
-        else if (ig_md.is_packet_for_client) {
-            rewrite_src.apply();
+        if (!ig_md.is_lb_packet) {
+            client_snat.apply();
         }
 
         forward.apply();

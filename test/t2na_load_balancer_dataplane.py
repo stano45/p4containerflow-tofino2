@@ -30,6 +30,8 @@ class AbstractTest(BfRuntimeTest):
 
         # Set target to all pipes on device self.devId.
         self.target = gc.Target(device_id=0, pipe_id=0xFFFF)
+        self.lbIp = "10.0.0.10"
+        self.clientIp = "10.0.0.0"
 
     def clearTables(self):
         for tableName, keys in reversed(self.tableEntries.items()):
@@ -90,22 +92,6 @@ class AbstractTest(BfRuntimeTest):
         resp = self.interface.reader_writer_interface._write(req)
         tableObj.get_parser._parse_entry_write_response(resp)
 
-    def insertForLoadBalancerEntry(self, dst_addr):
-        self.insertTableEntry(
-            "SwitchIngress.for_load_balancer",
-            [gc.KeyTuple("hdr.ipv4.dst_addr", ip(dst_addr))],
-            "set_is_packet_for_load_balancer",
-            [],
-        )
-
-    def insertForClientEntry(self, src_port):
-        self.insertTableEntry(
-            "SwitchIngress.for_client",
-            [gc.KeyTuple("hdr.tcp.src_port", src_port)],
-            "set_is_packet_for_client",
-            [],
-        )
-
     def insertNodeSelectorEntry(self, dst_addr, group_id):
         self.insertTableEntry(
             tableName="SwitchIngress.node_selector",
@@ -132,27 +118,19 @@ class AbstractTest(BfRuntimeTest):
             ],
         )
 
-    def insertActionTableEntry(self, node_index):
+    def insertActionTableEntry(self, node_index, new_dst):
         self.insertTableEntry(
             "SwitchIngress.action_selector_ap",
             [gc.KeyTuple("$ACTION_MEMBER_ID", node_index)],
-            "SwitchIngress.set_node_index",
-            [gc.DataTuple("node_index", node_index)],
-        )
-
-    def insertRewriteDstEntry(self, node_index, new_dst):
-        self.insertTableEntry(
-            "SwitchIngress.rewrite_dst",
-            [gc.KeyTuple("ig_md.node_index", node_index)],
-            "set_rewrite_dst",
+            "SwitchIngress.set_rewrite_dst",
             [gc.DataTuple("new_dst", ip(new_dst))],
         )
 
-    def insertRewriteSrcEntry(self, src_port, new_src):
+    def insertClientSnatEntry(self, src_port, new_src):
         self.insertTableEntry(
-            "SwitchIngress.rewrite_src",
+            "SwitchIngress.client_snat",
             [gc.KeyTuple("hdr.tcp.src_port", src_port)],
-            "set_rewrite_src",
+            "SwitchIngress.set_rewrite_src",
             [gc.DataTuple("new_src", ip(new_src))],
         )
 
@@ -160,7 +138,7 @@ class AbstractTest(BfRuntimeTest):
         self.insertTableEntry(
             "SwitchIngress.forward",
             [gc.KeyTuple("hdr.ipv4.dst_addr", ip(dst_addr))],
-            "set_egress_port",
+            "SwitchIngress.set_egress_port",
             [
                 gc.DataTuple("port", port),
             ],
@@ -228,19 +206,16 @@ class AbstractTest(BfRuntimeTest):
 class TestRewriteSource(AbstractTest):
     # Test rewriting source IP when server sends packet to client
 
-    clientPort = swports[0]
-    serverPort = swports[1]
+    def setUp(self):
+        super().setUp()
+        self.clientPort = swports[0]
+        self.serverPort = swports[1]
 
     def setupCtrlPlane(self):
         self.clearTables()
 
-        # Load balancer IP
-        self.insertForLoadBalancerEntry(dst_addr="10.0.0.10")
-        # Fixed service port
-        self.insertForClientEntry(src_port=12345)
-
-        self.insertRewriteSrcEntry(12345, "10.0.0.10")
-        self.insertForwardEntry("10.0.0.0", self.clientPort)
+        self.insertClientSnatEntry(src_port=12345, new_src=self.lbIp)
+        self.insertForwardEntry(self.clientIp, self.clientPort)
 
         logger.info(
             "Using client port: %s and server port: %s ",
@@ -251,7 +226,7 @@ class TestRewriteSource(AbstractTest):
     def sendPacket(self):
         serverPkt = simple_tcp_packet(
             ip_src="10.0.0.2",
-            ip_dst="10.0.0.0",
+            ip_dst=self.clientIp,
             tcp_sport=12345,
         )
         send_packet(self, self.serverPort, serverPkt)
@@ -259,7 +234,7 @@ class TestRewriteSource(AbstractTest):
     def verifyPackets(self):
         expectedPktToClient = simple_tcp_packet(
             ip_src="10.0.0.10",
-            ip_dst="10.0.0.0",
+            ip_dst=self.clientIp,
             tcp_sport=12345,
         )
         verify_packet(self, expectedPktToClient, self.clientPort)
@@ -269,9 +244,10 @@ class TestRewriteSource(AbstractTest):
 
 
 class TestForwarding(AbstractTest):
+    # Test basic L3 forwarding (required for k8s traffic)
+
     def setUp(self):
         super().setUp()
-        # Test basic L3 forwarding (required for k8s traffic)
         self.num_nodes = 4
         self.ports = [swports[i] for i in range(self.num_nodes)]
         self.ips = [f"10.0.0.{i}" for i in range(self.num_nodes)]
@@ -313,10 +289,10 @@ class TestEvenTrafficBalancingToServer(AbstractTest):
         super().setUp()
         self.clientPort = swports[0]
         self.serverPorts = [swports[1], swports[2]]
+        self.serverIps = ["10.0.0.1", "10.0.0.2"]
         self.numPackets = 100
         self.maxImbalance = 0.3
-        self.server1Counter = 0
-        self.server2Counter = 0
+        self.serverCounters = [0, 0]
 
     def setupCtrlPlane(self):
         self.clearTables()
@@ -327,42 +303,33 @@ class TestEvenTrafficBalancingToServer(AbstractTest):
             self.serverPorts,
         )
 
-        # Load balancer IP
-        self.insertForLoadBalancerEntry(dst_addr="10.0.0.10")
-        # Fixed service port
-        self.insertForClientEntry(src_port=12345)
-        self.insertRewriteSrcEntry(12345, "10.0.0.10")
-
-        self.insertActionTableEntry(0)
-        self.insertActionTableEntry(1)
+        self.insertActionTableEntry(node_index=0, new_dst=self.serverIps[0])
+        self.insertActionTableEntry(node_index=1, new_dst=self.serverIps[1])
         self.insertSelectionTableEntry([0, 1], [True] * 2, group_id=1, max_grp_size=4)
-        self.insertNodeSelectorEntry(dst_addr="10.0.0.10", group_id=1)
+        self.insertNodeSelectorEntry(dst_addr=self.lbIp, group_id=1)
 
-        self.insertRewriteDstEntry(0, "10.0.0.1")
-        self.insertRewriteDstEntry(1, "10.0.0.2")
-
-        self.insertForwardEntry("10.0.0.0", self.clientPort)
-        self.insertForwardEntry("10.0.0.1", self.serverPorts[0])
-        self.insertForwardEntry("10.0.0.2", self.serverPorts[1])
+        self.insertForwardEntry(self.clientIp, self.clientPort)
+        self.insertForwardEntry(self.serverIps[0], self.serverPorts[0])
+        self.insertForwardEntry(self.serverIps[1], self.serverPorts[1])
 
     def sendPacket(self):
         for i in range(self.numPackets):
             logger.info("Sending packet %d...", i)
-            srcPort = random.randint(12346, 65535)  # Random source port
+            srcPort = random.randint(12346, 65535)
 
             clientPkt = simple_tcp_packet(
-                ip_src="10.0.0.0",
-                ip_dst="10.0.0.10",
-                tcp_sport=srcPort,  # Set the random source port
+                ip_src=self.clientIp,
+                ip_dst=self.lbIp,
+                tcp_sport=srcPort,
             )
             expectedPktToServer1 = simple_tcp_packet(
-                ip_src="10.0.0.0",
-                ip_dst="10.0.0.1",
+                ip_src=self.clientIp,
+                ip_dst=self.serverIps[0],
                 tcp_sport=srcPort,
             )
             expectedPktToServer2 = simple_tcp_packet(
-                ip_src="10.0.0.0",
-                ip_dst="10.0.0.2",
+                ip_src=self.clientIp,
+                ip_dst=self.serverIps[1],
                 tcp_sport=srcPort,
             )
 
@@ -374,15 +341,11 @@ class TestEvenTrafficBalancingToServer(AbstractTest):
                 self.serverPorts,
             )
             logger.info("Packet %d received on port %d...", i, self.serverPorts[rcvIdx])
-            if rcvIdx == 0:
-                self.server1Counter += 1
-            else:
-                self.server2Counter += 1
+
+            self.serverCounters[rcvIdx] += 1
 
     def verifyPackets(self):
-        self.checkTrafficBalance(
-            [self.server1Counter, self.server2Counter], self.maxImbalance
-        )
+        self.checkTrafficBalance(self.serverCounters, self.maxImbalance)
 
     def runTest(self):
         self.runTestImpl()
@@ -393,8 +356,6 @@ class TestBidirectionalTraffic(AbstractTest):
 
     def setUp(self):
         super().setUp()
-        self.lbIp = "10.0.0.10"
-        self.clientIp = "10.0.0.0"
         self.clientPort = swports[0]
         self.numServers = 4
         self.serverPorts = [swports[i + 1] for i in range(self.numServers)]
@@ -413,16 +374,11 @@ class TestBidirectionalTraffic(AbstractTest):
             self.serverPorts,
         )
 
-        # Load balancer IP
-        self.insertForLoadBalancerEntry(dst_addr=self.lbIp)
-        # Fixed service port
-        self.insertForClientEntry(src_port=self.serverTcpPort)
-        self.insertRewriteSrcEntry(src_port=self.serverTcpPort, new_src=self.lbIp)
+        self.insertClientSnatEntry(src_port=12345, new_src=self.lbIp)
         self.insertForwardEntry(dst_addr=self.clientIp, port=self.clientPort)
 
         for i in range(self.numServers):
-            self.insertActionTableEntry(i)
-            self.insertRewriteDstEntry(node_index=i, new_dst=self.serverIps[i])
+            self.insertActionTableEntry(node_index=i, new_dst=self.serverIps[i])
             self.insertForwardEntry(
                 dst_addr=self.serverIps[i], port=self.serverPorts[i]
             )
