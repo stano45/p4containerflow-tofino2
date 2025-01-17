@@ -122,7 +122,7 @@ class AbstractTest(BfRuntimeTest):
             [gc.DataTuple("new_src", ip(new_src))],
         )
 
-    def insertForward(self, dst_addr, port):
+    def insertForwardEntry(self, dst_addr, port):
         self.insertTableEntry(
             "SwitchIngress.forward",
             [gc.KeyTuple("hdr.ipv4.dst_addr", ip(dst_addr))],
@@ -206,7 +206,7 @@ class TestRewriteSource(AbstractTest):
         self.insertForClientEntry(src_port=12345)
 
         self.insertRewriteSrcEntry(12345, "10.0.0.10")
-        self.insertForward("10.0.0.0", self.clientPort)
+        self.insertForwardEntry("10.0.0.0", self.clientPort)
 
         logger.info(
             "Using client port: %s and server port: %s ",
@@ -249,7 +249,7 @@ class TestForwarding(AbstractTest):
             logger.info("Using port: %s", port)
 
         for i in range(self.num_nodes):
-            self.insertForward(self.ips[i], self.ports[i])
+            self.insertForwardEntry(self.ips[i], self.ports[i])
 
     def sendPacket(self):
         for i in range(self.num_nodes):
@@ -306,9 +306,9 @@ class TestEvenTrafficBalancingToServer(AbstractTest):
         self.insertRewriteDstEntry(2, "10.0.0.2")
         self.insertRewriteDstEntry(3, "10.0.0.2")
 
-        self.insertForward("10.0.0.0", self.clientPort)
-        self.insertForward("10.0.0.1", self.serverPorts[0])
-        self.insertForward("10.0.0.2", self.serverPorts[1])
+        self.insertForwardEntry("10.0.0.0", self.clientPort)
+        self.insertForwardEntry("10.0.0.1", self.serverPorts[0])
+        self.insertForwardEntry("10.0.0.2", self.serverPorts[1])
 
     def sendPacket(self):
         for i in range(self.numPackets):
@@ -383,11 +383,13 @@ class TestBidirectionalTraffic(AbstractTest):
         # Fixed service port
         self.insertForClientEntry(src_port=self.serverTcpPort)
         self.insertRewriteSrcEntry(src_port=self.serverTcpPort, new_src=self.lbIp)
-        self.insertForward(dst_addr=self.clientIp, port=self.clientPort)
+        self.insertForwardEntry(dst_addr=self.clientIp, port=self.clientPort)
 
         for i in range(self.numServers):
             self.insertRewriteDstEntry(node_index=i, new_dst=self.serverIps[i])
-            self.insertForward(dst_addr=self.serverIps[i], port=self.serverPorts[i])
+            self.insertForwardEntry(
+                dst_addr=self.serverIps[i], port=self.serverPorts[i]
+            )
 
     def sendPacket(self):
         for i in range(self.numPackets):
@@ -458,33 +460,38 @@ class TestBidirectionalTraffic(AbstractTest):
 
 #     def setUp(self):
 #         super().setUp()
+#         self.lbIp = "10.0.0.10"
+#         self.clientIp = "10.0.0.0"
 #         self.clientPort = swports[0]
-#         self.serverPorts = [swports[1], swports[2], swports[3], swports[4]]
-#         self.numPackets = 300
-#         self.maxImbalancePercent = 20
-#         self.server1Counter = 0
-#         self.server2Counter = 0
-#         self.serverTcpPort = 25565
+#         self.numServers = 4
+#         self.serverPorts = [swports[i + 1] for i in range(self.numServers)]
+#         self.serverIps = [f"10.0.0.{i+1}" for i in range(self.numServers)]
+#         self.numPackets = 100
+#         self.maxImbalance = 0.2
+#         self.serverCounters = [0 for _ in range(self.numServers)]
+#         self.serverTcpPort = 12345
 
 #     def setupCtrlPlane(self):
 #         self.clearTables()
 
 #         logger.info(
-#             "Setting up port change traffic balancing: Client port: %s, Server ports: %s",
+#             "Setting up even traffic balancing: Client port: %s, Server ports: %s",
 #             self.clientPort,
 #             self.serverPorts,
 #         )
 
-#         # Insert ECMP group entry pointing to the load balancer IP (10.0.0.1)
-#         self.insertEcmpGroupNoAction("10.0.0.1", 32, "NoAction", [])
+#         # Load balancer IP
+#         self.insertForLoadBalancerEntry(dst_addr=self.lbIp)
+#         # Fixed service port
+#         self.insertForClientEntry(src_port=self.serverTcpPort)
+#         self.insertRewriteSrcEntry(src_port=self.serverTcpPort, new_src=self.lbIp)
+#         self.insertForwardEntry(dst_addr=self.clientIp, port=self.clientPort)
 
-#         # Rewrite source to load balancer IP on server -> client traffic
-#         self.insertEcmpGroupRewriteSrc("10.0.0.0", 0, "10.0.0.1")
-
-#         # Add initial next-hop entries for the load balancer and first two servers
-#         self.insertEcmpNhop(0, "10.0.0.0", self.clientPort)
-#         self.insertEcmpNhop(1, "10.0.0.2", self.serverPorts[0])
-#         self.insertEcmpNhop(2, "10.0.0.3", self.serverPorts[1])
+#         for i in range(self.numServers):
+#             self.insertRewriteDstEntry(node_index=i, new_dst=self.serverIps[i])
+#             self.insertForwardEntry(
+#                 dst_addr=self.serverIps[i], port=self.serverPorts[i]
+#             )
 
 #     def sendPackets(self, num_packets, server_ips, server_ports):
 #         for i in range(num_packets):
