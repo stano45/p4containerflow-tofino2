@@ -10,11 +10,10 @@
 #include "common/headers.p4"
 #include "common/util.p4"
 
-const bit<16> ECMP_COUNT = 4;
+const bit<16> NODE_COUNT = 4;
 
 struct metadata_t {
     bit<16> hash;
-    bit<16> bucket;
     bit<16> node_index;
     bool is_packet_for_load_balancer;
     bool is_packet_for_client;
@@ -108,8 +107,8 @@ control SwitchIngress(
 
         // Use bitwise AND instead of modulo
         // hash % 2^n == hash & (2^n - 1)
-        // Adjust bucket count as a power of 2 (e.g. 2^1, 2^2...)
-        ig_md.bucket = ig_md.hash & (ECMP_COUNT - 1);
+        // Adjust NODE_COUNT as a power of 2 (e.g. 2^1, 2^2...)
+        ig_md.node_index = ig_md.hash & (NODE_COUNT - 1);
     }
 
     action set_is_packet_for_load_balancer() {
