@@ -1,4 +1,5 @@
 import random
+from time import sleep
 import bfrt_grpc.bfruntime_pb2 as bfruntime_pb2
 import bfrt_grpc.client as gc
 from ipaddress import ip_address
@@ -228,6 +229,123 @@ class AbstractTest(BfRuntimeTest):
         pass
 
 
+class TestPortChangeKeepConnection(AbstractTest):
+    # Test normal load balancing, change ports dynamically, and verify connection is working
+
+    def setUp(self):
+        super().setUp()
+        self.clientPort = swports[0]
+        self.numServers = 4
+        self.serverPorts = [swports[i + 1] for i in range(self.numServers)]
+        self.serverIps = [f"10.0.0.{i+1}" for i in range(self.numServers)]
+        self.numPackets = 100
+        self.clientTcpPort = 65000
+        self.serverTcpPort = 12345
+
+    def setupCtrlPlane(self):
+        self.clearTables()
+
+        logger.info(
+            "Setting up port change test: Client port: %s, Server ports: %s",
+            self.clientPort,
+            self.serverPorts,
+        )
+
+        self.insertClientSnatEntry(src_port=12345, new_src=self.lbIp)
+        self.insertForwardEntry(dst_addr=self.clientIp, port=self.clientPort)
+
+        # Insert action table entries and forward entries for ALL
+        for i in range(self.numServers):
+            logger.info(
+                f"Adding action entry: node_index={i}, ipv4={self.serverIps[i]}, port={self.serverPorts[i]}"
+            )
+            self.insertForwardEntry(
+                dst_addr=self.serverIps[i], port=self.serverPorts[i]
+            )
+
+        # Member status True only for currently active servers (accepting connections)
+        self.numNodes = self.numServers - 1
+        for i in range(self.numNodes):
+            self.insertActionTableEntry(node_index=i, new_dst=self.serverIps[i])
+
+        self.selection_members = list(range(self.numNodes))
+        self.member_status = [True] * self.numNodes
+        self.insertSelectionTableEntry(
+            members=self.selection_members,
+            member_status=self.member_status,
+        )
+
+        self.insertNodeSelectorEntry(dst_addr=self.lbIp, group_id=1)
+
+    def sendPacket(self):
+        prevRcvIdx = None
+        for i in range(self.numPackets // 2):
+            logger.info("Sending packet #%d to load balancer...", i)
+            clientPkt = simple_tcp_packet(
+                ip_src=self.clientIp,
+                ip_dst=self.lbIp,
+                tcp_sport=self.clientTcpPort,
+                tcp_dport=self.serverTcpPort,
+            )
+            expectedPkts = []
+            for j in range(self.numNodes):
+                expectedPkts.append(
+                    simple_tcp_packet(
+                        ip_src=self.clientIp,
+                        ip_dst=self.serverIps[j],
+                        tcp_sport=self.clientTcpPort,
+                        tcp_dport=self.serverTcpPort,
+                    )
+                )
+            logger.info("Verifying packet %d...", i)
+            rcvIdx = self.sendAndVerifyPacketAnyPort(
+                send_port=self.clientPort,
+                send_pkt=clientPkt,
+                expected_pkts=expectedPkts,
+                verify_ports=self.serverPorts[: self.numNodes],
+            )
+            rcvPort = self.serverPorts[rcvIdx]
+            logger.info("Packet %d received on port %d...", i, rcvPort)
+            if prevRcvIdx is not None:
+                assert rcvIdx == prevRcvIdx
+            prevRcvIdx = rcvIdx
+
+        # Update the first node in the list to point to the last server
+        targetServerIdx = self.numServers - 1
+        self.modifyActionTableEntry(
+            node_index=rcvIdx, new_dst=self.serverIps[targetServerIdx]
+        )
+        for j in range(i, self.numPackets):
+            # Send packets on the same conn
+            clientPkt = simple_tcp_packet(
+                ip_src=self.clientIp,
+                ip_dst=self.lbIp,
+                tcp_sport=self.clientTcpPort,
+                tcp_dport=self.serverTcpPort,
+            )
+            logger.info("Sending packet #%d to load balancer...", j)
+            send_packet(self, self.clientPort, clientPkt)
+
+            expectedPkt = simple_tcp_packet(
+                ip_src=self.clientIp,
+                ip_dst=self.serverIps[targetServerIdx],
+                tcp_sport=self.clientTcpPort,
+                tcp_dport=self.serverTcpPort,
+            )
+            logger.info("Verifying packet %d...", j)
+            verify_packet(self, expectedPkt, self.serverPorts[targetServerIdx])
+            logger.info(
+                "Packet %d received on port %d...", j, self.serverPorts[targetServerIdx]
+            )
+
+    def verifyPackets(self):
+        # All verification is done during sendPacket
+        pass
+
+    def runTest(self):
+        self.runTestImpl()
+
+
 class TestRewriteSource(AbstractTest):
     # Test rewriting source IP when server sends packet to client
 
@@ -428,9 +546,9 @@ class TestBidirectionalTraffic(AbstractTest):
                 tcp_sport=clientTcpPort,
                 tcp_dport=self.serverTcpPort,
             )
-            expecedPkts = []
+            expectedPkts = []
             for i in range(self.numServers):
-                expecedPkts.append(
+                expectedPkts.append(
                     simple_tcp_packet(
                         ip_src=self.clientIp,
                         ip_dst=self.serverIps[i],
@@ -442,7 +560,7 @@ class TestBidirectionalTraffic(AbstractTest):
             rcvIdx = self.sendAndVerifyPacketAnyPort(
                 send_port=self.clientPort,
                 send_pkt=clientPkt,
-                expected_pkts=expecedPkts,
+                expected_pkts=expectedPkts,
                 verify_ports=self.serverPorts,
             )
             logger.info("Packet %d received on port %d...", i, self.serverPorts[rcvIdx])
