@@ -65,7 +65,7 @@ def main(config_file_path):
 
         if master_config is None:
             raise Exception("No master switch specified" "in the configuration file.")
-        lb_nodes = master_config.get("lb_nodes", None)
+        nodes = master_config.get("nodes", None)
 
         master_controller = SwitchController(
             # p4info_file_path=master_config["p4info_file_path"],
@@ -76,13 +76,14 @@ def main(config_file_path):
             sw_id=master_config["id"],
             client_id=master_config["client_id"],
             load_balancer_ip=master_config["load_balancer_ip"],
+            service_port=master_config["service_port"],
             # proto_dump_file=master_config["proto_dump_file"],
             # initial_table_rules_file=master_config["runtime_file"],
         )
 
         global nodeManager
         nodeManager = NodeManager(
-            logger=logger, switch_controller=master_controller, lb_nodes=lb_nodes
+            logger=logger, switch_controller=master_controller, initial_nodes=nodes
         )
 
     except KeyboardInterrupt:
@@ -95,7 +96,6 @@ def main(config_file_path):
         exit(1)
 
     app.run(port=5000)
-
 
 
 @app.route("/update_node", methods=["POST"])
@@ -123,7 +123,9 @@ def update_node():
         return jsonify({"error": "Missing parameters"}), 400
 
     try:
-        nodeManager.updateNode(old_ipv4, new_ipv4, source_mac, dest_mac, egress_port, is_client)
+        nodeManager.updateNode(
+            old_ipv4, new_ipv4, source_mac, dest_mac, egress_port, is_client
+        )
         logger.info(f"Successfully updated node {old_ipv4} with {new_ipv4}")
         return jsonify({"status": "success"}), 200
     except grpc.RpcError as e:

@@ -5,6 +5,27 @@
     "name": "t2na_load_balancer",
     "addr": "0.0.0.0:50052",
     "master": true,
-    "load_balancer_ip": "10.0.0.1"
+    "load_balancer_ip": "10.0.0.10",
+    "service_port": 12345,
+    "nodes": [
+      {
+        "ipv4": "10.0.0.0",
+        "sw_port": 11
+      },
+      {
+        "ipv4": "10.0.0.1",
+        "is_lb_node": true,
+        "sw_port": 24
+      },
+      {
+        "ipv4": "10.0.0.2",
+        "is_lb_node": true,
+        "sw_port": 1
+      },
+      {
+        "ipv4": "10.0.0.3",
+        "sw_port": 18
+      }
+    ]
   }
 ]

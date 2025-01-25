@@ -1,59 +1,104 @@
 from logging import Logger
+import random
 from bf_switch_controller import SwitchController
 from internal_types import Node, UpdateType
 
-ECMP_BASE = 1
-ECMP_COUNT = 2
 
 class NodeManager(object):
-    def __init__(self, logger: Logger, switch_controller: SwitchController, lb_nodes):
+    def __init__(
+        self, logger: Logger, switch_controller: SwitchController, initial_nodes
+    ):
         self.switch_controller = switch_controller
         self.logger = logger
-        # ipv4 -> Node
-        self.node_map = {}
-        self.client_node = None
+
+        # ipv4 -> Node map
+        self.nodes = {}
+        self.lb_nodes = {}
 
         try:
-            self.switch_controller.insertEcmpGroupSelectEntry(
-                matchDstAddr=self.switch_controller.load_balancer_ip,
-                ecmp_base=ECMP_BASE,
-                ecmp_count=len(lb_nodes) if lb_nodes is not None else ECMP_COUNT,
-                update_type=UpdateType.INSERT
+            self.switch_controller.insertClientSnatEntry(
+                src_port=switch_controller.service_port,
+                new_src=switch_controller.load_balancer_ip,
             )
             self.logger.info(
-                f"Initialized load balancer with IP: {self.switch_controller.load_balancer_ip}"
+                f"Inserted client SNAT entry for "
+                f"load balancer IP={self.switch_controller.load_balancer_ip}, "
+                f"service port={self.switch_controller.service_port}"
             )
+
         except Exception as e:
-            self.logger.warning(
-                f"Load balancer ecmp_group entry (ipv4={self.switch_controller.load_balancer_ip}) already exists, skipping: {e}"
+            self.logger.critical(
+                f"Error inserting SNAT entry (src_port={self.switch_controller.service_port}, "
+                f"new_src={self.switch_controller.load_balancer_ip}): {e}"
             )
 
-        if lb_nodes is not None:
-            for i, lb_node in enumerate(lb_nodes):
-                ip = lb_node["ip"]
+        if initial_nodes is not None:
+            node_indices = []
+            for i, node in enumerate(initial_nodes):
                 node = Node(
-                    id=i + ECMP_BASE,
-                    ipv4=ip,
-                    sw_port=lb_node["port"],
-                    smac=lb_node["mac"],
+                    idx=i,
+                    ipv4=node["ipv4"],
+                    sw_port=node["sw_port"],
+                    smac=node["mac"] if "mac" in node else None,
                     dmac=None,
-                    is_client=False,
+                    is_lb_node=node["is_lb_node"] if "is_lb_node" in node else False,
                 )
-                self.node_map[ip] = node
-                self.addNode(node)
-                self.logger.info(f"Added node to load balancer: {node}")
+                self.nodes[node.ipv4] = node
 
-        self.switch_controller.readTableRules()
+                try:
+                    self.switch_controller.insertForwardEntry(
+                        port=node.sw_port,
+                        dst_addr=node.ipv4,
+                    )
+                except Exception as e:
+                    self.logger.error(
+                        f"Failed to insert forward table entry for {node=}: {e}"
+                    )
 
-    def addNode(self, ipv4, source_mac, dest_mac, sw_port, is_client):
+                if node.is_lb_node:
+                    try:
+                        self.switch_controller.insertActionTableEntry(
+                            node_index=node.idx,
+                            new_dst=node.ipv4,
+                        )
+                    except Exception as e:
+                        self.logger.error(
+                            f"Failed to insert action table entry for {node=}: {e}"
+                        )
+                    node_indices.append(node.idx)
+
+            try:
+                self.switch_controller.insertSelectionTableEntry(
+                    members=node_indices,
+                    member_status=[True] * len(node_indices),
+                    group_id=1,
+                    max_grp_size=4,
+                )
+                self.logger.info(
+                    f"Inserted selection table entry with members={node_indices}, member_status={[True] * len(node_indices)}, group_id={1}, max_grp_size={4}"
+                )
+            except Exception as e:
+                self.logger.critical(f"Error inserting empty selection entry: {e}")
+
+            try:
+                self.switch_controller.insertNodeSelectorEntry(
+                    dst_addr=self.switch_controller.load_balancer_ip, group_id=1
+                )
+                self.logger.info(
+                    f"Inserted node selector entry: dst_addr={self.switch_controller.load_balancer_ip}, group_id={1}"
+                )
+            except Exception as e:
+                self.logger.critical(
+                    f"Error inserting node selector entry with dst_addr={self.switch_controller.load_balancer_ip}, group_id={1} : {e}"
+                )
+
+    def addNode(self, ipv4: str, sw_port: int, is_client: bool, is_lb_node: bool):
         return self._addNode(
             Node(
-                id=None,
+                idx=random.randint(0, 60000),
                 ipv4=ipv4,
                 sw_port=sw_port,
-                smac=source_mac,
-                dmac=dest_mac,
-                is_client=is_client,
+                is_lb_node=is_lb_node,
             )
         )
 
@@ -70,7 +115,6 @@ class NodeManager(object):
                 sw_port=sw_port,
                 smac=source_mac,
                 dmac=dest_mac,
-                is_client=is_client,
             ),
         )
 
@@ -101,91 +145,7 @@ class NodeManager(object):
                 raise Exception(
                     f"Failed to update node: trying to update a server node with a client node: {old_node=}, {new_node=}"
                 )
-        self._updateTables(
-            old_node=old_node,
-            new_node=new_node,
-            is_client=new_node.is_client,
-            update_type=UpdateType.MODIFY,
-        )
+        pass
 
-    def _updateTables(
-        self, old_node: Node, new_node: Node, is_client: bool, update_type: UpdateType
-    ):
-        if update_type == UpdateType.INSERT:
-            id = len(self.node_map)
-            if id == 0:
-                id = 1
-        else:
-            id = old_node.id
-        new_node.id = id
-        if is_client:
-            new_node.id = 0
-
-        try:
-            self.switch_controller.insertEcmpNhopEntry(
-                ecmp_select=new_node.id,
-                dmac=new_node.dmac,
-                ipv4=new_node.ipv4,
-                port=new_node.sw_port,
-                update_type=update_type,
-            )
-        except Exception as e:
-            raise Exception(f"Failed to insert ecmp_nhop entry of {new_node=}, {update_type=}: {e}")
-
-
-        try:
-            self.switch_controller.insertSendFrameEntry(
-                egress_port=new_node.sw_port, smac=new_node.smac, update_type=update_type
-            )
-        except Exception as e:
-            raise Exception(f"Failed to insert send_frame entry of {new_node=}, {update_type=}: {e}")
-
-
-        if is_client:
-            try:
-                self.switch_controller.insertEcmpGroupRewriteSrcEntry(
-                    matchDstAddr=new_node.ipv4,
-                    new_src=self.switch_controller.load_balancer_ip,
-                    update_type=update_type,
-                )
-                self.client_node = new_node
-            except Exception as e:
-                raise Exception(f"Failed to insert ecmp_group entry of {new_node=}, load_balancer_ip={self.switch_controller.load_balancer_ip} {update_type=}: {e}")
-
-        self.node_map[new_node.ipv4] = new_node
-        if old_node is not None:
-            del self.node_map[old_node.ipv4]
-        self.logger.info(f"Successfully added node {new_node=}.")
-
-        # TODO: check for bmv2
-        # self.switch_controller.insertEcmpGroupSelectEntry(
-        #     matchDstAddr=self.switch_controller.load_balancer_ip,
-        #     ecmp_base=1,
-        #     ecmp_count=len(self.node_map),
-        #     update_type=update_type,
-        # )
-
-    # def _updateClientNode(self, node: Node, is_client: bool, update_type: UpdateType):
-    #     # TODO:
-    #     # if self.client is not None:
-    #     #     raise Exception("Client node already exists")
-
-    #     self.switch_controller.insertEcmpNhopEntry(
-    #         ecmp_select=0,
-    #         dmac=node.dmac,
-    #         ipv4=node.ipv4,
-    #         port=node.sw_port,
-    #         update_type=update_type,
-    #     )
-
-    #     self.switch_controller.insertEcmpGroupRewriteSrcEntry(
-    #         matchDstAddr=node.ipv4,
-    #         new_src=self.switch_controller.load_balancer_ip,
-    #         update_type=update_type,
-    #     )
-
-    #     self.switch_controller.insertSendFrameEntry(
-    #         egress_port=node.sw_port, smac=node.smac, update_type=update_type
-    #     )
-
-    #     self.client_node = node
+    def _updateTables(self, old_node: Node, new_node: Node, update_type: UpdateType):
+        pass

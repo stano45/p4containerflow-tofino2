@@ -2,7 +2,9 @@ from abc import ABC, abstractmethod
 
 
 class AbstractSwitchController(ABC):
-    def __init__(self, sw_name, sw_addr, sw_id, client_id, load_balancer_ip):
+    def __init__(
+        self, sw_name, sw_addr, sw_id, client_id, load_balancer_ip, service_port
+    ):
         if sw_name != None:
             self.sw_name = sw_name
         else:
@@ -17,39 +19,8 @@ class AbstractSwitchController(ABC):
             self.client_id = 0
 
         self.load_balancer_ip = load_balancer_ip
+        self.service_port = service_port
 
     @abstractmethod
     def __del__(self):
-        pass
-
-    @abstractmethod
-    def insertEcmpGroupSelectEntry(
-        self, matchDstAddr, ecmp_base, ecmp_count, update_type="INSERT"
-    ):
-        pass
-
-    @abstractmethod
-    def insertEcmpGroupRewriteSrcEntry(
-        self, matchDstAddr, new_src, update_type="INSERT"
-    ):
-        pass
-
-    @abstractmethod
-    def insertEcmpNhopEntry(self, ecmp_select, dmac, ipv4, port, update_type="INSERT"):
-        pass
-
-    @abstractmethod
-    def deleteEcmpNhopEntry(self, ecmp_select):
-        pass
-
-    @abstractmethod
-    def insertSendFrameEntry(self, egress_port, smac, update_type="INSERT"):
-        pass
-
-    @abstractmethod
-    def deleteSendFrameEntry(self, egress_port):
-        pass
-
-    @abstractmethod
-    def readTableRules(self):
         pass
