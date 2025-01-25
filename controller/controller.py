@@ -98,75 +98,97 @@ def main(config_file_path):
     app.run(port=5000)
 
 
-@app.route("/update_node", methods=["POST"])
+@app.route("/migrateNode", methods=["POST"])
 def update_node():
     data = request.get_json()
 
     old_ipv4 = data.get("old_ipv4")
     new_ipv4 = data.get("new_ipv4")
-    source_mac = data.get("smac")
-    dest_mac = data.get("dmac")
-    is_client = data.get("is_client")
 
-    try:
-        egress_port = int(data.get("eport"))
-    except ValueError:
-        logger.error(
-            f"Failed to update node {old_ipv4} with {new_ipv4}: Invalid eport parameter"
-        )
-        return jsonify({"error": "Invalid eport parameter"}), 400
-
-    if not all([old_ipv4, new_ipv4, egress_port]):
+    if not all([old_ipv4, new_ipv4]):
         logger.error(
             f"Failed to update node {old_ipv4} with {new_ipv4}: Missing parameters"
         )
         return jsonify({"error": "Missing parameters"}), 400
 
     try:
-        nodeManager.updateNode(
-            old_ipv4, new_ipv4, source_mac, dest_mac, egress_port, is_client
-        )
+        nodeManager.migrateNode(old_ipv4, new_ipv4)
         logger.info(f"Successfully updated node {old_ipv4} with {new_ipv4}")
         return jsonify({"status": "success"}), 200
-    except grpc.RpcError as e:
-        logger.error(
-            f"Failed to update node {old_ipv4} with {new_ipv4}: {printGrpcError(e)}"
-        )
-        return jsonify({"error": printGrpcError(e)}), 500
     except Exception as e:
         logger.error(f"Failed to update node {old_ipv4} with {new_ipv4}: {e}")
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/add_node", methods=["POST"])
-def add_node():
-    data = request.get_json()
+# @app.route("/update_node", methods=["POST"])
+# def update_node():
+#     data = request.get_json()
 
-    ipv4 = data.get("ipv4")
-    source_mac = data.get("smac")
-    dest_mac = data.get("dmac")
-    is_client = data.get("is_client")
+#     old_ipv4 = data.get("old_ipv4")
+#     new_ipv4 = data.get("new_ipv4")
+#     source_mac = data.get("smac")
+#     dest_mac = data.get("dmac")
+#     is_client = data.get("is_client")
 
-    try:
-        egress_port = int(data.get("eport"))
-    except ValueError:
-        logger.error(f"Failed to add node {ipv4}: Invalid eport parameter")
-        return jsonify({"error": "Invalid eport parameter"}), 400
+#     try:
+#         egress_port = int(data.get("eport"))
+#     except ValueError:
+#         logger.error(
+#             f"Failed to update node {old_ipv4} with {new_ipv4}: Invalid eport parameter"
+#         )
+#         return jsonify({"error": "Invalid eport parameter"}), 400
 
-    if not all([ipv4]):
-        logger.error(f"Failed to add node {ipv4}: Missing parameters")
-        return jsonify({"error": "Missing parameters"}), 400
+#     if not all([old_ipv4, new_ipv4, egress_port]):
+#         logger.error(
+#             f"Failed to update node {old_ipv4} with {new_ipv4}: Missing parameters"
+#         )
+#         return jsonify({"error": "Missing parameters"}), 400
 
-    try:
-        nodeManager.addNode(ipv4, source_mac, dest_mac, egress_port, is_client)
-        logger.info(f"Successfully added node {ipv4}")
-        return jsonify({"status": "success"}), 200
-    except grpc.RpcError as e:
-        logger.error(f"Failed to add node {ipv4}: {printGrpcError(e)}")
-        return jsonify({"error": printGrpcError(e)}), 500
-    except Exception as e:
-        logger.error(f"Failed to add node {ipv4}: {e}")
-        return jsonify({"error": str(e)}), 500
+#     try:
+#         nodeManager.updateNode(
+#             old_ipv4, new_ipv4, source_mac, dest_mac, egress_port, is_client
+#         )
+#         logger.info(f"Successfully updated node {old_ipv4} with {new_ipv4}")
+#         return jsonify({"status": "success"}), 200
+#     except grpc.RpcError as e:
+#         logger.error(
+#             f"Failed to update node {old_ipv4} with {new_ipv4}: {printGrpcError(e)}"
+#         )
+#         return jsonify({"error": printGrpcError(e)}), 500
+#     except Exception as e:
+#         logger.error(f"Failed to update node {old_ipv4} with {new_ipv4}: {e}")
+#         return jsonify({"error": str(e)}), 500
+
+
+# @app.route("/add_node", methods=["POST"])
+# def add_node():
+#     data = request.get_json()
+
+#     ipv4 = data.get("ipv4")
+#     source_mac = data.get("smac")
+#     dest_mac = data.get("dmac")
+#     is_client = data.get("is_client")
+
+#     try:
+#         egress_port = int(data.get("eport"))
+#     except ValueError:
+#         logger.error(f"Failed to add node {ipv4}: Invalid eport parameter")
+#         return jsonify({"error": "Invalid eport parameter"}), 400
+
+#     if not all([ipv4]):
+#         logger.error(f"Failed to add node {ipv4}: Missing parameters")
+#         return jsonify({"error": "Missing parameters"}), 400
+
+#     try:
+#         nodeManager.addNode(ipv4, source_mac, dest_mac, egress_port, is_client)
+#         logger.info(f"Successfully added node {ipv4}")
+#         return jsonify({"status": "success"}), 200
+#     except grpc.RpcError as e:
+#         logger.error(f"Failed to add node {ipv4}: {printGrpcError(e)}")
+#         return jsonify({"error": printGrpcError(e)}), 500
+#     except Exception as e:
+#         logger.error(f"Failed to add node {ipv4}: {e}")
+#         return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":

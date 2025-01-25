@@ -1,5 +1,9 @@
 from logging import Logger
 import random
+
+import grpc
+
+from utils import printGrpcError
 from bf_switch_controller import SwitchController
 from internal_types import Node, UpdateType
 
@@ -13,6 +17,7 @@ class NodeManager(object):
 
         # ipv4 -> Node map
         self.nodes = {}
+        # ipv4 -> idx
         self.lb_nodes = {}
 
         try:
@@ -25,9 +30,13 @@ class NodeManager(object):
                 f"load balancer IP={self.switch_controller.load_balancer_ip}, "
                 f"service port={self.switch_controller.service_port}"
             )
-
+        except grpc.RpcError as e:
+            raise Exception(
+                f"Error inserting SNAT entry (src_port={self.switch_controller.service_port}, "
+                f"new_src={self.switch_controller.load_balancer_ip}): {printGrpcError(e)}"
+            )
         except Exception as e:
-            self.logger.critical(
+            raise Exception(
                 f"Error inserting SNAT entry (src_port={self.switch_controller.service_port}, "
                 f"new_src={self.switch_controller.load_balancer_ip}): {e}"
             )
@@ -50,8 +59,12 @@ class NodeManager(object):
                         port=node.sw_port,
                         dst_addr=node.ipv4,
                     )
+                except grpc.RpcError as e:
+                    raise Exception(
+                        f"Failed to insert forward table entry for {node=}: {printGrpcError(e)}"
+                    )
                 except Exception as e:
-                    self.logger.error(
+                    raise Exception(
                         f"Failed to insert forward table entry for {node=}: {e}"
                     )
 
@@ -61,11 +74,16 @@ class NodeManager(object):
                             node_index=node.idx,
                             new_dst=node.ipv4,
                         )
+                    except grpc.RpcError as e:
+                        raise Exception(
+                            f"Failed to insert action table entry for {node=}: {printGrpcError(e)}"
+                        )
                     except Exception as e:
-                        self.logger.error(
+                        raise Exception(
                             f"Failed to insert action table entry for {node=}: {e}"
                         )
                     node_indices.append(node.idx)
+                    self.lb_nodes[node.ipv4] = node.idx
 
             try:
                 self.switch_controller.insertSelectionTableEntry(
@@ -77,6 +95,10 @@ class NodeManager(object):
                 self.logger.info(
                     f"Inserted selection table entry with members={node_indices}, member_status={[True] * len(node_indices)}, group_id={1}, max_grp_size={4}"
                 )
+            except grpc.RpcError as e:
+                raise Exception(
+                    f"Error inserting empty selection entry: {printGrpcError(e)}"
+                )
             except Exception as e:
                 self.logger.critical(f"Error inserting empty selection entry: {e}")
 
@@ -87,65 +109,75 @@ class NodeManager(object):
                 self.logger.info(
                     f"Inserted node selector entry: dst_addr={self.switch_controller.load_balancer_ip}, group_id={1}"
                 )
+            except grpc.RpcError as e:
+                raise Exception(
+                    f"Error inserting node selector entry with dst_addr={self.switch_controller.load_balancer_ip}, group_id={1} : {printGrpcError(e)}"
+                )
             except Exception as e:
-                self.logger.critical(
+                raise Exception(
                     f"Error inserting node selector entry with dst_addr={self.switch_controller.load_balancer_ip}, group_id={1} : {e}"
                 )
 
-    def addNode(self, ipv4: str, sw_port: int, is_client: bool, is_lb_node: bool):
-        return self._addNode(
-            Node(
-                idx=random.randint(0, 60000),
-                ipv4=ipv4,
-                sw_port=sw_port,
-                is_lb_node=is_lb_node,
-            )
-        )
-
-    def updateNode(self, old_ipv4, ipv4, source_mac, dest_mac, sw_port, is_client):
-        if old_ipv4 not in self.node_map:
+    def migrateNode(self, old_ipv4, new_ipv4):
+        if old_ipv4 not in self.lb_nodes:
             raise Exception(
-                f"Failed to update node: Node with IP {old_ipv4} does not exist"
+                f"Failed to update node {old_ipv4=}, {new_ipv4=}: Node with IP {old_ipv4} is not LB node"
             )
-        return self._updateNode(
-            old_node=self.node_map[old_ipv4],
-            new_node=Node(
-                id=None,
-                ipv4=ipv4,
-                sw_port=sw_port,
-                smac=source_mac,
-                dmac=dest_mac,
-            ),
-        )
-
-    def _addNode(self, node: Node):
-        if node.ipv4 in self.node_map:
-            raise Exception(f"Failed to add node: {node} already exists")
-
-        self._updateTables(
-            old_node=None,
-            new_node=node,
-            is_client=node.is_client,
-            update_type=UpdateType.INSERT,
-        )
-
-        self.switch_controller.readTableRules()
-
-    def _updateNode(self, old_node: Node, new_node: Node):
-        if new_node.ipv4 in self.node_map:
+        try:
+            self.switch_controller.insertActionTableEntry(
+                node_index=self.lb_nodes[old_ipv4],
+                new_dst=new_ipv4,
+                update_type=UpdateType.MODIFY,
+            )
+            self.lb_nodes[new_ipv4] = self.lb_nodes[old_ipv4]
+            del self.lb_nodes[old_ipv4]
+        except grpc.RpcError as e:
             raise Exception(
-                f"Failed to update node: {self.node_map[new_node.ipv4]} already exists"
+                f"Failed to update {old_ipv4=}, node_index={self.lb_nodes[old_ipv4]} with {new_ipv4=}: {printGrpcError(e)}"
             )
-        if old_node.is_client != new_node.is_client:
-            if old_node.is_client:
-                raise Exception(
-                    f"Failed to update node: trying to update a client with a server node: {old_node=}, {new_node=}"
-                )
-            else:
-                raise Exception(
-                    f"Failed to update node: trying to update a server node with a client node: {old_node=}, {new_node=}"
-                )
-        pass
+        except Exception as e:
+            raise Exception(
+                f"Failed to update {old_ipv4=}, node_index={self.lb_nodes[old_ipv4]} with {new_ipv4=}: {e}"
+            )
+
+    # def _updateNode(self, old_node: Node, new_node: Node):
+    #     if new_node.ipv4 in self.node_map:
+    #         raise Exception(
+    #             f"Failed to update node: {self.node_map[new_node.ipv4]} already exists"
+    #         )
+    #     if old_node.is_client != new_node.is_client:
+    #         if old_node.is_client:
+    #             raise Exception(
+    #                 f"Failed to update node: trying to update a client with a server node: {old_node=}, {new_node=}"
+    #             )
+    #         else:
+    #             raise Exception(
+    #                 f"Failed to update node: trying to update a server node with a client node: {old_node=}, {new_node=}"
+    #             )
+    #     pass
 
     def _updateTables(self, old_node: Node, new_node: Node, update_type: UpdateType):
         pass
+
+    # def _addNode(self, node: Node):
+    #     if node.ipv4 in self.node_map:
+    #         raise Exception(f"Failed to add node: {node} already exists")
+
+    #     self._updateTables(
+    #         old_node=None,
+    #         new_node=node,
+    #         is_client=node.is_client,
+    #         update_type=UpdateType.INSERT,
+    #     )
+
+    #     self.switch_controller.readTableRules()
+
+    # def addNode(self, ipv4: str, sw_port: int, is_client: bool, is_lb_node: bool):
+    #     return self._addNode(
+    #         Node(
+    #             idx=random.randint(0, 60000),
+    #             ipv4=ipv4,
+    #             sw_port=sw_port,
+    #             is_lb_node=is_lb_node,
+    #         )
+    #     )
