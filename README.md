@@ -19,7 +19,7 @@ The switch and the development machine are both connected to the same network, t
 
 In order to compile and run p4 programs on the switch, we need to install the P4 Software Development Environment (SDE). This is done via P4Studio (proprietary component provided by Intel). Again, refer to the Intel website for software artifacts. We used version `9.13.4` of the SDE (the latest version as of November 2024).
 
-After extracting the `bf-sde-x.y.z.tgz`, run P4Studio in interactive mode, and set the target to be the ASIC hardware (not ASIC model). For reference, we included the configuration file for our SDE build in [p4studio-profile.yaml](p4studio-profile.yaml).
+After extracting the `bf-sde-x.y.z.tgz`, run P4Studio in interactive mode, and set the target to be the ASIC hardware (not ASIC model). For reference, we included the configuration file for our SDE build in [p4studio-profile.yaml](scripts/p4studio-profile.yaml).
 
 In our installation, we had to also manually build any examples we wanted to run. This can be done by running `./p4studio build <example_name>`. Also, the required Kernel modules were not automatically loaded, so we wrote a simple [script](scripts/load_kernel_modules.sh) and added it as a startup service.
 
