@@ -21,7 +21,7 @@ In order to compile and run p4 programs on the switch, we need to install the P4
 
 After extracting the `bf-sde-x.y.z.tgz`, run P4Studio in interactive mode, and set the target to be the ASIC hardware (not ASIC model). For reference, we included the configuration file for our SDE build in [p4studio-profile.yaml](p4studio-profile.yaml).
 
-In our installation, we had to also manually build any examples we wanted to run. This can be done by running `./p4studio build <example_name>`. Also, the required Kernel modules were not automatically loaded, so we wrote a simple [script](load_kernel_modules.sh) and added it as a startup service.
+In our installation, we had to also manually build any examples we wanted to run. This can be done by running `./p4studio build <example_name>`. Also, the required Kernel modules were not automatically loaded, so we wrote a simple [script](scripts/load_kernel_modules.sh) and added it as a startup service.
 
 Finally, we can run a run an example program on the switch using `./run_switchd.sh --arch tofino2 -p <example_name>`. This should immediately run `bfshell` and you can interact with the program right away. Alternatively, you can `./run_bfshell` from another terminal.
 
