@@ -1,6 +1,7 @@
 # p4containerflow-tofino2
 
 P4-based L3/TCP load balancer for Intel Tofino 2 (T2NA). The repo contains:
+
 - A P4_16 program targeting T2NA that performs L3 forwarding, connection-consistent load balancing via an ActionSelector, and optional SNAT for server-to-client traffic on a service port.
 - A lightweight Python control plane (bfrt_grpc) that programs the switch tables and exposes a tiny HTTP API for live node migration.
 - PTF-based tests for dataplane behavior and example controller workflows.
@@ -15,7 +16,6 @@ P4-based L3/TCP load balancer for Intel Tofino 2 (T2NA). The repo contains:
   - [Troubleshooting](#troubleshooting)
     - [run_switchd](#run_switchd)
     - [bfshell](#bfshell)
-
 
 ## Repository structure
 
@@ -39,29 +39,116 @@ P4-based L3/TCP load balancer for Intel Tofino 2 (T2NA). The repo contains:
 - `diagrams/`: Diagram scripts (requires the `diagrams` Python package if you want to render).
 - `Makefile`: Convenience targets that assume an SDE-style directory layout (see Build and run).
 
-
 ## Development setup
+
+### Prerequisites
 
 The Tofino 2 switch (for simplicity, we will refer to it as "the switch" from this point on) is running Ubuntu 22.04.04 LTS. This OS was already installed when we started using the switch, so we will not describe this process here. Refer to the Intel Tofino documentation for instructions.
 
 The switch and the development machine are both connected to the same network, therefore we can simply use SSH to connect to the switch.
 
-In order to compile and run p4 programs on the switch, we need to install the P4 Software Development Environment (SDE). This is done via P4Studio (proprietary component provided by Intel). Again, refer to the Intel website for software artifacts. We used version `9.13.4` of the SDE (the latest version as of November 2024).
+**Python Requirements**: The open-p4studio build system requires Python 3.11 or earlier (Python 3.12+ removed the `distutils` module which is required by the build system). On Ubuntu 22.04, Python 3.10 is the default and will work fine.
 
-After extracting the `bf-sde-x.y.z.tgz`, run P4Studio in interactive mode, and set the target to be the ASIC hardware (not ASIC model). For reference, we included the configuration file for our SDE build in [p4studio-profile.yaml](scripts/p4studio-profile.yaml).
+**Use a virtual environment with Python 3.11**
 
-In our installation, we had to also manually build any examples we wanted to run. This can be done by running `./p4studio build <example_name>`. Also, the required Kernel modules were not automatically loaded, so we wrote a simple [script](scripts/load_kernel_modules.sh) and added it as a startup service.
+```bash
+# Install Python 3.11 and venv
+sudo apt update
+sudo apt install python3.11 python3.11-venv python3.11-dev
 
-Finally, we can run an example program on the switch using `./run_switchd.sh --arch tf2 -p <example_name>`. This should immediately run `bfshell` and you can interact with the program right away. Alternatively, you can run `./run_bfshell.sh` from another terminal.
+# Create a virtual environment with Python 3.11
+python3.11 -m venv ~/p4studio-venv
+source ~/p4studio-venv/bin/activate
 
-You can also run the tests for the example using `./run_p4_tests.sh --arch=tf2 --target=hw -p <example_name>`. Depending on the example, the test can verify whether you are able to write/modify/delete table entries. Be aware that most test cases **will fail** since they are using the P4 Packet Test Framework (PTF), which only generates packets on virtual interfaces.
+# Now run make setup while the venv is active
+make setup
+```
 
+### Installing open-p4studio
+
+This project now uses [open-p4studio](https://github.com/p4lang/open-p4studio), the open-source release of Intel P4 Studio SDE. **This is a required dependency and must be installed before running any other commands.**
+
+#### Quick Setup
+
+Clone this repository and run the automated setup:
+
+```bash
+git clone <your-repo-url>
+cd p4containerflow-tofino2
+make setup
+```
+
+This will:
+
+1. Initialize the `open-p4studio` submodule
+2. Install the P4 Studio SDE for Tofino 2 and 2M only (using the custom profile `p4studio-tofino2.yaml`)
+3. Create a setup script at `~/setup-open-p4studio.bash`
+
+After the setup completes, source the environment script:
+
+```bash
+source ~/setup-open-p4studio.bash
+```
+
+**Important**: You need to source this script in every new terminal session where you want to use the SDE tools. Consider adding it to your `~/.bashrc` or `~/.zshrc`:
+
+```bash
+echo "source ~/setup-open-p4studio.bash" >> ~/.zshrc
+```
+
+#### Manual Setup Steps
+
+If you prefer manual control, you can run the individual steps:
+
+```bash
+# 1. Initialize submodule
+make init-submodule
+
+# 2. Install P4 Studio with testing profile
+make install-p4studio
+
+# 3. Create setup environment script
+make setup-env
+```
+
+### Hardware-Specific Setup
+
+For running on actual Tofino 2 hardware (not the model), you will need additional components from Intel:
+
+- **BSP (Board Support Package)**: Contact Intel (intel.tofino.contact@intel.com) to obtain the BSP for your hardware
+- **ASIC-specific Serdes drivers**: Available from Intel RDC (Resource & Documentation Center) for authorized users
+- **Kernel modules**: The required kernel modules may not load automatically. Use the provided [script](scripts/load_kernel_modules.sh) and consider adding it as a startup service.
+
+For reference, our original hardware setup used SDE version `9.13.4`. The configuration file for that build is available in [p4studio-profile.yaml](scripts/p4studio-profile.yaml).
+
+### Customizing the Installation
+
+The `make setup` command uses a custom profile that installs only Tofino 2 and 2M support (see `p4studio-tofino2.yaml`). If you need a different configuration (e.g., hardware-only, additional Tofino versions, or additional features), you can:
+
+1. Use the interactive installer:
+
+```bash
+cd open-p4studio
+./install.sh
+```
+
+2. Or create/use a custom profile:
+
+```bash
+cd open-p4studio
+./p4studio/p4studio profile create my-profile.yaml
+# Edit my-profile.yaml as needed
+./p4studio/p4studio profile apply my-profile.yaml
+```
+
+Refer to the [open-p4studio README](open-p4studio/README.md) for detailed customization options.
 
 ## Rewriting a p4 program from v1model to t2na
 
 The load balancer program we are looking to deploy was written for the V1Model architecture. The Tofino 2 switch runs the Tofino 2 Native Architecture (T2NA), which has notable differences to V1Model, mainly the pipeline setup and available externs.
 
 In order to rewrite the program, we did the following:
+
 1. Adjusted the pipeline to T2NA ordering: (IngressParser -> Ingress -> IngressDeparser -> EgressParser -> Egress -> EgressDeparser).
 2. Adjusted parsers to properly parse tofino-specific metadata.
 3. Updated the hashing method to the T2NA version.
@@ -69,6 +156,7 @@ In order to rewrite the program, we did the following:
 5. Modeled load balancing using an ActionSelector and per-member action that rewrites the IPv4 destination; a separate forwarding table selects the egress port.
 
 ## Writing a control plane
+
 The control plane in `controller/` uses the Intel bfrt_grpc Python client to program the Tofino pipeline and exposes a tiny HTTP API.
 
 - Entry point: `controller/controller.py` (Flask app)
@@ -85,12 +173,14 @@ The control plane in `controller/` uses the Intel bfrt_grpc Python client to pro
   - `SwitchIngress.forward`: L3 forwarding from IPv4 dst to egress port.
 
 HTTP API
+
 - `POST /migrateNode`
   - Body: `{ "old_ipv4": "10.0.0.2", "new_ipv4": "10.0.0.4" }`
   - Effect: updates the action member to point to `new_ipv4` without changing group membership (connection-aware migration).
   - Example: `controller/cr.sh`.
 
 Notes
+
 - Additional endpoints referenced in `test/t2na_load_balancer_controller.py` (`/add_node`, `/update_node`) are commented out in `controller/controller.py`. That test will not pass unless you re-enable or adapt those endpoints.
 - The launcher `controller/run.sh` expects a working SDE installation and sets PYTHONPATH to include bfrt_grpc and related Python packages.
 
@@ -98,7 +188,8 @@ Notes
 
 There are two common ways to use this repo with Intel SDE:
 
-1) Build and run under your SDE workspace
+1. Build and run under your SDE workspace
+
 - Copy or symlink the program folder into your SDE examples path (e.g., `.../pkgsrc/p4-examples/p4_16_programs/t2na_load_balancer`).
 - Use your SDE’s `p4studio` with a profile similar to `scripts/p4studio-profile.yaml` (Tofino2, hardware target) to build the program.
 - Start the program on hardware:
@@ -109,7 +200,8 @@ There are two common ways to use this repo with Intel SDE:
   - `make switch` (starts switchd with `--arch tf2 -p t2na_load_balancer`)
   - `make test-dataplane`, `make test-controller` (invoke `run_p4_tests.sh` with paths under SDE pkgsrc). These paths assume the SDE example layout.
 
-2) Use only the control plane from this repo
+2. Use only the control plane from this repo
+
 - Ensure switchd is running with the compiled `t2na_load_balancer` pipeline bound.
 - Install Python deps for the controller:
   - `pip install -r controller/requirements.txt`
@@ -120,6 +212,7 @@ There are two common ways to use this repo with Intel SDE:
 ## Testing
 
 Dataplane tests (PTF)
+
 - `test/t2na_load_balancer_dataplane.py` contains tests for:
   - L3 forwarding (`forward` table)
   - Load balancing via ActionSelector (even distribution across members)
@@ -129,9 +222,34 @@ Dataplane tests (PTF)
 - On real hardware, packet generation is via PTF and may rely on virtual or test interfaces; many stock example tests in SDE aren’t meant for direct hardware ports. The tests here try to use `get_sw_ports()` to map ports, but availability depends on your environment.
 
 Controller test
+
 - `test/t2na_load_balancer_controller.py` exercises HTTP endpoints to adjust membership over time. Some endpoints in the test are currently disabled in the controller (see notes above), so expect failures unless you enable those routes or adapt the test.
 
 ## Troubleshooting
+
+### Setup and Installation Issues
+
+#### apt_pkg module not found after changing Python version
+
+If you changed your system's default Python version with `update-alternatives` and now get `ModuleNotFoundError: No module named 'apt_pkg'` when running apt commands:
+
+```bash
+# Restore the original Python version
+sudo update-alternatives --config python3
+# Select the Ubuntu default (usually Python 3.12 on Ubuntu 24.04, or 3.10 on Ubuntu 22.04)
+
+# Or manually fix the symlink
+sudo ln -sf /usr/bin/python3.12 /etc/alternatives/python3  # Adjust version as needed
+
+# Verify apt works again
+sudo apt update
+```
+
+Then use the virtual environment approach instead (see Python Requirements section above).
+
+#### Python version too new (3.12+)
+
+See the "Python Requirements" section under "Development setup" for solutions using virtual environments.
 
 ### run_switchd
 
@@ -143,5 +261,6 @@ Controller test
 - If `bfrt_python` doesn’t show your program, the pipeline may not be bound or the P4 name in `controller_config.json` doesn’t match the loaded pipeline.
 
 Additional notes
+
 - Dockerfile under `controller/` is currently out of date for this layout (it refers to a `switch_controller.py` filename that does not exist; use `bf_switch_controller.py`). Prefer running the controller directly on a host with SDE libs available.
 - The P4 program currently assumes IPv4 and TCP only and does not perform L2 MAC rewrites. Ensure your environment handles L2 appropriately or extend the program with MAC rewrite where needed.

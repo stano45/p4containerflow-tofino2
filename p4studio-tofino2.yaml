@@ -1,0 +1,12 @@
+global-options: { build_model: true }
+features:
+  drivers:
+    bfrt: true
+    bfrt-generic-flags: true
+    grpc: true
+    thrift-driver: true
+  p4-examples:
+    - p4-16-programs
+architectures:
+  - tofino2
+  - tofino2m

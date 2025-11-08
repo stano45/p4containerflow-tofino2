@@ -1,0 +1,6 @@
+[submodule "open-p4studio"]
+	path = open-p4studio
+	url = https://github.com/p4lang/open-p4studio.git
+	# Pinned to commit 0ec24969627926cf1c890e560bcc60a21add38a3
+	# To update: cd open-p4studio && git checkout <new-commit> && cd .. && git add open-p4studio
+
