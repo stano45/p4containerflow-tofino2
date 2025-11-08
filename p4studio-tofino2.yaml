@@ -9,4 +9,3 @@ features:
     - p4-16-programs
 architectures:
   - tofino2
-  - tofino2m
