@@ -7,15 +7,6 @@ check-python:
 	@python3 -c "import sys; v = sys.version_info; exit(0 if v.major == 3 and v.minor <= 11 else 1)" || \
 		(echo "ERROR: Python 3.11 or earlier is required (found $$(python3 --version))"; \
 		 echo "Python 3.12+ removed distutils which is required by open-p4studio."; \
-		 echo ""; \
-		 echo "Recommended solution: Use a virtual environment with Python 3.11"; \
-		 echo "  sudo apt install python3.11 python3.11-venv python3.11-dev"; \
-		 echo "  python3.11 -m venv ~/p4studio-venv"; \
-		 echo "  source ~/p4studio-venv/bin/activate"; \
-		 echo "  make setup"; \
-		 echo ""; \
-		 echo "WARNING: Do NOT change system Python with update-alternatives!"; \
-		 echo "This will break system tools like apt."; \
 		 exit 1)
 	@echo "Python version OK: $$(python3 --version)"
 

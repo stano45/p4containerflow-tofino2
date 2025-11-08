@@ -47,22 +47,7 @@ The Tofino 2 switch (for simplicity, we will refer to it as "the switch" from th
 
 The switch and the development machine are both connected to the same network, therefore we can simply use SSH to connect to the switch.
 
-**Python Requirements**: The open-p4studio build system requires Python 3.11 or earlier (Python 3.12+ removed the `distutils` module which is required by the build system). On Ubuntu 22.04, Python 3.10 is the default and will work fine.
-
-**Use a virtual environment with Python 3.11**
-
-```bash
-# Install Python 3.11 and venv
-sudo apt update
-sudo apt install python3.11 python3.11-venv python3.11-dev
-
-# Create a virtual environment with Python 3.11
-python3.11 -m venv ~/p4studio-venv
-source ~/p4studio-venv/bin/activate
-
-# Now run make setup while the venv is active
-make setup
-```
+**Python Requirements**: The open-p4studio build system requires Python 3.11 or earlier (Python 3.12+ removed the `distutils` module). On Ubuntu 22.04, Python 3.10 is the default and works fine.
 
 ### Installing open-p4studio
 
@@ -229,27 +214,9 @@ Controller test
 
 ### Setup and Installation Issues
 
-#### apt_pkg module not found after changing Python version
-
-If you changed your system's default Python version with `update-alternatives` and now get `ModuleNotFoundError: No module named 'apt_pkg'` when running apt commands:
-
-```bash
-# Restore the original Python version
-sudo update-alternatives --config python3
-# Select the Ubuntu default (usually Python 3.12 on Ubuntu 24.04, or 3.10 on Ubuntu 22.04)
-
-# Or manually fix the symlink
-sudo ln -sf /usr/bin/python3.12 /etc/alternatives/python3  # Adjust version as needed
-
-# Verify apt works again
-sudo apt update
-```
-
-Then use the virtual environment approach instead (see Python Requirements section above).
-
 #### Python version too new (3.12+)
 
-See the "Python Requirements" section under "Development setup" for solutions using virtual environments.
+The build requires Python 3.11 or earlier. Use your system's package manager to ensure Python 3.10 or 3.11 is installed and set as the default `python3`.
 
 ### run_switchd
 
