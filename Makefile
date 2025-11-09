@@ -27,7 +27,7 @@ setup: setup-env
 	@echo "  Then you can use the other make targets."
 
 build:
-	./p4studio/p4studio build t2na_load_balancer
+	./open-p4studio/p4studio build t2na_load_balancer
 
 model: build
 	./run_tofino_model.sh --arch tf2 -p t2na_load_balancer
