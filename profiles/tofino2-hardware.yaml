@@ -1,0 +1,16 @@
+global-options:
+  asic: true
+features:
+  bf-diags: {}
+  bf-platforms:
+    bsp-path: /path/to/bf-reference-bsp-9.13.4.tgz
+    newport: true
+  drivers:
+    tdi: false
+  p4-examples:
+    - p4-16-programs
+  switch:
+    profile: y2_tofino2
+    sai: true
+architectures:
+  - tofino2
