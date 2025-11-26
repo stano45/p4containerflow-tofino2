@@ -100,7 +100,7 @@ If you have all prerequisites ready, run the complete setup with a single comman
 
 ```bash
 # Clone the repository
-git clone <your-repo-url>
+git clone https://github.com/stano45/p4containerflow-tofino2/tree/main
 cd p4containerflow-tofino2
 
 # Run full hardware setup
