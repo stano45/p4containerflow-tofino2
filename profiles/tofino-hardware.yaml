@@ -1,0 +1,16 @@
+global-options:
+  asic: true
+features:
+  drivers:
+    bfrt: true
+    bfrt-generic-flags: true
+    grpc: true
+    p4rt: true
+    thrift-driver: true
+  p4-examples:
+    - p4-16-programs
+  switch:
+    profile: x1_tofino
+    sai: true
+architectures:
+  - tofino

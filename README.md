@@ -33,9 +33,10 @@ P4-based L3/TCP load balancer for Intel Tofino 2 (T2NA). The repo contains:
   - `t2na_load_balancer_dataplane.py`: End-to-end PTF tests for dataplane behavior (ECMP-like selection, SNAT, forwarding, dynamic updates via table mod).
   - `t2na_load_balancer_controller.py`: Controller-driven test that calls HTTP endpoints; note some endpoints are currently disabled in `controller.py` (see Testing section).
 - `scripts/`
-  - `p4studio-profile.yaml`: Reference P4Studio profile used to build with SDE 9.13.4 targeting Tofino 2 hardware.
   - `load_kernel_modules.sh`: Helper to load bf kernel modules on the switch.
   - `run_p4testgen.sh`: Example p4testgen invocation for generating PTF tests.
+- `profiles/`
+  - `tofino2-hardware.yaml`: Reference P4Studio profile used to build with SDE 9.13.4 targeting Tofino 2 hardware.
 - `diagrams/`: Diagram scripts (requires the `diagrams` Python package if you want to render).
 - `Makefile`: Convenience targets that assume an SDE-style directory layout (see Build and run).
 
@@ -48,7 +49,7 @@ The switch and the development machine are both connected to the same network, t
 
 In order to compile and run p4 programs on the switch, we need to install the P4 Software Development Environment (SDE). This is done via P4Studio (proprietary component provided by Intel). Again, refer to the Intel website for software artifacts. We used version `9.13.4` of the SDE (the latest version as of November 2024).
 
-After extracting the `bf-sde-x.y.z.tgz`, run P4Studio in interactive mode, and set the target to be the ASIC hardware (not ASIC model). For reference, we included the configuration file for our SDE build in [p4studio-profile.yaml](scripts/p4studio-profile.yaml).
+After extracting the `bf-sde-x.y.z.tgz`, run P4Studio in interactive mode, and set the target to be the ASIC hardware (not ASIC model). For reference, we included the configuration file for our SDE build in [tofino2-hardware.yaml](profiles/tofino2-hardware.yaml).
 
 In our installation, we had to also manually build any examples we wanted to run. This can be done by running `./p4studio build <example_name>`. Also, the required Kernel modules were not automatically loaded, so we wrote a simple [script](scripts/load_kernel_modules.sh) and added it as a startup service.
 
@@ -100,7 +101,7 @@ There are two common ways to use this repo with Intel SDE:
 
 1) Build and run under your SDE workspace
 - Copy or symlink the program folder into your SDE examples path (e.g., `.../pkgsrc/p4-examples/p4_16_programs/t2na_load_balancer`).
-- Use your SDE’s `p4studio` with a profile similar to `scripts/p4studio-profile.yaml` (Tofino2, hardware target) to build the program.
+- Use your SDE's `p4studio` with a profile similar to `profiles/tofino2-hardware.yaml` (Tofino2, hardware target) to build the program.
 - Start the program on hardware:
   - `./run_switchd.sh --arch tf2 -p t2na_load_balancer`
   - Optionally start `./run_bfshell.sh` in another terminal.
@@ -108,6 +109,8 @@ There are two common ways to use this repo with Intel SDE:
   - `make build` (calls `./p4studio/p4studio build t2na_load_balancer`)
   - `make switch` (starts switchd with `--arch tf2 -p t2na_load_balancer`)
   - `make test-dataplane`, `make test-controller` (invoke `run_p4_tests.sh` with paths under SDE pkgsrc). These paths assume the SDE example layout.
+  - `make link-p4studio SDE=/path/to/sde` (creates a symlink to this project in the SDE examples directory)
+  - `make apply-profile SDE=/path/to/sde PROFILE=profiles/tofino2-hardware.yaml` (applies a P4Studio profile; `PROFILE` defaults to `profiles/tofino2-hardware.yaml`)
 
 2) Use only the control plane from this repo
 - Ensure switchd is running with the compiled `t2na_load_balancer` pipeline bound.

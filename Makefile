@@ -1,5 +1,7 @@
 # SDE path can be overridden on command line: make link-p4studio SDE=/home/stan/sde
 SDE ?=
+# Profile path can be overridden: make apply-profile PROFILE=profiles/tofino2-hardware.yaml
+PROFILE ?= profiles/tofino2-hardware.yaml
 
 build:
 	./p4studio/p4studio build t2na_load_balancer
@@ -22,6 +24,19 @@ link-p4studio:
 	mkdir -p "$$PKGSRCDIR"; \
 	ln -sfn "$$PWD" "$$PKGSRCDIR/t2na_load_balancer" && echo "symlink created: $$PKGSRCDIR/t2na_load_balancer"
 
+apply-profile:
+	@# Usage: make apply-profile SDE=/path/to/sde PROFILE=profiles/tofino2-hardware.yaml
+	@if [ -z "$(SDE)" ]; then \
+	  echo "SDE path is not set. Usage: make apply-profile SDE=/path/to/sde PROFILE=path/to/profile.yaml"; \
+	  exit 1; \
+	fi; \
+	if [ -z "$(PROFILE)" ]; then \
+	  echo "PROFILE path is not set. Usage: make apply-profile SDE=/path/to/sde PROFILE=path/to/profile.yaml"; \
+	  exit 1; \
+	fi; \
+	echo "Applying profile $(PROFILE) using $(SDE)/p4studio/p4studio"; \
+	$(SDE)/p4studio/p4studio profile apply $(PROFILE)
+
 controller:
 	cd ./pkgsrc/p4-examples/p4_16_programs/t2na_load_balancer/controller && ./run.sh
 
@@ -31,4 +46,4 @@ test-dataplane:
 test-controller:
 	./run_p4_tests.sh --arch tf2 -t ./pkgsrc/p4-examples/p4_16_programs/t2na_load_balancer/tests -s t2na_load_balancer_controller -p t2na_load_balancer
 
-.PHONY: build model switch test-dataplane test-controller link-p4studio
+.PHONY: build model switch test-dataplane test-controller link-p4studio apply-profile
