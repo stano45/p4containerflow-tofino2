@@ -34,8 +34,9 @@ build-profile:
 	  echo "PROFILE path is not set. Usage: make build-profile SDE=/path/to/sde PROFILE=path/to/profile.yaml"; \
 	  exit 1; \
 	fi; \
-	echo "Applying profile $(PROFILE) using $(SDE)/p4studio/p4studio"; \
-	$(SDE)/p4studio/p4studio profile apply $(PROFILE)
+	PROFILE_PATH="$$PWD/$(PROFILE)"; \
+	echo "Applying profile $$PROFILE_PATH using $(SDE)/p4studio/p4studio"; \
+	cd "$(SDE)" && ./p4studio/p4studio profile apply "$$PROFILE_PATH"
 
 controller:
 	cd ./pkgsrc/p4-examples/p4_16_programs/t2na_load_balancer/controller && ./run.sh
