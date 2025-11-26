@@ -1,12 +1,12 @@
 global-options:
   asic: true
 features:
+  bf-diags: {}
+  bf-platforms:
+    bsp-path: /path/to/bf-reference-bsp-9.13.4.tgz
+    newport: true
   drivers:
-    bfrt: true
-    bfrt-generic-flags: true
-    grpc: true
-    p4rt: true
-    thrift-driver: true
+    tdi: false
   p4-examples:
     - p4-16-programs
   switch:
