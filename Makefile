@@ -1,3 +1,6 @@
+# SDE path can be overridden on command line: make link-p4studio SDE=/home/stan/sde
+SDE ?=
+
 build:
 	./p4studio/p4studio build t2na_load_balancer
 
@@ -8,12 +11,14 @@ switch:
 	./run_switchd.sh --arch tf2 -p t2na_load_balancer
 
 link-p4studio:
-	@# Use SDE env var only (SDE should point to the SDE root directory)
-	@if [ -z "$${SDE:-}" ]; then \
-	  echo "Environment variable SDE is not set. Set SDE to your SDE root (e.g. /opt/bf-sde)"; \
+	@# SDE path can be passed as argument: make link-p4studio SDE=/path/to/sde
+	@# Or set via environment variable SDE
+	@if [ -z "$(SDE)" ]; then \
+	  echo "SDE path is not set. Usage: make link-p4studio SDE=/path/to/sde"; \
+	  echo "Or set the SDE environment variable."; \
 	  exit 1; \
 	fi; \
-	PKGSRCDIR="$${SDE}/pkgsrc/p4-examples/p4_16_programs"; \
+	PKGSRCDIR="$(SDE)/pkgsrc/p4-examples/p4_16_programs"; \
 	mkdir -p "$$PKGSRCDIR"; \
 	ln -sfn "$$PWD" "$$PKGSRCDIR/t2na_load_balancer" && echo "symlink created: $$PKGSRCDIR/t2na_load_balancer"
 
