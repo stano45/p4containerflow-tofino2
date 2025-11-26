@@ -110,7 +110,7 @@ There are two common ways to use this repo with Intel SDE:
   - `make switch` (starts switchd with `--arch tf2 -p t2na_load_balancer`)
   - `make test-dataplane`, `make test-controller` (invoke `run_p4_tests.sh` with paths under SDE pkgsrc). These paths assume the SDE example layout.
   - `make link-p4studio SDE=/path/to/sde` (creates a symlink to this project in the SDE examples directory)
-  - `make apply-profile SDE=/path/to/sde PROFILE=profiles/tofino2-hardware.yaml` (applies a P4Studio profile; `PROFILE` defaults to `profiles/tofino2-hardware.yaml`)
+  - `make build-profile SDE=/path/to/sde PROFILE=profiles/tofino2-hardware.yaml` (applies a P4Studio profile; `PROFILE` defaults to `profiles/tofino2-hardware.yaml`)
 
 2) Use only the control plane from this repo
 - Ensure switchd is running with the compiled `t2na_load_balancer` pipeline bound.
