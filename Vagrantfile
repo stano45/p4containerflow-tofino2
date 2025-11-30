@@ -13,15 +13,8 @@ Vagrant.configure("2") do |config|
     vb.cpus = 10
   end
   
-  config.vm.synced_folder ".", "/home/vagrant/p4containerflow-tofino2",
-    rsync__exclude: [
-      "open-p4studio/build/",
-      "open-p4studio/install/",
-      ".git/"
-    ]
-  
-  # Basic provisioning - install dependencies only
-  config.vm.provision "shell", env: {"DEBIAN_FRONTEND" => "noninteractive"}, inline: <<-SHELL
+  # Provision as root - install dependencies, clone repo, and run setup
+  config.vm.provision "shell", env: {"DEBIAN_FRONTEND" => "noninteractive", "PYTHONUNBUFFERED" => "1"}, inline: <<-SHELL
     set -e
     
     echo "=== Updating system packages ==="
@@ -36,43 +29,32 @@ Vagrant.configure("2") do |config|
       python3-pip \
       python3-dev
     
-    echo "=== Creating setup script ==="
-    cat > /home/vagrant/run_setup.sh <<'SETUPSCRIPT'
-#!/bin/bash
-set -e
-
-export PYTHONUNBUFFERED=1
-
-cd /home/vagrant/p4containerflow-tofino2
-
-echo "=== Cleaning any existing build artifacts ==="
-cd open-p4studio && rm -rf build/ install/
-cd ..
-
-echo "=== Running model setup ==="
-make setup-model PROFILE=profiles/tofino2-model.yaml
-
-echo ""
-echo "=== Setup complete! ==="
-echo "Source the environment with: source ~/setup-open-p4studio.bash"
-echo ""
-echo "To build and run:"
-echo "  make build"
-echo "  make model"
-SETUPSCRIPT
+    echo "=== Cloning repository ==="
+    if [ ! -d "/home/vagrant/p4containerflow-tofino2" ]; then
+      git clone https://github.com/stano45/p4containerflow-tofino2.git /home/vagrant/p4containerflow-tofino2
+      chown -R vagrant:vagrant /home/vagrant/p4containerflow-tofino2
+    else
+      echo "Repository already exists, pulling latest changes..."
+      cd /home/vagrant/p4containerflow-tofino2
+      git pull
+      chown -R vagrant:vagrant /home/vagrant/p4containerflow-tofino2
+    fi
     
-    chmod +x /home/vagrant/run_setup.sh
-    chown vagrant:vagrant /home/vagrant/run_setup.sh
+    cd /home/vagrant/p4containerflow-tofino2
+    
+    echo "=== Running model setup ==="
+    make setup-model PROFILE=profiles/tofino2-model.yaml
+    
+    echo "=== Creating environment setup script for vagrant user ==="
+    cd open-p4studio && ./create-setup-script.sh > /home/vagrant/setup-open-p4studio.bash
+    chown vagrant:vagrant /home/vagrant/setup-open-p4studio.bash
     
     echo ""
-    echo "=========================================="
-    echo "VM provisioned successfully!"
-    echo "To complete setup, SSH into the VM and run:"
-    echo "  vagrant ssh"
-    echo "  ./run_setup.sh"
-    echo "=========================================="
+    echo "=== Setup complete! ==="
+    echo "Environment will be auto-sourced on login."
   SHELL
   
+  # Add auto-source to bashrc
   config.vm.provision "shell", privileged: false, inline: <<-SHELL
     if ! grep -q "setup-open-p4studio.bash" ~/.bashrc; then
       echo "" >> ~/.bashrc

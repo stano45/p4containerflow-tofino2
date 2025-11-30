@@ -295,11 +295,11 @@ setup-hw: init-submodule extract-sde setup-rdc link-p4studio config-profile extr
 
 build:
 	@echo "=== Building t2na_load_balancer ==="
-	@if [ ! -f "open-p4studio/p4studio" ]; then \
+	@if [ ! -f "open-p4studio/p4studio/p4studio" ]; then \
 		echo "Using p4studio from PATH..."; \
 		p4studio build t2na_load_balancer; \
 	else \
-		./open-p4studio/p4studio build t2na_load_balancer; \
+		./open-p4studio/p4studio/p4studio build t2na_load_balancer; \
 	fi
 
 model: build
