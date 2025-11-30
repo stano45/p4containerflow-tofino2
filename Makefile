@@ -139,8 +139,8 @@ link-p4studio:
 	fi
 	@PKGSRCDIR="$$PWD/open-p4studio/pkgsrc/p4-examples/p4_16_programs"; \
 	mkdir -p "$$PKGSRCDIR"; \
-	ln -sfn "$$PWD" "$$PKGSRCDIR/t2na_load_balancer"; \
-	echo "Symlink created: $$PKGSRCDIR/t2na_load_balancer -> $$PWD"
+	ln -sfn "$$PWD/load_balancer" "$$PKGSRCDIR/t2na_load_balancer"; \
+	echo "Symlink created: $$PKGSRCDIR/t2na_load_balancer -> $$PWD/load_balancer"
 
 config-profile:
 	@if [ -z "$(BSP)" ]; then \
