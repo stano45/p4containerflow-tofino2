@@ -141,6 +141,9 @@ link-p4studio:
 	mkdir -p "$$PKGSRCDIR"; \
 	ln -sfn "$$PWD/load_balancer" "$$PKGSRCDIR/t2na_load_balancer"; \
 	echo "Symlink created: $$PKGSRCDIR/t2na_load_balancer -> $$PWD/load_balancer"
+	@echo "=== Patching CMakeLists.txt ==="
+	@chmod +x scripts/patch_cmake.sh
+	@./scripts/patch_cmake.sh
 
 config-profile:
 	@if [ -z "$(BSP)" ]; then \
