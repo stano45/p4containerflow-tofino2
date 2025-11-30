@@ -299,7 +299,8 @@ setup-hw: init-submodule extract-sde setup-rdc config-profile extract-bsp build-
 P4_PROGRAM = load_balancer/t2na_load_balancer.p4
 BUILD_DIR = build/t2na_load_balancer
 P4C = $(SDE_INSTALL)/bin/p4c-barefoot
-P4C_FLAGS = --arch $(ARCH) \
+P4C_FLAGS = --target tofino2 \
+            --arch t2na \
             --p4runtime-files $(BUILD_DIR)/p4info.txt \
             --bf-rt-schema $(BUILD_DIR)/bf-rt.json \
             -o $(BUILD_DIR)
@@ -315,7 +316,7 @@ build:
 		exit 1; \
 	fi
 	@mkdir -p $(BUILD_DIR)
-	@echo "Compiling $(P4_PROGRAM) for $(ARCH)..."
+	@echo "Compiling $(P4_PROGRAM) for Tofino2 (t2na)..."
 	$(P4C) $(P4C_FLAGS) $(P4_PROGRAM)
 	@echo "Build complete: $(BUILD_DIR)"
 
