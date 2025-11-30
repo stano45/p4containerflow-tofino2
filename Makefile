@@ -338,6 +338,7 @@ install: build
 	echo "Installing to $$INSTALL_DIR"; \
 	sudo mkdir -p "$$INSTALL_DIR"; \
 	sudo cp -r $(BUILD_DIR)/* "$$INSTALL_DIR/"; \
+	sudo cp load_balancer/t2na_load_balancer.conf "$(SDE_INSTALL)/share/p4/targets/tofino2/t2na_load_balancer.conf"; \
 	echo "Installation complete"
 
 model: install
