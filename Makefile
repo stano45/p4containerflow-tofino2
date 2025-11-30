@@ -328,9 +328,25 @@ clean-build:
 	@echo "=== Cleaning build directory ==="
 	rm -rf build/
 
-model: build
-	@echo "=== Running Tofino model (ARCH=$(ARCH)) ==="
-	run_tofino_model.sh --arch $(ARCH) -p t2na_load_balancer
+install: build
+	@echo "=== Installing t2na_load_balancer to SDE ==="
+	@if [ -z "$(SDE_INSTALL)" ]; then \
+		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
+		exit 1; \
+	fi
+	@INSTALL_DIR="$(SDE_INSTALL)/share/p4/targets/tofino2/t2na_load_balancer"; \
+	echo "Installing to $$INSTALL_DIR"; \
+	mkdir -p "$$INSTALL_DIR"; \
+	cp -r $(BUILD_DIR)/* "$$INSTALL_DIR/"; \
+	echo "Installation complete"
+
+model: install
+	@echo "=== Running Tofino model ==="
+	@if [ -z "$(SDE_INSTALL)" ]; then \
+		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
+		exit 1; \
+	fi
+	@cd open-p4studio && ./run_tofino_model.sh --arch tf2 -p t2na_load_balancer
 
 switch:
 	@echo "=== Running switchd on hardware (ARCH=$(ARCH)) ==="
@@ -340,17 +356,17 @@ switch:
 # Test Targets
 # -----------------------------------------------------------------------------
 
-test-dataplane:
-	@echo "=== Running dataplane tests (ARCH=$(ARCH)) ==="
-	run_p4_tests.sh --arch $(ARCH) \
-		-t ./test \
+test-dataplane: install
+	@echo "=== Running dataplane tests ==="
+	@cd open-p4studio && ./run_p4_tests.sh --arch tf2 \
+		-t ../test \
 		-s t2na_load_balancer_dataplane \
 		-p t2na_load_balancer
 
-test-controller:
-	@echo "=== Running controller tests (ARCH=$(ARCH)) ==="
-	run_p4_tests.sh --arch $(ARCH) \
-		-t ./test \
+test-controller: install
+	@echo "=== Running controller tests ==="
+	@cd open-p4studio && ./run_p4_tests.sh --arch tf2 \
+		-t ../test \
 		-s t2na_load_balancer_controller \
 		-p t2na_load_balancer
 
@@ -368,6 +384,6 @@ controller:
 
 .PHONY: init-submodule check-python setup-env \
         extract-sde setup-rdc config-profile extract-bsp build-profile setup-model setup-hw \
-        build model switch clean-build \
+        build install model switch clean-build \
         test-dataplane test-controller \
         controller clean help
