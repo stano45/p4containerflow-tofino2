@@ -194,6 +194,11 @@ extract-bsp:
 			exit 1; \
 		fi && \
 		tar -xzf "$$PLATFORM_TGZ" -C open-p4studio/pkgsrc && \
+		EXTRACTED_DIR=$$(find open-p4studio/pkgsrc -maxdepth 1 -name "bf-platforms-*" -type d | head -1) && \
+		if [ -n "$$EXTRACTED_DIR" ] && [ "$$EXTRACTED_DIR" != "open-p4studio/pkgsrc/bf-platforms" ]; then \
+			echo "Renaming $$EXTRACTED_DIR to open-p4studio/pkgsrc/bf-platforms"; \
+			mv "$$EXTRACTED_DIR" open-p4studio/pkgsrc/bf-platforms; \
+		fi && \
 		rm -rf "$$TMPDIR"; \
 	elif [ -d "$(BSP)" ]; then \
 		echo "BSP is a directory, extracting from packages..."; \
@@ -202,7 +207,12 @@ extract-bsp:
 			echo "ERROR: Could not find bf-platforms tarball in $(BSP)/packages"; \
 			exit 1; \
 		fi && \
-		tar -xzf "$$PLATFORM_TGZ" -C open-p4studio/pkgsrc; \
+		tar -xzf "$$PLATFORM_TGZ" -C open-p4studio/pkgsrc && \
+		EXTRACTED_DIR=$$(find open-p4studio/pkgsrc -maxdepth 1 -name "bf-platforms-*" -type d | head -1) && \
+		if [ -n "$$EXTRACTED_DIR" ] && [ "$$EXTRACTED_DIR" != "open-p4studio/pkgsrc/bf-platforms" ]; then \
+			echo "Renaming $$EXTRACTED_DIR to open-p4studio/pkgsrc/bf-platforms"; \
+			mv "$$EXTRACTED_DIR" open-p4studio/pkgsrc/bf-platforms; \
+		fi; \
 	else \
 		echo "ERROR: BSP path does not exist: $(BSP)"; \
 		exit 1; \
