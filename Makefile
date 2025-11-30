@@ -336,8 +336,8 @@ install: build
 	fi
 	@INSTALL_DIR="$(SDE_INSTALL)/share/p4/targets/tofino2/t2na_load_balancer"; \
 	echo "Installing to $$INSTALL_DIR"; \
-	mkdir -p "$$INSTALL_DIR"; \
-	cp -r $(BUILD_DIR)/* "$$INSTALL_DIR/"; \
+	sudo mkdir -p "$$INSTALL_DIR"; \
+	sudo cp -r $(BUILD_DIR)/* "$$INSTALL_DIR/"; \
 	echo "Installation complete"
 
 model: install
@@ -346,7 +346,7 @@ model: install
 		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
 		exit 1; \
 	fi
-	@cd open-p4studio && ./run_tofino_model.sh --arch tf2 -p t2na_load_balancer
+	@cd open-p4studio && sudo ./run_tofino_model.sh --arch tf2 -p t2na_load_balancer
 
 switch:
 	@echo "=== Running switchd on hardware (ARCH=$(ARCH)) ==="
@@ -358,14 +358,14 @@ switch:
 
 test-dataplane: install
 	@echo "=== Running dataplane tests ==="
-	@cd open-p4studio && ./run_p4_tests.sh --arch tf2 \
+	@cd open-p4studio && sudo ./run_p4_tests.sh --arch tf2 \
 		-t ../test \
 		-s t2na_load_balancer_dataplane \
 		-p t2na_load_balancer
 
 test-controller: install
 	@echo "=== Running controller tests ==="
-	@cd open-p4studio && ./run_p4_tests.sh --arch tf2 \
+	@cd open-p4studio && sudo ./run_p4_tests.sh --arch tf2 \
 		-t ../test \
 		-s t2na_load_balancer_controller \
 		-p t2na_load_balancer
