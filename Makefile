@@ -254,7 +254,7 @@ build-profile: check-python
 # Convenience Targets
 # -----------------------------------------------------------------------------
 
-setup-model: init-submodule link-p4studio build-profile setup-env
+setup-model: init-submodule build-profile setup-env
 	@echo ""
 	@echo "============================================================"
 	@echo " Model Setup Complete!"
@@ -273,7 +273,7 @@ setup-model: init-submodule link-p4studio build-profile setup-env
 	@echo ""
 	@echo "============================================================"
 
-setup-hw: init-submodule extract-sde setup-rdc link-p4studio config-profile extract-bsp build-profile setup-env
+setup-hw: init-submodule extract-sde setup-rdc config-profile extract-bsp build-profile setup-env
 	@echo ""
 	@echo "============================================================"
 	@echo " Hardware Setup Complete!"
@@ -296,14 +296,32 @@ setup-hw: init-submodule extract-sde setup-rdc link-p4studio config-profile extr
 # Build and Run Targets
 # -----------------------------------------------------------------------------
 
+P4_PROGRAM = load_balancer/t2na_load_balancer.p4
+BUILD_DIR = build/t2na_load_balancer
+P4C = $(SDE_INSTALL)/bin/p4c-barefoot
+P4C_FLAGS = --arch $(ARCH) \
+            --p4runtime-files $(BUILD_DIR)/p4info.txt \
+            --bf-rt-schema $(BUILD_DIR)/bf-rt.json \
+            -o $(BUILD_DIR)
+
 build:
 	@echo "=== Building t2na_load_balancer ==="
-	@if [ ! -f "open-p4studio/p4studio/p4studio" ]; then \
-		echo "Using p4studio from PATH..."; \
-		p4studio build t2na_load_balancer; \
-	else \
-		./open-p4studio/p4studio/p4studio build t2na_load_balancer; \
+	@if [ -z "$(SDE_INSTALL)" ]; then \
+		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
+		exit 1; \
 	fi
+	@if [ ! -f "$(P4C)" ]; then \
+		echo "ERROR: p4c-barefoot not found at $(P4C)"; \
+		exit 1; \
+	fi
+	@mkdir -p $(BUILD_DIR)
+	@echo "Compiling $(P4_PROGRAM) for $(ARCH)..."
+	$(P4C) $(P4C_FLAGS) $(P4_PROGRAM)
+	@echo "Build complete: $(BUILD_DIR)"
+
+clean-build:
+	@echo "=== Cleaning build directory ==="
+	rm -rf build/
 
 model: build
 	@echo "=== Running Tofino model (ARCH=$(ARCH)) ==="
@@ -344,7 +362,7 @@ controller:
 # -----------------------------------------------------------------------------
 
 .PHONY: init-submodule check-python setup-env \
-        extract-sde setup-rdc link-p4studio config-profile extract-bsp build-profile setup-model setup-hw \
-        build model switch \
+        extract-sde setup-rdc config-profile extract-bsp build-profile setup-model setup-hw \
+        build model switch clean-build \
         test-dataplane test-controller \
-        controller
+        controller clean help
