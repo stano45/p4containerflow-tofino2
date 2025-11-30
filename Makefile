@@ -166,6 +166,38 @@ config-profile:
 	@sed -i "s|bsp-path:.*|bsp-path: $(BSP)|" "$(PROFILE)"
 	@echo "Done. Profile updated with BSP path."
 
+extract-bsp:
+	@if [ -z "$(BSP)" ]; then \
+		echo "ERROR: BSP is not set."; \
+		echo ""; \
+		echo "Usage: make extract-bsp BSP=/path/to/bf-reference-bsp-X.Y.Z"; \
+		echo "       or BSP=/path/to/bf-reference-bsp-X.Y.Z.tgz"; \
+		exit 1; \
+	fi
+	@echo "=== Extracting BSP to pkgsrc/bf-platforms ==="
+	@mkdir -p open-p4studio/pkgsrc
+	@if [ -f "$(BSP)" ]; then \
+		echo "BSP is a tarball, extracting wrapper first..."; \
+		TMPDIR=$$(mktemp -d); \
+		tar -xzf "$(BSP)" -C "$$TMPDIR"; \
+		BSP_DIR=$$(find "$$TMPDIR" -name "bf-reference-bsp-*" -type d | head -1); \
+		if [ -z "$$BSP_DIR" ]; then \
+			echo "ERROR: Could not find bf-reference-bsp directory in tarball"; \
+			rm -rf "$$TMPDIR"; \
+			exit 1; \
+		fi; \
+		echo "Extracting bf-platforms from $$BSP_DIR/packages..."; \
+		find "$$BSP_DIR/packages" -name "bf-platforms-*.tgz" -exec tar -xzf {} -C open-p4studio/pkgsrc \;; \
+		rm -rf "$$TMPDIR"; \
+	elif [ -d "$(BSP)" ]; then \
+		echo "BSP is a directory, extracting from packages..."; \
+		find "$(BSP)/packages" -name "bf-platforms-*.tgz" -exec tar -xzf {} -C open-p4studio/pkgsrc \;; \
+	else \
+		echo "ERROR: BSP path does not exist: $(BSP)"; \
+		exit 1; \
+	fi
+	@echo "Done. BSP extracted successfully."
+
 build-profile: check-python
 	@if [ ! -f "$(PROFILE)" ]; then \
 		echo "ERROR: Profile file does not exist: $(PROFILE)"; \
@@ -175,6 +207,12 @@ build-profile: check-python
 		echo "ERROR: open-p4studio/p4studio/p4studio not found."; \
 		echo "Run 'make init-submodule' first."; \
 		exit 1; \
+	fi
+	@if [ -n "$(BSP)" ]; then \
+		echo "=== Updating profile with BSP path ==="; \
+		$(MAKE) config-profile BSP="$(BSP)" PROFILE="$(PROFILE)"; \
+		echo "=== Extracting BSP ==="; \
+		$(MAKE) extract-bsp BSP="$(BSP)"; \
 	fi
 	@echo "=== Applying p4studio profile ==="
 	@echo "Profile: $(PROFILE)"
@@ -190,7 +228,7 @@ build-profile: check-python
 # Convenience Target: Full Hardware Setup
 # -----------------------------------------------------------------------------
 
-setup-hw: init-submodule extract-sde setup-rdc link-p4studio config-profile build-profile setup-env
+setup-hw: init-submodule extract-sde setup-rdc link-p4studio config-profile extract-bsp build-profile setup-env
 	@echo ""
 	@echo "============================================================"
 	@echo " Hardware Setup Complete!"
@@ -261,7 +299,7 @@ controller:
 # -----------------------------------------------------------------------------
 
 .PHONY: init-submodule check-python setup-env \
-        extract-sde setup-rdc link-p4studio config-profile build-profile setup-hw \
+        extract-sde setup-rdc link-p4studio config-profile extract-bsp build-profile setup-hw \
         build model switch \
         test-dataplane test-controller \
         controller
