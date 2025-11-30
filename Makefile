@@ -197,6 +197,7 @@ extract-bsp:
 		EXTRACTED_DIR=$$(find open-p4studio/pkgsrc -maxdepth 1 -name "bf-platforms-*" -type d | head -1) && \
 		if [ -n "$$EXTRACTED_DIR" ] && [ "$$EXTRACTED_DIR" != "open-p4studio/pkgsrc/bf-platforms" ]; then \
 			echo "Renaming $$EXTRACTED_DIR to open-p4studio/pkgsrc/bf-platforms"; \
+			rm -rf open-p4studio/pkgsrc/bf-platforms; \
 			mv "$$EXTRACTED_DIR" open-p4studio/pkgsrc/bf-platforms; \
 		fi && \
 		rm -rf "$$TMPDIR"; \
@@ -211,6 +212,7 @@ extract-bsp:
 		EXTRACTED_DIR=$$(find open-p4studio/pkgsrc -maxdepth 1 -name "bf-platforms-*" -type d | head -1) && \
 		if [ -n "$$EXTRACTED_DIR" ] && [ "$$EXTRACTED_DIR" != "open-p4studio/pkgsrc/bf-platforms" ]; then \
 			echo "Renaming $$EXTRACTED_DIR to open-p4studio/pkgsrc/bf-platforms"; \
+			rm -rf open-p4studio/pkgsrc/bf-platforms; \
 			mv "$$EXTRACTED_DIR" open-p4studio/pkgsrc/bf-platforms; \
 		fi; \
 	else \
