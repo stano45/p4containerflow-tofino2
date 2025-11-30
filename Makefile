@@ -315,6 +315,10 @@ build:
 		echo "ERROR: p4c-barefoot not found at $(P4C)"; \
 		exit 1; \
 	fi
+	@if [ ! -d "load_balancer/common" ]; then \
+		echo "Creating symlink to common P4 includes..."; \
+		ln -sf ../open-p4studio/pkgsrc/p4-examples/p4_16_programs/common load_balancer/common; \
+	fi
 	@mkdir -p $(BUILD_DIR)
 	@echo "Compiling $(P4_PROGRAM) for Tofino2 (t2na)..."
 	$(P4C) $(P4C_FLAGS) $(P4_PROGRAM)
