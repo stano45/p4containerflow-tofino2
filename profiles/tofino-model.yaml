@@ -1,0 +1,11 @@
+global-options: {}
+features:
+  drivers:
+    bfrt: true
+    bfrt-generic-flags: false
+    grpc: true
+    thrift-driver: true
+  p4-examples:
+    - p4-16-programs
+architectures:
+  - tofino

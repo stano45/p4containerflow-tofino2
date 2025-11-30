@@ -49,12 +49,16 @@ echo "=== Cleaning any existing build artifacts ==="
 cd open-p4studio && rm -rf build/ install/
 cd ..
 
-echo "=== Running make setup ==="
-make setup
+echo "=== Running model setup ==="
+make setup-model PROFILE=profiles/tofino2-model.yaml
 
 echo ""
 echo "=== Setup complete! ==="
 echo "Source the environment with: source ~/setup-open-p4studio.bash"
+echo ""
+echo "To build and run:"
+echo "  make build"
+echo "  make model"
 SETUPSCRIPT
     
     chmod +x /home/vagrant/run_setup.sh

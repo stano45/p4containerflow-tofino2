@@ -178,20 +178,31 @@ extract-bsp:
 	@mkdir -p open-p4studio/pkgsrc
 	@if [ -f "$(BSP)" ]; then \
 		echo "BSP is a tarball, extracting wrapper first..."; \
-		TMPDIR=$$(mktemp -d); \
-		tar -xzf "$(BSP)" -C "$$TMPDIR"; \
-		BSP_DIR=$$(find "$$TMPDIR" -name "bf-reference-bsp-*" -type d | head -1); \
+		TMPDIR=$$(mktemp -d) && \
+		tar -xzf "$(BSP)" -C "$$TMPDIR" && \
+		BSP_DIR=$$(find "$$TMPDIR" -name "bf-reference-bsp-*" -type d | head -1) && \
 		if [ -z "$$BSP_DIR" ]; then \
 			echo "ERROR: Could not find bf-reference-bsp directory in tarball"; \
 			rm -rf "$$TMPDIR"; \
 			exit 1; \
-		fi; \
-		echo "Extracting bf-platforms from $$BSP_DIR/packages..."; \
-		find "$$BSP_DIR/packages" -name "bf-platforms-*.tgz" -exec tar -xzf {} -C open-p4studio/pkgsrc \;; \
+		fi && \
+		echo "Extracting bf-platforms from $$BSP_DIR/packages..." && \
+		PLATFORM_TGZ=$$(find "$$BSP_DIR/packages" -name "bf-platforms-*.tgz" | head -1) && \
+		if [ -z "$$PLATFORM_TGZ" ]; then \
+			echo "ERROR: Could not find bf-platforms tarball in $$BSP_DIR/packages"; \
+			rm -rf "$$TMPDIR"; \
+			exit 1; \
+		fi && \
+		tar -xzf "$$PLATFORM_TGZ" -C open-p4studio/pkgsrc && \
 		rm -rf "$$TMPDIR"; \
 	elif [ -d "$(BSP)" ]; then \
 		echo "BSP is a directory, extracting from packages..."; \
-		find "$(BSP)/packages" -name "bf-platforms-*.tgz" -exec tar -xzf {} -C open-p4studio/pkgsrc \;; \
+		PLATFORM_TGZ=$$(find "$(BSP)/packages" -name "bf-platforms-*.tgz" | head -1) && \
+		if [ -z "$$PLATFORM_TGZ" ]; then \
+			echo "ERROR: Could not find bf-platforms tarball in $(BSP)/packages"; \
+			exit 1; \
+		fi && \
+		tar -xzf "$$PLATFORM_TGZ" -C open-p4studio/pkgsrc; \
 	else \
 		echo "ERROR: BSP path does not exist: $(BSP)"; \
 		exit 1; \
@@ -225,8 +236,27 @@ build-profile: check-python
 	@echo "before running build or switch targets."
 
 # -----------------------------------------------------------------------------
-# Convenience Target: Full Hardware Setup
+# Convenience Targets
 # -----------------------------------------------------------------------------
+
+setup-model: init-submodule link-p4studio build-profile setup-env
+	@echo ""
+	@echo "============================================================"
+	@echo " Model Setup Complete!"
+	@echo "============================================================"
+	@echo ""
+	@echo " Next steps:"
+	@echo ""
+	@echo "   1. Source the environment:"
+	@echo "      source ~/setup-open-p4studio.bash"
+	@echo ""
+	@echo "   2. Build the P4 program:"
+	@echo "      make build"
+	@echo ""
+	@echo "   3. Run on model:"
+	@echo "      make model ARCH=$(ARCH)"
+	@echo ""
+	@echo "============================================================"
 
 setup-hw: init-submodule extract-sde setup-rdc link-p4studio config-profile extract-bsp build-profile setup-env
 	@echo ""
@@ -299,7 +329,7 @@ controller:
 # -----------------------------------------------------------------------------
 
 .PHONY: init-submodule check-python setup-env \
-        extract-sde setup-rdc link-p4studio config-profile extract-bsp build-profile setup-hw \
+        extract-sde setup-rdc link-p4studio config-profile extract-bsp build-profile setup-model setup-hw \
         build model switch \
         test-dataplane test-controller \
         controller
