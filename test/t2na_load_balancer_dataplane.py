@@ -610,7 +610,9 @@ class TestPortChange(AbstractTest):
         self.serverPorts = [swports[i + 1] for i in range(self.numServers)]
         self.serverIps = [f"10.0.0.{i+1}" for i in range(self.numServers)]
         self.numPackets = 100
-        self.maxImbalance = 0.2
+        # Higher tolerance because we only send ~33 packets per phase,
+        # which can have natural variance > 20%
+        self.maxImbalance = 0.35
         self.serverCounters = [0 for _ in range(self.numServers)]
         self.serverTcpPort = 12345
 
