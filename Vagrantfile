@@ -9,8 +9,8 @@ Vagrant.configure("2") do |config|
   
   config.vm.provider "virtualbox" do |vb|
     vb.name = "p4containerflow-tofino2"
-    vb.memory = "32768"
-    vb.cpus = 10
+    vb.memory = "16384"
+    vb.cpus = 8
   end
   
   # Provision as root - install dependencies, clone repo, and run setup
