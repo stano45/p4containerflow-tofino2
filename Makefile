@@ -358,6 +358,15 @@ clean-build:
 	@echo "=== Cleaning build directory ==="
 	rm -rf build/
 
+clean-sde:
+	@echo "=== Cleaning SDE build directory ==="
+	rm -rf open-p4studio/build/
+
+rebuild-sde: clean-sde build-profile
+	@echo "=== SDE rebuild complete ==="
+	@echo "Don't forget to copy bfas:"
+	@echo "  cp open-p4studio/build/pkgsrc/p4-compilers/p4c/bfas \$$SDE_INSTALL/bin/bfas"
+
 install: build
 	@echo "=== Installing $(PROGRAM_NAME) (ARCH=$(ARCH)) to SDE ==="
 	@if [ -z "$(SDE_INSTALL)" ]; then \
