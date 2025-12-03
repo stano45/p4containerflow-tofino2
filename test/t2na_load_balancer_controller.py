@@ -1,3 +1,5 @@
+import json
+import os
 import random
 from bfruntime_client_base_tests import BfRuntimeTest
 from p4testutils.misc_utils import get_logger, get_sw_ports, simple_tcp_packet
@@ -14,6 +16,15 @@ logger = get_logger()
 swports = get_sw_ports()
 
 print("SW Ports: ", swports)
+
+# Load controller config to get node/port mappings
+CONFIG_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "controller", "controller_config.json"
+)
+with open(CONFIG_PATH, "r") as f:
+    _configs = json.load(f)
+    # Find the master switch config
+    MASTER_CONFIG = next(c for c in _configs if c.get("master", False))
 
 
 class AbstractTest(BfRuntimeTest):
@@ -91,22 +102,47 @@ class TestController(AbstractTest):
 
     def setUp(self):
         super().setUp()
-        self.clientPort = swports[0]
-        self.serverPorts = [swports[1], swports[2], swports[3], swports[4]]
+
+        # Load configuration from controller_config.json
+        nodes = MASTER_CONFIG["nodes"]
+        self.loadBalancerIp = MASTER_CONFIG["load_balancer_ip"]
+
+        # Build node mappings from config
+        self.nodesByIp = {node["ipv4"]: node for node in nodes}
+
+        # Find client (non-LB node, first one) and LB nodes
+        self.lbNodes = [n for n in nodes if n.get("is_lb_node", False)]
+        clientNodes = [n for n in nodes if not n.get("is_lb_node", False)]
+
+        # Client is the first non-LB node
+        self.clientIp = clientNodes[0]["ipv4"]
+        self.clientPort = clientNodes[0]["sw_port"]
+
+        # LB node IPs and ports
+        self.lbNodeIps = [n["ipv4"] for n in self.lbNodes]
+        self.lbNodePorts = [n["sw_port"] for n in self.lbNodes]
+
         self.numPackets = 300
         self.maxImbalancePercent = 20
         self.server1Counter = 0
         self.server2Counter = 0
         self.serverTcpPort = 25565
 
-    def setupCtrlPlane(self):
-        # Nodes are now pre-configured via the controller's config file.
-        # The controller initializes nodes from the "nodes" field in the master switch config.
-        # Expected initial nodes: 10.0.0.0 (client), 10.0.0.2, 10.0.0.3 (LB servers)
         logger.info(
-            "Setting up port change traffic balancing: Client port: %s, Server ports: %s",
+            "Loaded config: client=%s (port %d), LB nodes=%s (ports %s), VIP=%s",
+            self.clientIp,
             self.clientPort,
-            self.serverPorts,
+            self.lbNodeIps,
+            self.lbNodePorts,
+            self.loadBalancerIp,
+        )
+
+    def setupCtrlPlane(self):
+        # Nodes are pre-configured via the controller's config file.
+        logger.info(
+            "Setting up test: Client port: %s, LB node ports: %s",
+            self.clientPort,
+            self.lbNodePorts,
         )
         logger.info("Nodes should be pre-configured via controller config file")
 
@@ -116,20 +152,21 @@ class TestController(AbstractTest):
             # Random source port
             clientTcpPort = random.randint(1024, 65535)
 
+            # Client sends to the load balancer VIP
             clientPkt = simple_tcp_packet(
-                ip_src="10.0.0.0",
-                ip_dst="10.0.0.1",
+                ip_src=self.clientIp,
+                ip_dst=self.loadBalancerIp,
                 tcp_sport=clientTcpPort,
                 tcp_dport=self.serverTcpPort,
             )
             expectedPktToServer1 = simple_tcp_packet(
-                ip_src="10.0.0.0",
+                ip_src=self.clientIp,
                 ip_dst=server_ips[0],
                 tcp_sport=clientTcpPort,
                 tcp_dport=self.serverTcpPort,
             )
             expectedPktToServer2 = simple_tcp_packet(
-                ip_src="10.0.0.0",
+                ip_src=self.clientIp,
                 ip_dst=server_ips[1],
                 tcp_sport=clientTcpPort,
                 tcp_dport=self.serverTcpPort,
@@ -160,15 +197,16 @@ class TestController(AbstractTest):
             serverIp = server_ips[rcvIdx]
             serverPkt = simple_tcp_packet(
                 ip_src=serverIp,
-                ip_dst="10.0.0.0",
+                ip_dst=self.clientIp,
                 tcp_sport=self.serverTcpPort,
                 tcp_dport=clientTcpPort,
             )
             send_packet(self, server_ports[rcvIdx], serverPkt)
 
+            # Response should appear to come from the load balancer VIP
             expectedPktToClient = simple_tcp_packet(
-                ip_src="10.0.0.1",
-                ip_dst="10.0.0.0",
+                ip_src=self.loadBalancerIp,
+                ip_dst=self.clientIp,
                 tcp_sport=self.serverTcpPort,
                 tcp_dport=clientTcpPort,
             )
@@ -177,9 +215,9 @@ class TestController(AbstractTest):
             logger.info("Client packet received on port %d!", self.clientPort)
 
     def sendPacket(self):
-        # First phase: initial two servers
+        # First phase: initial two LB servers from config
         self.sendPackets(
-            self.numPackets // 3, ["10.0.0.2", "10.0.0.3"], self.serverPorts[:2]
+            self.numPackets // 3, self.lbNodeIps, self.lbNodePorts
         )
         self.checkTrafficBalance(
             self.server1Counter, self.server2Counter, self.maxImbalancePercent
@@ -189,15 +227,18 @@ class TestController(AbstractTest):
         self.server1Counter = 0
         self.server2Counter = 0
 
-        # Modify first next-hop entry to point to a new server (10.0.0.4)
-        resp = self.migrate_node(old_ipv4="10.0.0.2", new_ipv4="10.0.0.4")
+        # Migrate first LB node to a new IP (10.0.0.4)
+        # The new IP inherits the same port as the old one
+        newIp1 = "10.0.0.4"
+        resp = self.migrate_node(old_ipv4=self.lbNodeIps[0], new_ipv4=newIp1)
         assert resp, "Response is nil, is the controller running?"
         assert resp.status_code == 200, f"Response is {resp.status_code}: {resp.text}"
 
+        # Now LB nodes are newIp1 (same port as first LB node) and second original LB node
         self.sendPackets(
             self.numPackets // 3,
-            ["10.0.0.4", "10.0.0.3"],
-            [self.serverPorts[2], self.serverPorts[1]],
+            [newIp1, self.lbNodeIps[1]],
+            [self.lbNodePorts[0], self.lbNodePorts[1]],
         )
         self.checkTrafficBalance(
             self.server1Counter, self.server2Counter, self.maxImbalancePercent
@@ -207,14 +248,17 @@ class TestController(AbstractTest):
         self.server1Counter = 0
         self.server2Counter = 0
 
-        # Modify second next-hop entry to point to another new server (10.0.0.5)
-        resp = self.migrate_node(old_ipv4="10.0.0.3", new_ipv4="10.0.0.5")
-
+        # Migrate second LB node to another new IP (10.0.0.5)
+        newIp2 = "10.0.0.5"
+        resp = self.migrate_node(old_ipv4=self.lbNodeIps[1], new_ipv4=newIp2)
         assert resp is not None, "Response is nil, is the controller running?"
         assert resp.status_code == 200, f"Response is {resp.status_code}: {resp.text}"
 
+        # Now LB nodes are newIp1 and newIp2, keeping original ports
         self.sendPackets(
-            self.numPackets // 3, ["10.0.0.4", "10.0.0.5"], self.serverPorts[2:4]
+            self.numPackets // 3,
+            [newIp1, newIp2],
+            [self.lbNodePorts[0], self.lbNodePorts[1]],
         )
         self.checkTrafficBalance(
             self.server1Counter, self.server2Counter, self.maxImbalancePercent
