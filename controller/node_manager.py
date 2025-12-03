@@ -141,14 +141,20 @@ class NodeManager(object):
                 f"Updated action table entry: node_index={node_index}, new_dst={new_ipv4}"
             )
 
-            # Add a forward table entry for the new IP using the same port
-            self.switch_controller.insertForwardEntry(
-                port=old_node.sw_port,
-                dst_addr=new_ipv4,
-            )
-            self.logger.info(
-                f"Inserted forward entry for new IP: {new_ipv4} -> port {old_node.sw_port}"
-            )
+            # Add a forward table entry for the new IP using the same port,
+            # but only if it doesn't already exist (e.g., when migrating back to original IP)
+            if new_ipv4 not in self.nodes:
+                self.switch_controller.insertForwardEntry(
+                    port=old_node.sw_port,
+                    dst_addr=new_ipv4,
+                )
+                self.logger.info(
+                    f"Inserted forward entry for new IP: {new_ipv4} -> port {old_node.sw_port}"
+                )
+            else:
+                self.logger.info(
+                    f"Forward entry for {new_ipv4} already exists, skipping insertion"
+                )
 
             # Update internal state
             self.lb_nodes[new_ipv4] = node_index
