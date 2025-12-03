@@ -15,6 +15,7 @@ swports = get_sw_ports()
 
 print("SW Ports: ", swports)
 
+
 class AbstractTest(BfRuntimeTest):
     def setUp(self):
         # Setting up PTF dataplane
@@ -30,32 +31,18 @@ class AbstractTest(BfRuntimeTest):
         send_packet(self, send_port, send_pkt)
         rcv_idx = verify_any_packet_any_port(self, expected_pkts, verify_ports)
         return rcv_idx
-    
-    def update_node(self, source_ip, target_ip, target_idx, is_client):
-        url = "http://127.0.0.1:5000/update_node"
+
+    def migrate_node(self, old_ipv4, new_ipv4):
+        url = "http://127.0.0.1:5000/migrateNode"
         headers = {"Content-Type": "application/json"}
         data = {
-            "old_ipv4": source_ip,
-            "new_ipv4": target_ip,
-            "eport": target_idx,
-            "is_client": is_client,
+            "old_ipv4": old_ipv4,
+            "new_ipv4": new_ipv4,
         }
 
         response = requests.post(url, headers=headers, json=data)
         return response
-    
-    def add_node(self, target_ip, port, is_client):
-        url = "http://127.0.0.1:5000/add_node"
-        headers = {"Content-Type": "application/json"}
-        data = {
-            "ipv4": target_ip,
-            "eport": port,
-            "is_client": is_client,
-        }
 
-        response = requests.post(url, headers=headers, json=data)
-        return response
-    
     def checkTrafficBalance(self, counter1, counter2, max_imbalance_percent=20):
         total_packets = counter1 + counter2
         if total_packets == 0:
@@ -69,9 +56,9 @@ class AbstractTest(BfRuntimeTest):
             counter2,
             imbalance_percentage,
         )
-        assert (
-            imbalance_percentage <= max_imbalance_percent
-        ), f"Traffic imbalance too high: {imbalance_percentage:.2f}%"
+        assert imbalance_percentage <= max_imbalance_percent, (
+            f"Traffic imbalance too high: {imbalance_percentage:.2f}%"
+        )
 
     def verifyNoOtherPackets(self):
         verify_no_other_packets(self, 0, timeout=2)
@@ -113,14 +100,15 @@ class TestController(AbstractTest):
         self.serverTcpPort = 25565
 
     def setupCtrlPlane(self):
+        # Nodes are now pre-configured via the controller's config file.
+        # The controller initializes nodes from the "nodes" field in the master switch config.
+        # Expected initial nodes: 10.0.0.0 (client), 10.0.0.2, 10.0.0.3 (LB servers)
         logger.info(
             "Setting up port change traffic balancing: Client port: %s, Server ports: %s",
             self.clientPort,
             self.serverPorts,
         )
-        self.add_node(target_ip="10.0.0.0", port=self.clientPort, is_client=True)
-        self.add_node(target_ip="10.0.0.2", port=self.serverPorts[0], is_client=False)
-        self.add_node(target_ip="10.0.0.3", port=self.serverPorts[1], is_client=False)
+        logger.info("Nodes should be pre-configured via controller config file")
 
     def sendPackets(self, num_packets, server_ips, server_ports):
         for i in range(num_packets):
@@ -154,7 +142,9 @@ class TestController(AbstractTest):
                 [expectedPktToServer1, expectedPktToServer2],
                 server_ports,
             )
-            logger.info("Server packet %d received on port %d!", i, server_ports[rcvIdx])
+            logger.info(
+                "Server packet %d received on port %d!", i, server_ports[rcvIdx]
+            )
             if rcvIdx == 0:
                 self.server1Counter += 1
             else:
@@ -200,7 +190,7 @@ class TestController(AbstractTest):
         self.server2Counter = 0
 
         # Modify first next-hop entry to point to a new server (10.0.0.4)
-        resp = self.update_node(source_ip="10.0.0.2", target_ip="10.0.0.4", target_idx=self.serverPorts[2],is_client=False)
+        resp = self.migrate_node(old_ipv4="10.0.0.2", new_ipv4="10.0.0.4")
         assert resp, "Response is nil, is the controller running?"
         assert resp.status_code == 200, f"Response is {resp.status_code}: {resp.text}"
 
@@ -218,7 +208,7 @@ class TestController(AbstractTest):
         self.server2Counter = 0
 
         # Modify second next-hop entry to point to another new server (10.0.0.5)
-        resp = self.update_node(source_ip="10.0.0.3", target_ip="10.0.0.5", target_idx=self.serverPorts[3],is_client=False)
+        resp = self.migrate_node(old_ipv4="10.0.0.3", new_ipv4="10.0.0.5")
 
         assert resp is not None, "Response is nil, is the controller running?"
         assert resp.status_code == 200, f"Response is {resp.status_code}: {resp.text}"
