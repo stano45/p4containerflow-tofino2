@@ -366,6 +366,7 @@ install: build
 	fi
 	@INSTALL_DIR="$(SDE_INSTALL)/share/p4/targets/$(CHIP_FAMILY)/$(PROGRAM_NAME)"; \
 	echo "Installing to $$INSTALL_DIR"; \
+	sudo rm -rf "$$INSTALL_DIR"; \
 	sudo mkdir -p "$$INSTALL_DIR"; \
 	sudo cp -r $(BUILD_DIR)/* "$$INSTALL_DIR/"; \
 	sudo cp $(CONF_FILE) "$(SDE_INSTALL)/share/p4/targets/$(CHIP_FAMILY)/$(PROGRAM_NAME).conf"; \
