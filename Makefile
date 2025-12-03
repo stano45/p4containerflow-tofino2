@@ -150,21 +150,6 @@ setup-rdc:
 	@echo ""
 	@echo "Done."
 
-link-p4studio:
-	@echo "=== Creating symlink in open-p4studio ==="
-	@if [ ! -d "open-p4studio/pkgsrc/p4-examples" ]; then \
-		echo "ERROR: open-p4studio/pkgsrc/p4-examples not found."; \
-		echo "Run 'make init-submodule' first."; \
-		exit 1; \
-	fi
-	@PKGSRCDIR="$$PWD/open-p4studio/pkgsrc/p4-examples/p4_16_programs"; \
-	mkdir -p "$$PKGSRCDIR"; \
-	ln -sfn "$$PWD/load_balancer" "$$PKGSRCDIR/t2na_load_balancer"; \
-	echo "Symlink created: $$PKGSRCDIR/t2na_load_balancer -> $$PWD/load_balancer"
-	@echo "=== Patching CMakeLists.txt ==="
-	@chmod +x scripts/patch_cmake.sh
-	@./scripts/patch_cmake.sh
-
 config-profile:
 	@if [ -z "$(BSP)" ]; then \
 		echo "ERROR: BSP is not set."; \
