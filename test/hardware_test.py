@@ -91,7 +91,7 @@ class HardwareTest:
             return False
 
     def bind_program(self) -> bool:
-        """Bind to the P4 program."""
+        """Bind to the P4 program (or get info in read-only mode if already bound)."""
         self.log(f"Binding to program: {self.program_name}")
         try:
             self.interface.bind_pipeline_config(self.program_name)
@@ -100,6 +100,19 @@ class HardwareTest:
             self.log(f"Bound to program successfully")
             return True
         except Exception as e:
+            # Check if another client already owns the program
+            if "already owns" in str(e) or "ALREADY_EXISTS" in str(e):
+                self.log(f"Program already owned by another client (controller)")
+                self.log(f"Getting program info in read-only mode...")
+                try:
+                    # Try to get bfrt_info without binding (read-only access)
+                    self.bfrt_info = self.interface.bfrt_info_get(self.program_name)
+                    self.target = gc.Target(device_id=0, pipe_id=0xFFFF)
+                    self.log(f"Got program info in read-only mode")
+                    return True
+                except Exception as e2:
+                    self.log(f"Failed to get program info: {e2}", "ERROR")
+                    return False
             self.log(f"Failed to bind program: {e}", "ERROR")
             return False
 
@@ -116,9 +129,11 @@ class HardwareTest:
             return False
 
         if self.bind_program():
-            self.log_pass(f"Bound to P4 program '{self.program_name}'")
+            self.log_pass(f"Connected to P4 program '{self.program_name}'")
         else:
-            self.log_fail("Program binding", f"Could not bind to '{self.program_name}'")
+            self.log_fail(
+                "Program binding", f"Could not connect to '{self.program_name}'"
+            )
             return False
 
         return True
