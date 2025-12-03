@@ -1,7 +1,7 @@
 global-options:
   asic: true
 features:
-  bf-diags: {}
+  bf-diags: false
   bf-platforms:
     bsp-path: /path/to/bf-reference-bsp-9.13.4.tgz
     newport: true
