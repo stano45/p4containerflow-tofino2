@@ -1,28 +1,56 @@
-export PATH=$SDE_INSTALL/bin:$PATH
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+cd "$SCRIPT_DIR"
+
+if [ -z "${SDE_INSTALL:-}" ]; then
+    echo "SDE_INSTALL is not set. Please source the BF SDE environment first." >&2
+    exit 1
+fi
+
+export PATH="$SDE_INSTALL/bin:$PATH"
 echo "Using PATH ${PATH}"
-export ARCH="tf2"
+export ARCH="${ARCH:-tf2}"
 echo "Arch is $ARCH"
 
-export PYTHON_LIB_DIR=$(python3 -c "import sysconfig; print(sysconfig.get_path('purelib', vars={'base': ''}))")
-export PYTHONPATH=/home/vagrant/.local/bin:$PYTHONPATH
-export PYTHONPATH=$SDE_INSTALL/$PYTHON_LIB_DIR/site-packages/tofino/bfrt_grpc:$PYTHONPATH
-export PYTHONPATH=$SDE_INSTALL/$PYTHON_LIB_DIR/site-packages:$PYTHONPATH
-export PYTHONPATH=$SDE_INSTALL/$PYTHON_LIB_DIR/site-packages/tofino:$PYTHONPATH
-export PYTHONPATH=$SDE_INSTALL/$PYTHON_LIB_DIR/site-packages/${ARCH}pd:$PYTHONPATH
-export PYTHONPATH=$SDE_INSTALL/$PYTHON_LIB_DIR/site-packages/p4testutils:$PYTHONPATH
-export PYTHONPATH=$($SDE_INSTALL/bin/sdepythonpath.py):$PYTHONPATH
+PY_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+SDE_PY_LIB="$SDE_INSTALL/lib/python${PY_VERSION}"
+
+declare -a PYTHONPATH_ENTRIES=(
+    "/home/vagrant/.local/bin"
+    "$SDE_PY_LIB/site-packages/tofino/bfrt_grpc"
+    "$SDE_PY_LIB/site-packages"
+    "$SDE_PY_LIB/site-packages/tofino"
+    "$SDE_PY_LIB/site-packages/${ARCH}pd"
+    "$SDE_PY_LIB/site-packages/p4testutils"
+    "$($SDE_INSTALL/bin/sdepythonpath.py)"
+)
+
+for entry in "${PYTHONPATH_ENTRIES[@]}"; do
+    if [ -z "${PYTHONPATH:-}" ]; then
+        PYTHONPATH="$entry"
+    else
+        PYTHONPATH="$entry:$PYTHONPATH"
+    fi
+done
+export PYTHONPATH
 
 echo "PYTHONPATH is $PYTHONPATH"
 
-# Install uv if not present
-if ! command -v uv &> /dev/null; then
+if ! command -v uv >/dev/null 2>&1; then
     echo "Installing uv..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
-# Sync dependencies with uv
 echo "Syncing dependencies with uv..."
-uv sync
+uv sync --frozen --no-progress
 
-sudo env "PATH=$PATH" "PYTHONPATH=$PYTHONPATH" uv run python controller.py --config controller_config.json
+VENV_PYTHON="$SCRIPT_DIR/.venv/bin/python"
+if [ ! -x "$VENV_PYTHON" ]; then
+    echo "uv sync did not create $VENV_PYTHON" >&2
+    exit 1
+fi
+
+sudo env "PATH=$PATH" "PYTHONPATH=$PYTHONPATH" "$VENV_PYTHON" controller.py --config controller_config.json
