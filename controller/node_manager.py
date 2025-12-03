@@ -173,9 +173,7 @@ class NodeManager(object):
                 f"Failed to migrate {old_ipv4=} to {new_ipv4=}: {printGrpcError(e)}"
             )
         except Exception as e:
-            raise Exception(
-                f"Failed to migrate {old_ipv4=} to {new_ipv4=}: {e}"
-            )
+            raise Exception(f"Failed to migrate {old_ipv4=} to {new_ipv4=}: {e}")
 
     # def _updateNode(self, old_node: Node, new_node: Node):
     #     if new_node.ipv4 in self.node_map:
