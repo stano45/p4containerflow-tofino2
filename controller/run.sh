@@ -38,10 +38,12 @@ export PYTHONPATH
 
 echo "PYTHONPATH is $PYTHONPATH"
 
+# Add ~/.local/bin to PATH first so we can find uv if installed
+export PATH="$HOME/.local/bin:$PATH"
+
 if ! command -v uv >/dev/null 2>&1; then
     echo "Installing uv..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.local/bin:$PATH"
 fi
 
 echo "Syncing dependencies with uv..."
