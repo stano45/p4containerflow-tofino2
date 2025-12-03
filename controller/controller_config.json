@@ -3,7 +3,7 @@
     "id": 0,
     "client_id": 0,
     "name": "t2na_load_balancer",
-    "addr": "0.0.0.0:50052",
+    "addr": "127.0.0.1:50052",
     "master": true,
     "load_balancer_ip": "10.0.0.10",
     "service_port": 12345,
