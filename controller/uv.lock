@@ -55,6 +55,7 @@ dependencies = [
     { name = "grpcio" },
     { name = "protobuf" },
     { name = "scapy" },
+    { name = "six" },
 ]
 
 [package.metadata]
@@ -64,6 +65,7 @@ requires-dist = [
     { name = "grpcio", specifier = ">=1.66.1" },
     { name = "protobuf", specifier = ">=5.28.0" },
     { name = "scapy", specifier = ">=2.5.0" },
+    { name = "six", specifier = ">=1.17.0" },
 ]
 
 [[package]]
@@ -272,6 +274,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/df/2f/035d3888f26d999e9680af8c7ddb7ce4ea0fd8d0e01c000de634c22dcf13/scapy-2.6.1.tar.gz", hash = "sha256:7600d7e2383c853e5c3a6e05d37e17643beebf2b3e10d7914dffcc3bc3c6e6c5", size = 2247754, upload-time = "2024-11-05T08:43:23.488Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4b/34/8695b43af99d0c796e4b7933a0d7df8925f43a8abdd0ff0f6297beb4de3a/scapy-2.6.1-py3-none-any.whl", hash = "sha256:88a998572049b511a1f3e44f4aa7c62dd39c6ea2aa1bb58434f503956641789d", size = 2420670, upload-time = "2024-11-05T08:43:21.285Z" },
+]
+
+[[package]]
+name = "six"
+version = "1.17.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68a0e064b6af791aa332cf192da575fd474ed7d6f16a2/six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81", size = 34031, upload-time = "2024-12-04T17:35:28.174Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050, upload-time = "2024-12-04T17:35:26.475Z" },
 ]
 
 [[package]]

@@ -9,4 +9,5 @@ dependencies = [
     "grpcio>=1.66.1",
     "protobuf>=5.28.0",
     "scapy>=2.5.0",
+    "six>=1.17.0",
 ]
