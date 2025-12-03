@@ -123,21 +123,58 @@ class NodeManager(object):
             raise Exception(
                 f"Failed to update node {old_ipv4=}, {new_ipv4=}: Node with IP {old_ipv4} is not LB node"
             )
+        if old_ipv4 not in self.nodes:
+            raise Exception(
+                f"Failed to update node {old_ipv4=}, {new_ipv4=}: Node with IP {old_ipv4} not found in nodes"
+            )
+
+        old_node = self.nodes[old_ipv4]
+        node_index = self.lb_nodes[old_ipv4]
+
         try:
+            # Update the action table entry to rewrite to the new IP
             self.switch_controller.insertActionTableEntry(
-                node_index=self.lb_nodes[old_ipv4],
+                node_index=node_index,
                 new_dst=new_ipv4,
                 update_type=UpdateType.MODIFY,
             )
-            self.lb_nodes[new_ipv4] = self.lb_nodes[old_ipv4]
+            self.logger.info(
+                f"Updated action table entry: node_index={node_index}, new_dst={new_ipv4}"
+            )
+
+            # Add a forward table entry for the new IP using the same port
+            self.switch_controller.insertForwardEntry(
+                port=old_node.sw_port,
+                dst_addr=new_ipv4,
+            )
+            self.logger.info(
+                f"Inserted forward entry for new IP: {new_ipv4} -> port {old_node.sw_port}"
+            )
+
+            # Update internal state
+            self.lb_nodes[new_ipv4] = node_index
             del self.lb_nodes[old_ipv4]
+
+            # Create new node entry and update nodes map
+            new_node = Node(
+                idx=old_node.idx,
+                ipv4=new_ipv4,
+                sw_port=old_node.sw_port,
+                smac=old_node.smac,
+                dmac=old_node.dmac,
+                is_lb_node=True,
+            )
+            self.nodes[new_ipv4] = new_node
+            # Keep old node in case we need to route to it later
+            # del self.nodes[old_ipv4]
+
         except grpc.RpcError as e:
             raise Exception(
-                f"Failed to update {old_ipv4=}, node_index={self.lb_nodes[old_ipv4]} with {new_ipv4=}: {printGrpcError(e)}"
+                f"Failed to migrate {old_ipv4=} to {new_ipv4=}: {printGrpcError(e)}"
             )
         except Exception as e:
             raise Exception(
-                f"Failed to update {old_ipv4=}, node_index={self.lb_nodes[old_ipv4]} with {new_ipv4=}: {e}"
+                f"Failed to migrate {old_ipv4=} to {new_ipv4=}: {e}"
             )
 
     # def _updateNode(self, old_node: Node, new_node: Node):
