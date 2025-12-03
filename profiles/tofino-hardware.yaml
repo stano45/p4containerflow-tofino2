@@ -4,13 +4,11 @@ features:
   bf-diags: false
   bf-platforms:
     bsp-path: /path/to/bf-reference-bsp-9.13.4.tgz
-    newport: true
   drivers:
-    tdi: false
+    bfrt: true
+    grpc: true
+    thrift-driver: true
   p4-examples:
     - p4-16-programs
-  switch:
-    profile: x1_tofino
-    sai: true
 architectures:
   - tofino
