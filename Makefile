@@ -35,6 +35,26 @@ ifneq ($(filter $(ARCH),tf1 tf2),$(ARCH))
 $(error ARCH must be 'tf1' or 'tf2', got '$(ARCH)')
 endif
 
+PROGRAM_NAME_tf1 = tna_load_balancer
+PROGRAM_NAME_tf2 = t2na_load_balancer
+CHIP_FAMILY_tf1 = tofino
+CHIP_FAMILY_tf2 = tofino2
+P4_TARGET_tf1 = tofino
+P4_TARGET_tf2 = tofino2
+P4_ARCH_tf1 = tna
+P4_ARCH_tf2 = t2na
+BUILD_DIR_tf1 = build/$(PROGRAM_NAME_tf1)
+BUILD_DIR_tf2 = build/$(PROGRAM_NAME_tf2)
+CONF_FILE_tf1 = load_balancer/tna_load_balancer.conf
+CONF_FILE_tf2 = load_balancer/t2na_load_balancer.conf
+
+PROGRAM_NAME := $(PROGRAM_NAME_$(ARCH))
+CHIP_FAMILY := $(CHIP_FAMILY_$(ARCH))
+P4_TARGET := $(P4_TARGET_$(ARCH))
+P4_ARCH := $(P4_ARCH_$(ARCH))
+BUILD_DIR := $(BUILD_DIR_$(ARCH))
+CONF_FILE := $(CONF_FILE_$(ARCH))
+
 # -----------------------------------------------------------------------------
 # Submodule and Environment Setup
 # -----------------------------------------------------------------------------
@@ -297,16 +317,15 @@ setup-hw: init-submodule extract-sde setup-rdc config-profile extract-bsp build-
 # -----------------------------------------------------------------------------
 
 P4_PROGRAM = load_balancer/t2na_load_balancer.p4
-BUILD_DIR = build/t2na_load_balancer
 P4C = $(SDE_INSTALL)/bin/p4c-barefoot
-P4C_FLAGS = --target tofino2 \
-            --arch t2na \
+P4C_FLAGS = --target $(P4_TARGET) \
+			--arch $(P4_ARCH) \
             --p4runtime-files $(BUILD_DIR)/p4info.txt \
             --bf-rt-schema $(BUILD_DIR)/bf-rt.json \
             -o $(BUILD_DIR)
 
 build:
-	@echo "=== Building t2na_load_balancer ==="
+	@echo "=== Building $(PROGRAM_NAME) (ARCH=$(ARCH)) ==="
 	@if [ -z "$(SDE_INSTALL)" ]; then \
 		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
 		exit 1; \
@@ -329,25 +348,25 @@ clean-build:
 	rm -rf build/
 
 install: build
-	@echo "=== Installing t2na_load_balancer to SDE ==="
+	@echo "=== Installing $(PROGRAM_NAME) (ARCH=$(ARCH)) to SDE ==="
 	@if [ -z "$(SDE_INSTALL)" ]; then \
 		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
 		exit 1; \
 	fi
-	@INSTALL_DIR="$(SDE_INSTALL)/share/p4/targets/tofino2/t2na_load_balancer"; \
+	@INSTALL_DIR="$(SDE_INSTALL)/share/p4/targets/$(CHIP_FAMILY)/$(PROGRAM_NAME)"; \
 	echo "Installing to $$INSTALL_DIR"; \
 	sudo mkdir -p "$$INSTALL_DIR"; \
 	sudo cp -r $(BUILD_DIR)/* "$$INSTALL_DIR/"; \
-	sudo cp load_balancer/t2na_load_balancer.conf "$(SDE_INSTALL)/share/p4/targets/tofino2/t2na_load_balancer.conf"; \
+	sudo cp $(CONF_FILE) "$(SDE_INSTALL)/share/p4/targets/$(CHIP_FAMILY)/$(PROGRAM_NAME).conf"; \
 	echo "Installation complete"
 
 model: install
-	@echo "=== Running Tofino model ==="
+	@echo "=== Running Tofino model (ARCH=$(ARCH)) ==="
 	@if [ -z "$(SDE_INSTALL)" ]; then \
 		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
 		exit 1; \
 	fi
-	@cd open-p4studio && sudo -E ./run_tofino_model.sh --arch tf2 -p t2na_load_balancer
+	@cd open-p4studio && sudo -E ./run_tofino_model.sh --arch $(ARCH) -p $(PROGRAM_NAME)
 
 switch:
 	@echo "=== Running switchd on hardware (ARCH=$(ARCH)) ==="
@@ -355,7 +374,7 @@ switch:
 		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
 		exit 1; \
 	fi
-	@cd open-p4studio && sudo -E ./run_switchd.sh --arch $(ARCH) -p t2na_load_balancer
+	@cd open-p4studio && sudo -E ./run_switchd.sh --arch $(ARCH) -p $(PROGRAM_NAME)
 
 # -----------------------------------------------------------------------------
 # Test Targets
@@ -363,17 +382,17 @@ switch:
 
 test-dataplane: install
 	@echo "=== Running dataplane tests ==="
-	@cd open-p4studio && sudo -E ./run_p4_tests.sh --arch tf2 \
+	@cd open-p4studio && sudo -E ./run_p4_tests.sh --arch $(ARCH) \
 		-t ../test \
 		-s t2na_load_balancer_dataplane \
-		-p t2na_load_balancer
+		-p $(PROGRAM_NAME)
 
 test-controller: install
 	@echo "=== Running controller tests ==="
-	@cd open-p4studio && sudo -E ./run_p4_tests.sh --arch tf2 \
+	@cd open-p4studio && sudo -E ./run_p4_tests.sh --arch $(ARCH) \
 		-t ../test \
 		-s t2na_load_balancer_controller \
-		-p t2na_load_balancer
+		-p $(PROGRAM_NAME)
 
 # -----------------------------------------------------------------------------
 # Controller
