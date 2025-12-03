@@ -156,6 +156,8 @@ class TestController(AbstractTest):
                     resp = self.migrate_node(old_ipv4=current_ip, new_ipv4=original_ip)
                     if resp and resp.status_code == 200:
                         logger.info(f"Successfully restored node {i} to {original_ip}")
+                        # Update tracking so subsequent tearDown calls are no-ops
+                        self.currentLbNodeIps[i] = original_ip
                     else:
                         logger.warning(
                             f"Failed to restore node {i}: {resp.status_code if resp else 'no response'}"
