@@ -1,11 +1,10 @@
 from logging import Logger
-import random
 
 import grpc
 
 from utils import printGrpcError
 from bf_switch_controller import SwitchController
-from internal_types import Node, UpdateType
+from internal_types import Node
 
 
 class NodeManager(object):
@@ -174,45 +173,3 @@ class NodeManager(object):
             )
         except Exception as e:
             raise Exception(f"Failed to migrate {old_ipv4=} to {new_ipv4=}: {e}")
-
-    # def _updateNode(self, old_node: Node, new_node: Node):
-    #     if new_node.ipv4 in self.node_map:
-    #         raise Exception(
-    #             f"Failed to update node: {self.node_map[new_node.ipv4]} already exists"
-    #         )
-    #     if old_node.is_client != new_node.is_client:
-    #         if old_node.is_client:
-    #             raise Exception(
-    #                 f"Failed to update node: trying to update a client with a server node: {old_node=}, {new_node=}"
-    #             )
-    #         else:
-    #             raise Exception(
-    #                 f"Failed to update node: trying to update a server node with a client node: {old_node=}, {new_node=}"
-    #             )
-    #     pass
-
-    def _updateTables(self, old_node: Node, new_node: Node, update_type: UpdateType):
-        pass
-
-    # def _addNode(self, node: Node):
-    #     if node.ipv4 in self.node_map:
-    #         raise Exception(f"Failed to add node: {node} already exists")
-
-    #     self._updateTables(
-    #         old_node=None,
-    #         new_node=node,
-    #         is_client=node.is_client,
-    #         update_type=UpdateType.INSERT,
-    #     )
-
-    #     self.switch_controller.readTableRules()
-
-    # def addNode(self, ipv4: str, sw_port: int, is_client: bool, is_lb_node: bool):
-    #     return self._addNode(
-    #         Node(
-    #             idx=random.randint(0, 60000),
-    #             ipv4=ipv4,
-    #             sw_port=sw_port,
-    #             is_lb_node=is_lb_node,
-    #         )
-    #     )
