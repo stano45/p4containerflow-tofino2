@@ -351,7 +351,11 @@ model: install
 
 switch:
 	@echo "=== Running switchd on hardware (ARCH=$(ARCH)) ==="
-	run_switchd.sh --arch $(ARCH) -p t2na_load_balancer
+	@if [ -z "$(SDE_INSTALL)" ]; then \
+		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
+		exit 1; \
+	fi
+	@cd open-p4studio && sudo -E ./run_switchd.sh --arch $(ARCH) -p t2na_load_balancer
 
 # -----------------------------------------------------------------------------
 # Test Targets
