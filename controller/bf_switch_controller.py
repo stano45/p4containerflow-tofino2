@@ -1,8 +1,49 @@
 from logging import Logger
+import time
 from abstract_switch_controller import AbstractSwitchController
 import bfrt_grpc.client as gc
 
 from internal_types import UpdateType
+
+
+def connect_with_retry(
+    logger: Logger,
+    sw_addr: str,
+    client_id: int,
+    device_id: int = 0,
+    num_tries: int = 10,
+    retry_delay: float = 2.0,
+) -> gc.ClientInterface:
+    """
+    Attempt to connect to the gRPC server with proper retries.
+    Each retry creates a fresh connection attempt.
+    """
+    last_error = None
+    for attempt in range(1, num_tries + 1):
+        try:
+            logger.info("Connection attempt #%d to %s", attempt, sw_addr)
+            interface = gc.ClientInterface(
+                sw_addr,
+                client_id=client_id,
+                device_id=device_id,
+                notifications=None,
+                perform_subscribe=True,
+            )
+            logger.info("Successfully connected to %s", sw_addr)
+            return interface
+        except Exception as e:
+            last_error = e
+            logger.warning(
+                "Connection attempt #%d failed: %s. Retrying in %.1fs...",
+                attempt,
+                str(e),
+                retry_delay,
+            )
+            time.sleep(retry_delay)
+
+    raise RuntimeError(
+        f"Failed to connect to {sw_addr} after {num_tries} attempts: {last_error}"
+    )
 
 
 class SwitchController(AbstractSwitchController):
@@ -15,6 +56,8 @@ class SwitchController(AbstractSwitchController):
         client_id: str | int,
         load_balancer_ip: str,
         service_port: int,
+        num_tries: int = 10,
+        retry_delay: float = 2.0,
     ):
         super().__init__(
             sw_name=sw_name,
@@ -27,12 +70,13 @@ class SwitchController(AbstractSwitchController):
 
         self.logger = logger
         logger.info("Establishing connection with %s", self.sw_addr)
-        self.interface = gc.ClientInterface(
-            self.sw_addr,
+        self.interface = connect_with_retry(
+            logger=logger,
+            sw_addr=self.sw_addr,
             client_id=client_id,
             device_id=0,
-            notifications=None,
-            perform_subscribe=True,
+            num_tries=num_tries,
+            retry_delay=retry_delay,
         )
 
         if not sw_name:
