@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import argparse
+import atexit
 import json
 import os
+import signal
 import sys
 import logging
 
@@ -13,7 +15,7 @@ from utils import printGrpcError
 
 app = Flask(__name__)
 
-global nodeManager
+nodeManager = None
 
 # Configure logger
 logger = logging.getLogger("P4RuntimeController")
@@ -85,8 +87,15 @@ def main(config_file_path):
             logger=logger, switch_controller=master_controller, initial_nodes=nodes
         )
 
+        # Register cleanup handlers
+        signal.signal(signal.SIGTERM, shutdown_handler)
+        signal.signal(signal.SIGINT, shutdown_handler)
+        atexit.register(lambda: nodeManager.cleanup() if nodeManager else None)
+
     except KeyboardInterrupt:
         print("Shutting down.")
+        if nodeManager:
+            nodeManager.cleanup()
     except grpc.RpcError as e:
         printGrpcError(e)
         exit(1)
@@ -117,6 +126,33 @@ def update_node():
     except Exception as e:
         logger.error(f"Failed to update node {old_ipv4} with {new_ipv4}: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/cleanup", methods=["POST"])
+def cleanup():
+    """Endpoint to manually trigger cleanup of all table entries."""
+    global nodeManager
+    if nodeManager is None:
+        return jsonify({"error": "NodeManager not initialized"}), 500
+
+    try:
+        nodeManager.cleanup()
+        return jsonify({"status": "success", "message": "Cleanup complete"}), 200
+    except Exception as e:
+        logger.error(f"Cleanup failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+def shutdown_handler(signum, frame):
+    """Handle shutdown signals by cleaning up table entries."""
+    global nodeManager
+    logger.info(f"Received signal {signum}, initiating cleanup...")
+    if nodeManager is not None:
+        try:
+            nodeManager.cleanup()
+        except Exception as e:
+            logger.error(f"Cleanup during shutdown failed: {e}")
+    sys.exit(0)
 
 
 if __name__ == "__main__":

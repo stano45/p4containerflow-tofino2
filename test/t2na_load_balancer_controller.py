@@ -118,13 +118,9 @@ class TestController(AbstractTest):
         self.clientIp = clientNodes[0]["ipv4"]
         self.clientPort = clientNodes[0]["sw_port"]
 
-        # LB node IPs and ports (store originals for cleanup)
-        self.originalLbNodeIps = [n["ipv4"] for n in self.lbNodes]
-        self.lbNodeIps = self.originalLbNodeIps.copy()
+        # LB node IPs and ports
+        self.lbNodeIps = [n["ipv4"] for n in self.lbNodes]
         self.lbNodePorts = [n["sw_port"] for n in self.lbNodes]
-
-        # Track current IPs for cleanup (will be updated during migrations)
-        self.currentLbNodeIps = self.originalLbNodeIps.copy()
 
         # Service port from config - this is used for SNAT matching
         self.servicePort = MASTER_CONFIG["service_port"]
@@ -145,25 +141,19 @@ class TestController(AbstractTest):
         )
 
     def tearDown(self):
-        """Restore nodes to their original IPs after the test."""
-        logger.info("Cleaning up: restoring nodes to original IPs...")
-        for i, (current_ip, original_ip) in enumerate(
-            zip(self.currentLbNodeIps, self.originalLbNodeIps)
-        ):
-            if current_ip != original_ip:
-                logger.info(f"Restoring node {i}: {current_ip} -> {original_ip}")
-                try:
-                    resp = self.migrate_node(old_ipv4=current_ip, new_ipv4=original_ip)
-                    if resp and resp.status_code == 200:
-                        logger.info(f"Successfully restored node {i} to {original_ip}")
-                        # Update tracking so subsequent tearDown calls are no-ops
-                        self.currentLbNodeIps[i] = original_ip
-                    else:
-                        logger.warning(
-                            f"Failed to restore node {i}: {resp.status_code if resp else 'no response'}"
-                        )
-                except Exception as e:
-                    logger.warning(f"Error restoring node {i}: {e}")
+        """Call the controller's cleanup endpoint to remove all table entries."""
+        logger.info("Cleaning up: calling controller cleanup endpoint...")
+        try:
+            url = "http://127.0.0.1:5000/cleanup"
+            resp = requests.post(url)
+            if resp and resp.status_code == 200:
+                logger.info("Controller cleanup successful")
+            else:
+                logger.warning(
+                    f"Controller cleanup failed: {resp.status_code if resp else 'no response'}"
+                )
+        except Exception as e:
+            logger.warning(f"Error calling cleanup endpoint: {e}")
         super().tearDown()
 
     def setupCtrlPlane(self):
@@ -260,7 +250,6 @@ class TestController(AbstractTest):
         resp = self.migrate_node(old_ipv4=self.lbNodeIps[0], new_ipv4=newIp1)
         assert resp, "Response is nil, is the controller running?"
         assert resp.status_code == 200, f"Response is {resp.status_code}: {resp.text}"
-        self.currentLbNodeIps[0] = newIp1  # Track for cleanup
 
         # Now LB nodes are newIp1 (same port as first LB node) and second original LB node
         self.sendPackets(
@@ -281,7 +270,6 @@ class TestController(AbstractTest):
         resp = self.migrate_node(old_ipv4=self.lbNodeIps[1], new_ipv4=newIp2)
         assert resp is not None, "Response is nil, is the controller running?"
         assert resp.status_code == 200, f"Response is {resp.status_code}: {resp.text}"
-        self.currentLbNodeIps[1] = newIp2  # Track for cleanup
 
         # Now LB nodes are newIp1 and newIp2, keeping original ports
         self.sendPackets(

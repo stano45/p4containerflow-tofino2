@@ -179,3 +179,58 @@ class NodeManager(object):
             )
         except Exception as e:
             raise Exception(f"Failed to migrate {old_ipv4=} to {new_ipv4=}: {e}")
+
+    def cleanup(self):
+        """Remove all table entries created by this controller.
+        Entries must be deleted in reverse dependency order."""
+        self.logger.info("Cleaning up all controller table entries...")
+
+        # 1. Delete node selector entry (depends on action_selector)
+        try:
+            self.switch_controller.deleteNodeSelectorEntry(
+                dst_addr=self.switch_controller.load_balancer_ip
+            )
+            self.logger.info("Deleted node selector entry")
+        except Exception as e:
+            self.logger.warning(f"Failed to delete node selector entry: {e}")
+
+        # 2. Delete selection table entry (depends on action_selector_ap)
+        try:
+            self.switch_controller.deleteSelectionTableEntry(group_id=1)
+            self.logger.info("Deleted selection table entry")
+        except Exception as e:
+            self.logger.warning(f"Failed to delete selection table entry: {e}")
+
+        # 3. Delete action table entries for LB nodes
+        for ipv4, node_index in list(self.lb_nodes.items()):
+            try:
+                self.switch_controller.deleteActionTableEntry(node_index=node_index)
+                self.logger.info(
+                    f"Deleted action table entry for node {ipv4} (index {node_index})"
+                )
+            except Exception as e:
+                self.logger.warning(
+                    f"Failed to delete action table entry for {ipv4}: {e}"
+                )
+
+        # 4. Delete forward entries for all nodes
+        for ipv4 in list(self.nodes.keys()):
+            try:
+                self.switch_controller.deleteForwardEntry(dst_addr=ipv4)
+                self.logger.info(f"Deleted forward entry for {ipv4}")
+            except Exception as e:
+                self.logger.warning(f"Failed to delete forward entry for {ipv4}: {e}")
+
+        # 5. Delete client SNAT entry
+        try:
+            self.switch_controller.deleteClientSnatEntry(
+                src_port=self.switch_controller.service_port
+            )
+            self.logger.info("Deleted client SNAT entry")
+        except Exception as e:
+            self.logger.warning(f"Failed to delete client SNAT entry: {e}")
+
+        # Clear internal state
+        self.nodes.clear()
+        self.lb_nodes.clear()
+        self.logger.info("Cleanup complete")

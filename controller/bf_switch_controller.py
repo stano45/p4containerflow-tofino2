@@ -190,3 +190,89 @@ class SwitchController(AbstractSwitchController):
                 gc.DataTuple("port", port),
             ],
         )
+
+    def deleteTableEntry(self, tableName: str, keyFields=None):
+        """Delete a specific table entry by key."""
+        table = self.bfrt_info.table_get(tableName)
+        if keyFields:
+            keyList = [table.make_key(keyFields)]
+            table.entry_del(self.target, keyList)
+        else:
+            # Delete all entries if no key specified
+            table.entry_del(self.target)
+
+    def deleteForwardEntry(self, dst_addr: str):
+        """Delete a forward table entry."""
+        self.deleteTableEntry(
+            "pipe.SwitchIngress.forward",
+            [gc.KeyTuple("hdr.ipv4.dst_addr", gc.ipv4_to_bytes(dst_addr))],
+        )
+
+    def deleteClientSnatEntry(self, src_port: int):
+        """Delete a client SNAT table entry."""
+        self.deleteTableEntry(
+            "pipe.SwitchIngress.client_snat",
+            [gc.KeyTuple("hdr.tcp.src_port", src_port)],
+        )
+
+    def deleteActionTableEntry(self, node_index: int):
+        """Delete an action table entry."""
+        self.deleteTableEntry(
+            "pipe.SwitchIngress.action_selector_ap",
+            [gc.KeyTuple("$ACTION_MEMBER_ID", node_index)],
+        )
+
+    def deleteSelectionTableEntry(self, group_id: int = 1):
+        """Delete a selection table entry."""
+        self.deleteTableEntry(
+            "pipe.SwitchIngress.action_selector",
+            [gc.KeyTuple("$SELECTOR_GROUP_ID", group_id)],
+        )
+
+    def deleteNodeSelectorEntry(self, dst_addr: str):
+        """Delete a node selector table entry."""
+        self.deleteTableEntry(
+            "pipe.SwitchIngress.node_selector",
+            [gc.KeyTuple("hdr.ipv4.dst_addr", gc.ipv4_to_bytes(dst_addr))],
+        )
+
+    def deleteTableEntry(self, tableName: str, keyFields=None):
+        """Delete a single table entry by key."""
+        table = self.bfrt_info.table_get(tableName)
+        keyList = [table.make_key(keyFields)]
+        table.entry_del(self.target, keyList)
+
+    def clearTable(self, tableName: str):
+        """Clear all entries from a table."""
+        table = self.bfrt_info.table_get(tableName)
+        table.entry_del(self.target)  # No keys = delete all
+
+    def deleteForwardEntry(self, dst_addr: str):
+        self.deleteTableEntry(
+            "pipe.SwitchIngress.forward",
+            [gc.KeyTuple("hdr.ipv4.dst_addr", gc.ipv4_to_bytes(dst_addr))],
+        )
+
+    def deleteClientSnatEntry(self, src_port: int):
+        self.deleteTableEntry(
+            "pipe.SwitchIngress.client_snat",
+            [gc.KeyTuple("hdr.tcp.src_port", src_port)],
+        )
+
+    def deleteActionTableEntry(self, node_index: int):
+        self.deleteTableEntry(
+            "pipe.SwitchIngress.action_selector_ap",
+            [gc.KeyTuple("$ACTION_MEMBER_ID", node_index)],
+        )
+
+    def deleteSelectionTableEntry(self, group_id: int = 1):
+        self.deleteTableEntry(
+            "pipe.SwitchIngress.action_selector",
+            [gc.KeyTuple("$SELECTOR_GROUP_ID", group_id)],
+        )
+
+    def deleteNodeSelectorEntry(self, dst_addr: str):
+        self.deleteTableEntry(
+            "pipe.SwitchIngress.node_selector",
+            [gc.KeyTuple("hdr.ipv4.dst_addr", gc.ipv4_to_bytes(dst_addr))],
+        )
