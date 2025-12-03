@@ -81,7 +81,7 @@ class SwitchController(AbstractSwitchController):
         update_type: UpdateType = UpdateType.INSERT,
     ):
         self.getUpdateFn(update_type)(
-            tableName="SwitchIngress.node_selector",
+            tableName="pipe.SwitchIngress.node_selector",
             keyFields=[gc.KeyTuple("hdr.ipv4.dst_addr", gc.ipv4_to_bytes(dst_addr))],
             dataFields=[
                 gc.DataTuple("$SELECTOR_GROUP_ID", group_id),
@@ -97,7 +97,7 @@ class SwitchController(AbstractSwitchController):
         update_type: UpdateType = UpdateType.INSERT,
     ):
         self.getUpdateFn(update_type)(
-            tableName="SwitchIngress.action_selector",
+            tableName="pipe.SwitchIngress.action_selector",
             keyFields=[gc.KeyTuple("$SELECTOR_GROUP_ID", group_id)],
             dataFields=[
                 gc.DataTuple("$MAX_GROUP_SIZE", max_grp_size),
@@ -113,7 +113,7 @@ class SwitchController(AbstractSwitchController):
         update_type: UpdateType = UpdateType.INSERT,
     ):
         self.getUpdateFn(update_type)(
-            "SwitchIngress.action_selector_ap",
+            "pipe.SwitchIngress.action_selector_ap",
             [gc.KeyTuple("$ACTION_MEMBER_ID", node_index)],
             "SwitchIngress.set_rewrite_dst",
             [gc.DataTuple("new_dst", gc.ipv4_to_bytes(new_dst))],
@@ -126,7 +126,7 @@ class SwitchController(AbstractSwitchController):
         update_type: UpdateType = UpdateType.INSERT,
     ):
         self.getUpdateFn(update_type)(
-            "SwitchIngress.client_snat",
+            "pipe.SwitchIngress.client_snat",
             [gc.KeyTuple("hdr.tcp.src_port", src_port)],
             "SwitchIngress.set_rewrite_src",
             [gc.DataTuple("new_src", gc.ipv4_to_bytes(new_src))],
@@ -139,7 +139,7 @@ class SwitchController(AbstractSwitchController):
         update_type: UpdateType = UpdateType.INSERT,
     ):
         self.getUpdateFn(update_type)(
-            "SwitchIngress.forward",
+            "pipe.SwitchIngress.forward",
             [gc.KeyTuple("hdr.ipv4.dst_addr", gc.ipv4_to_bytes(dst_addr))],
             "SwitchIngress.set_egress_port",
             [
