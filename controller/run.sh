@@ -55,10 +55,19 @@ if [ ! -x "$VENV_PYTHON" ]; then
     exit 1
 fi
 
-# Get the venv's site-packages path and prepend it to PYTHONPATH
-# This ensures venv packages (like grpc) take precedence over SDE packages
+# Remove SDE's grpc from PYTHONPATH to avoid conflicts with venv's grpc
+# The venv has its own grpc installed, and the SDE's version is incompatible
+# We keep the SDE paths for tofino/bfrt_grpc but filter out the base site-packages grpc
 VENV_SITE_PACKAGES="$SCRIPT_DIR/.venv/lib/python${PY_VERSION}/site-packages"
-export PYTHONPATH="$VENV_SITE_PACKAGES:$PYTHONPATH"
-echo "Updated PYTHONPATH with venv: $PYTHONPATH"
+
+# Build a new PYTHONPATH with venv first, then only the specific SDE paths we need
+# (excluding the generic site-packages which contains the conflicting grpc)
+FILTERED_PYTHONPATH="$VENV_SITE_PACKAGES"
+FILTERED_PYTHONPATH="$FILTERED_PYTHONPATH:$SDE_PY_LIB/site-packages/tofino/bfrt_grpc"
+FILTERED_PYTHONPATH="$FILTERED_PYTHONPATH:$SDE_PY_LIB/site-packages/tofino"
+FILTERED_PYTHONPATH="$FILTERED_PYTHONPATH:$SDE_PY_LIB/site-packages/${ARCH}pd"
+FILTERED_PYTHONPATH="$FILTERED_PYTHONPATH:$SDE_PY_LIB/site-packages/p4testutils"
+export PYTHONPATH="$FILTERED_PYTHONPATH"
+echo "Filtered PYTHONPATH: $PYTHONPATH"
 
 sudo env "PATH=$PATH" "PYTHONPATH=$PYTHONPATH" "$VENV_PYTHON" controller.py --config controller_config.json
