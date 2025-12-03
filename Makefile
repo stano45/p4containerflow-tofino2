@@ -434,11 +434,11 @@ test-controller: install
 		-s t2na_load_balancer_controller \
 		-p $(PROGRAM_NAME)
 
-# Hardware test - tests the switch and controller running on real hardware
-# Requires: switch running (make switch), controller running (make controller)
+# Hardware test - tests the switch running on real hardware
+# Requires: switch running (make switch), controller NOT running
 test-hardware:
 	@echo "=== Running hardware tests (ARCH=$(ARCH)) ==="
-	@echo "NOTE: Requires switch and controller to be running"
+	@echo "NOTE: Requires switch running, controller NOT running"
 	@if [ -z "$(SDE_INSTALL)" ]; then \
 		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
 		exit 1; \

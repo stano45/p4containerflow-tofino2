@@ -8,31 +8,21 @@ It requires:
 2. The controller should NOT be running (this test takes ownership of the P4 program)
 
 Usage:
-    python3 hardware_test.py [--arch tf1|tf2] [--grpc-addr HOST:PORT]
+    make test-hardware ARCH=tf1  # or tf2
 
 Tests performed:
-1. Connection test - verifies gRPC connection to the switch
-2. Table access test - verifies P4 tables exist and are accessible  
-3. Table write test - writes and reads back table entries
-4. Load balancer setup test - configures a basic load balancer setup
+1. Connection test - verifies gRPC connection to the switch and binds to P4 program
+2. Table access test - verifies P4 tables exist and are accessible
+3. Table write/read test - writes entries and reads them back
+4. Load balancer setup test - configures a complete load balancer setup
+5. Cleanup test - verifies all entries can be deleted
 """
 
 import argparse
-import json
 import os
 import sys
-import time
 
-# Add the controller directory to path for imports
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CONTROLLER_DIR = os.path.join(SCRIPT_DIR, "..", "controller")
-sys.path.insert(0, CONTROLLER_DIR)
-
-try:
-    import requests
-except ImportError:
-    print("ERROR: requests module not found. Install with: pip install requests")
-    sys.exit(1)
 
 try:
     import bfrt_grpc.client as gc
@@ -45,10 +35,9 @@ except ImportError:
 class HardwareTest:
     """Hardware test suite for Tofino load balancer."""
 
-    def __init__(self, arch: str, grpc_addr: str, controller_url: str):
+    def __init__(self, arch: str, grpc_addr: str):
         self.arch = arch
         self.grpc_addr = grpc_addr
-        self.controller_url = controller_url
         self.program_name = (
             "tna_load_balancer" if arch == "tf1" else "t2na_load_balancer"
         )
@@ -57,6 +46,14 @@ class HardwareTest:
         self.target = None
         self.passed = 0
         self.failed = 0
+
+        # Test configuration
+        self.lb_ip = "10.0.0.10"
+        self.client_ip = "10.0.0.0"
+        self.server_ips = ["10.0.0.1", "10.0.0.2"]
+        self.client_port = 1
+        self.server_ports = [2, 3]
+        self.service_port = 12345
 
     def log(self, msg: str, level: str = "INFO"):
         """Print a log message."""
@@ -79,42 +76,67 @@ class HardwareTest:
         try:
             self.interface = gc.ClientInterface(
                 self.grpc_addr,
-                client_id=99,  # Use a different client_id than the controller
+                client_id=0,
                 device_id=0,
                 notifications=None,
                 perform_subscribe=True,
             )
-            self.log(f"Connected successfully")
+            self.log("Connected successfully")
             return True
         except Exception as e:
             self.log(f"Connection failed: {e}", "ERROR")
             return False
 
     def bind_program(self) -> bool:
-        """Bind to the P4 program (or get info in read-only mode if already bound)."""
+        """Bind to the P4 program."""
         self.log(f"Binding to program: {self.program_name}")
         try:
             self.interface.bind_pipeline_config(self.program_name)
             self.target = gc.Target(device_id=0, pipe_id=0xFFFF)
             self.bfrt_info = self.interface.bfrt_info_get(self.program_name)
-            self.log(f"Bound to program successfully")
+            self.log("Bound to program successfully")
             return True
         except Exception as e:
-            # Check if another client already owns the program
             if "already owns" in str(e) or "ALREADY_EXISTS" in str(e):
-                self.log(f"Program already owned by another client (controller)")
-                self.log(f"Getting program info in read-only mode...")
-                try:
-                    # Try to get bfrt_info without binding (read-only access)
-                    self.bfrt_info = self.interface.bfrt_info_get(self.program_name)
-                    self.target = gc.Target(device_id=0, pipe_id=0xFFFF)
-                    self.log(f"Got program info in read-only mode")
-                    return True
-                except Exception as e2:
-                    self.log(f"Failed to get program info: {e2}", "ERROR")
-                    return False
-            self.log(f"Failed to bind program: {e}", "ERROR")
+                self.log(
+                    "ERROR: Another client (controller?) already owns this program",
+                    "ERROR",
+                )
+                self.log(
+                    "Please stop the controller before running hardware tests", "ERROR"
+                )
+            else:
+                self.log(f"Failed to bind program: {e}", "ERROR")
             return False
+
+    def insert_table_entry(
+        self, table_name, key_fields, action_name=None, data_fields=None
+    ):
+        """Insert a table entry."""
+        table = self.bfrt_info.table_get(table_name)
+        key_list = [table.make_key(key_fields)]
+        if data_fields:
+            data_list = [table.make_data(data_fields, action_name)]
+        else:
+            data_list = [table.make_data([], action_name)]
+        table.entry_add(self.target, key_list, data_list)
+
+    def delete_table_entry(self, table_name, key_fields):
+        """Delete a table entry."""
+        table = self.bfrt_info.table_get(table_name)
+        key_list = [table.make_key(key_fields)]
+        table.entry_del(self.target, key_list)
+
+    def clear_table(self, table_name):
+        """Clear all entries from a table."""
+        table = self.bfrt_info.table_get(table_name)
+        table.entry_del(self.target)
+
+    def get_table_entries(self, table_name):
+        """Get all entries from a table."""
+        table = self.bfrt_info.table_get(table_name)
+        resp = table.entry_get(self.target, flags={"from_hw": False})
+        return list(resp)
 
     def test_connection(self):
         """Test 1: Verify gRPC connection to switch."""
@@ -129,23 +151,21 @@ class HardwareTest:
             return False
 
         if self.bind_program():
-            self.log_pass(f"Connected to P4 program '{self.program_name}'")
+            self.log_pass(f"Bound to P4 program '{self.program_name}'")
         else:
-            self.log_fail(
-                "Program binding", f"Could not connect to '{self.program_name}'"
-            )
+            self.log_fail("Program binding", f"Could not bind to '{self.program_name}'")
             return False
 
         return True
 
-    def test_table_read(self):
-        """Test 2: Read table entries from the switch."""
+    def test_table_access(self):
+        """Test 2: Verify P4 tables exist and are accessible."""
         print("\n" + "=" * 60)
-        print("TEST 2: Table Read Test")
+        print("TEST 2: Table Access Test")
         print("=" * 60)
 
         if not self.bfrt_info:
-            self.log_fail("Table read", "Not connected to switch")
+            self.log_fail("Table access", "Not connected to switch")
             return False
 
         tables_to_check = [
@@ -156,152 +176,204 @@ class HardwareTest:
             "pipe.SwitchIngress.client_snat",
         ]
 
-        # In read-only mode, we may not be able to read table entries
-        # Just verify we can access table metadata
+        all_passed = True
         for table_name in tables_to_check:
             try:
                 table = self.bfrt_info.table_get(table_name)
-                # Just verify we can get the table object
-                self.log_pass(f"Table '{table_name}' exists")
+                self.log_pass(f"Table '{table_name}' accessible")
             except Exception as e:
                 self.log_fail(f"Access table '{table_name}'", str(e))
+                all_passed = False
 
-        return True
+        return all_passed
 
-    def test_controller_health(self):
-        """Test 3: Test controller REST API health."""
+    def test_table_write_read(self):
+        """Test 3: Write and read back table entries."""
         print("\n" + "=" * 60)
-        print("TEST 3: Controller API Test")
-        print("=" * 60)
-
-        # Test if controller is responding
-        try:
-            # Flask apps typically respond to root or a simple endpoint
-            # Try the cleanup endpoint with a GET (it expects POST, so we expect 405)
-            resp = requests.get(f"{self.controller_url}/cleanup", timeout=5)
-            if resp.status_code == 405:  # Method not allowed is expected for GET
-                self.log_pass("Controller is running and responding")
-            elif resp.status_code == 200:
-                self.log_pass("Controller cleanup endpoint accessible")
-            else:
-                self.log_fail(
-                    "Controller health", f"Unexpected status: {resp.status_code}"
-                )
-        except requests.exceptions.ConnectionError:
-            self.log_fail(
-                "Controller health", "Cannot connect to controller. Is it running?"
-            )
-            return False
-        except Exception as e:
-            self.log_fail("Controller health", str(e))
-            return False
-
-        return True
-
-    def test_node_migration(self):
-        """Test 4: Test node migration via controller API."""
-        print("\n" + "=" * 60)
-        print("TEST 4: Node Migration Test")
-        print("=" * 60)
-
-        # Load controller config to get current node IPs
-        config_path = os.path.join(CONTROLLER_DIR, "controller_config.json")
-        try:
-            with open(config_path, "r") as f:
-                configs = json.load(f)
-                master_config = next(c for c in configs if c.get("master", False))
-                nodes = master_config.get("nodes", [])
-                lb_nodes = [n for n in nodes if n.get("is_lb_node", False)]
-        except Exception as e:
-            self.log_fail("Load config", str(e))
-            return False
-
-        if len(lb_nodes) < 1:
-            self.log_fail("Node migration", "No LB nodes configured")
-            return False
-
-        # Test migration: migrate first LB node to a test IP and back
-        original_ip = lb_nodes[0]["ipv4"]
-        test_ip = "10.0.0.100"  # Temporary test IP
-
-        self.log(f"Testing migration: {original_ip} -> {test_ip}")
-
-        try:
-            # Migrate to test IP
-            resp = requests.post(
-                f"{self.controller_url}/migrateNode",
-                headers={"Content-Type": "application/json"},
-                json={"old_ipv4": original_ip, "new_ipv4": test_ip},
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                self.log_pass(f"Migrated {original_ip} -> {test_ip}")
-            else:
-                self.log_fail(
-                    f"Migration to test IP", f"Status {resp.status_code}: {resp.text}"
-                )
-                return False
-
-            # Wait a moment
-            time.sleep(1)
-
-            # Migrate back
-            resp = requests.post(
-                f"{self.controller_url}/migrateNode",
-                headers={"Content-Type": "application/json"},
-                json={"old_ipv4": test_ip, "new_ipv4": original_ip},
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                self.log_pass(f"Migrated back {test_ip} -> {original_ip}")
-            else:
-                self.log_fail(
-                    f"Migration back", f"Status {resp.status_code}: {resp.text}"
-                )
-                return False
-
-        except requests.exceptions.ConnectionError:
-            self.log_fail("Node migration", "Cannot connect to controller")
-            return False
-        except Exception as e:
-            self.log_fail("Node migration", str(e))
-            return False
-
-        return True
-
-    def test_table_entries_after_migration(self):
-        """Test 5: Verify table entries are correct after migration."""
-        print("\n" + "=" * 60)
-        print("TEST 5: Table Verification After Migration")
+        print("TEST 3: Table Write/Read Test")
         print("=" * 60)
 
         if not self.bfrt_info:
-            self.log_fail("Table verification", "Not connected to switch")
+            self.log_fail("Table write/read", "Not connected to switch")
             return False
 
         try:
-            # Check forward table has entries
-            forward_table = self.bfrt_info.table_get("pipe.SwitchIngress.forward")
-            resp = forward_table.entry_get(self.target, flags={"from_hw": False})
-            entries = list(resp)
-            if len(entries) > 0:
-                self.log_pass(f"Forward table has {len(entries)} entries")
-            else:
-                self.log_fail("Forward table", "No entries found")
+            # Test forward table
+            self.log("Testing forward table write/read...")
+            test_ip = "192.168.1.1"
+            test_port = 5
 
-            # Check node_selector table
-            selector_table = self.bfrt_info.table_get(
-                "pipe.SwitchIngress.node_selector"
+            self.insert_table_entry(
+                "pipe.SwitchIngress.forward",
+                [gc.KeyTuple("hdr.ipv4.dst_addr", gc.ipv4_to_bytes(test_ip))],
+                "SwitchIngress.set_egress_port",
+                [gc.DataTuple("port", test_port)],
             )
-            resp = selector_table.entry_get(self.target, flags={"from_hw": False})
-            entries = list(resp)
+            self.log_pass("Forward table entry written")
+
+            # Read back
+            entries = self.get_table_entries("pipe.SwitchIngress.forward")
             if len(entries) > 0:
-                self.log_pass(f"Node selector table has {len(entries)} entries")
+                self.log_pass(f"Forward table entry read back ({len(entries)} entries)")
             else:
-                self.log_fail("Node selector table", "No entries found")
+                self.log_fail("Forward table read", "No entries found after write")
+
+            # Clean up
+            self.delete_table_entry(
+                "pipe.SwitchIngress.forward",
+                [gc.KeyTuple("hdr.ipv4.dst_addr", gc.ipv4_to_bytes(test_ip))],
+            )
+            self.log_pass("Forward table entry deleted")
 
         except Exception as e:
-            self.log_fail("Table verification", str(e))
+            self.log_fail("Table write/read", str(e))
+            return False
+
+        return True
+
+    def test_load_balancer_setup(self):
+        """Test 4: Configure a complete load balancer setup."""
+        print("\n" + "=" * 60)
+        print("TEST 4: Load Balancer Setup Test")
+        print("=" * 60)
+
+        if not self.bfrt_info:
+            self.log_fail("LB setup", "Not connected to switch")
+            return False
+
+        try:
+            # Clear any existing entries first
+            self.log("Clearing existing entries...")
+            for table in [
+                "pipe.SwitchIngress.forward",
+                "pipe.SwitchIngress.client_snat",
+                "pipe.SwitchIngress.node_selector",
+                "pipe.SwitchIngress.action_selector",
+                "pipe.SwitchIngress.action_selector_ap",
+            ]:
+                try:
+                    self.clear_table(table)
+                except:
+                    pass  # Table might already be empty
+
+            # 1. Add forward entries
+            self.log("Adding forward entries...")
+            self.insert_table_entry(
+                "pipe.SwitchIngress.forward",
+                [gc.KeyTuple("hdr.ipv4.dst_addr", gc.ipv4_to_bytes(self.client_ip))],
+                "SwitchIngress.set_egress_port",
+                [gc.DataTuple("port", self.client_port)],
+            )
+            for i, server_ip in enumerate(self.server_ips):
+                self.insert_table_entry(
+                    "pipe.SwitchIngress.forward",
+                    [gc.KeyTuple("hdr.ipv4.dst_addr", gc.ipv4_to_bytes(server_ip))],
+                    "SwitchIngress.set_egress_port",
+                    [gc.DataTuple("port", self.server_ports[i])],
+                )
+            self.log_pass("Forward entries added")
+
+            # 2. Add client SNAT entry
+            self.log("Adding client SNAT entry...")
+            self.insert_table_entry(
+                "pipe.SwitchIngress.client_snat",
+                [gc.KeyTuple("hdr.tcp.src_port", self.service_port)],
+                "SwitchIngress.set_rewrite_src",
+                [gc.DataTuple("new_src", gc.ipv4_to_bytes(self.lb_ip))],
+            )
+            self.log_pass("Client SNAT entry added")
+
+            # 3. Add action profile entries
+            self.log("Adding action profile entries...")
+            for i, server_ip in enumerate(self.server_ips):
+                self.insert_table_entry(
+                    "pipe.SwitchIngress.action_selector_ap",
+                    [gc.KeyTuple("$ACTION_MEMBER_ID", i)],
+                    "SwitchIngress.set_rewrite_dst",
+                    [gc.DataTuple("new_dst", gc.ipv4_to_bytes(server_ip))],
+                )
+            self.log_pass("Action profile entries added")
+
+            # 4. Add selector group
+            self.log("Adding selector group...")
+            selector_table = self.bfrt_info.table_get(
+                "pipe.SwitchIngress.action_selector"
+            )
+            key = [selector_table.make_key([gc.KeyTuple("$SELECTOR_GROUP_ID", 1)])]
+            data = [
+                selector_table.make_data(
+                    [
+                        gc.DataTuple("$MAX_GROUP_SIZE", 4),
+                        gc.DataTuple("$ACTION_MEMBER_ID", int_arr_val=[0, 1]),
+                        gc.DataTuple(
+                            "$ACTION_MEMBER_STATUS", bool_arr_val=[True, True]
+                        ),
+                    ]
+                )
+            ]
+            selector_table.entry_add(self.target, key, data)
+            self.log_pass("Selector group added")
+
+            # 5. Add node selector entry
+            self.log("Adding node selector entry...")
+            self.insert_table_entry(
+                "pipe.SwitchIngress.node_selector",
+                [gc.KeyTuple("hdr.ipv4.dst_addr", gc.ipv4_to_bytes(self.lb_ip))],
+                None,
+                [gc.DataTuple("$SELECTOR_GROUP_ID", 1)],
+            )
+            self.log_pass("Node selector entry added")
+
+            # Verify setup
+            self.log("Verifying setup...")
+            forward_entries = self.get_table_entries("pipe.SwitchIngress.forward")
+            if len(forward_entries) >= 3:
+                self.log_pass(f"Setup verified: {len(forward_entries)} forward entries")
+            else:
+                self.log_fail(
+                    "Setup verification",
+                    f"Expected 3+ forward entries, got {len(forward_entries)}",
+                )
+
+        except Exception as e:
+            self.log_fail("Load balancer setup", str(e))
+            return False
+
+        return True
+
+    def test_cleanup(self):
+        """Test 5: Clean up all table entries."""
+        print("\n" + "=" * 60)
+        print("TEST 5: Cleanup Test")
+        print("=" * 60)
+
+        if not self.bfrt_info:
+            self.log_fail("Cleanup", "Not connected to switch")
+            return False
+
+        try:
+            # Clear tables in reverse order of dependencies
+            tables_to_clear = [
+                "pipe.SwitchIngress.node_selector",
+                "pipe.SwitchIngress.action_selector",
+                "pipe.SwitchIngress.action_selector_ap",
+                "pipe.SwitchIngress.client_snat",
+                "pipe.SwitchIngress.forward",
+            ]
+
+            for table_name in tables_to_clear:
+                try:
+                    self.clear_table(table_name)
+                    self.log_pass(f"Cleared table '{table_name}'")
+                except Exception as e:
+                    # Some tables might already be empty
+                    if "OBJECT_NOT_FOUND" in str(e) or "not found" in str(e).lower():
+                        self.log_pass(f"Table '{table_name}' already empty")
+                    else:
+                        self.log_fail(f"Clear table '{table_name}'", str(e))
+
+        except Exception as e:
+            self.log_fail("Cleanup", str(e))
             return False
 
         return True
@@ -311,16 +383,20 @@ class HardwareTest:
         print("\n" + "=" * 60)
         print(f"  HARDWARE TEST SUITE - {self.arch.upper()}")
         print(f"  Switch: {self.grpc_addr}")
-        print(f"  Controller: {self.controller_url}")
         print(f"  Program: {self.program_name}")
         print("=" * 60)
+        print("\nNOTE: Make sure the controller is NOT running!")
+        print("      This test needs exclusive access to the P4 program.\n")
 
-        # Run tests
-        self.test_connection()
-        self.test_table_read()
-        self.test_controller_health()
-        self.test_node_migration()
-        self.test_table_entries_after_migration()
+        # Run tests in order
+        if not self.test_connection():
+            print("\n⚠️  Connection failed - skipping remaining tests")
+            return False
+
+        self.test_table_access()
+        self.test_table_write_read()
+        self.test_load_balancer_setup()
+        self.test_cleanup()
 
         # Summary
         print("\n" + "=" * 60)
@@ -350,17 +426,11 @@ def main():
         default="127.0.0.1:50052",
         help="gRPC address of the switch (default: 127.0.0.1:50052)",
     )
-    parser.add_argument(
-        "--controller-url",
-        default="http://127.0.0.1:5000",
-        help="URL of the controller REST API (default: http://127.0.0.1:5000)",
-    )
     args = parser.parse_args()
 
     test = HardwareTest(
         arch=args.arch,
         grpc_addr=args.grpc_addr,
-        controller_url=args.controller_url,
     )
 
     success = test.run_all_tests()
