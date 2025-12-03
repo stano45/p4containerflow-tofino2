@@ -368,8 +368,16 @@ model: install
 	fi
 	@cd open-p4studio && sudo -E ./run_tofino_model.sh --arch $(ARCH) -p $(PROGRAM_NAME)
 
+switch:
+	@echo "=== Running switchd on hardware (ARCH=$(ARCH)) ==="
+	@if [ -z "$(SDE_INSTALL)" ]; then \
+		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
+		exit 1; \
+	fi
+	@cd open-p4studio && sudo -E ./run_switchd.sh --arch $(ARCH) -p $(PROGRAM_NAME)
+
 load-kmods:
-	@echo "=== Loading Barefoot kernel modules ==="
+	@echo "=== Loading Barefoot kernel modules (manual helper) ==="
 	@if [ -z "$(SDE_INSTALL)" ]; then \
 		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
 		exit 1; \
@@ -377,32 +385,14 @@ load-kmods:
 	@BIN_DIR="$(SDE_INSTALL)/bin"; \
 	INSTALL_DIR="$(SDE_INSTALL)"; \
 	for MOD in bf_kdrv bf_kpkt bf_knet; do \
-		UNLOAD_SCRIPT="$$BIN_DIR/$${MOD}_mod_unload"; \
 		LOAD_SCRIPT="$$BIN_DIR/$${MOD}_mod_load"; \
-		if [ -x "$$UNLOAD_SCRIPT" ]; then \
-			sudo "$$UNLOAD_SCRIPT" >/dev/null 2>&1 || true; \
+		if [ ! -x "$$LOAD_SCRIPT" ]; then \
+			echo "WARNING: $$LOAD_SCRIPT not found, skipping."; \
+			continue; \
 		fi; \
-		if [ -x "$$LOAD_SCRIPT" ]; then \
-			echo "Loading $$MOD kernel module"; \
-			if ! sudo "$$LOAD_SCRIPT" "$$INSTALL_DIR"; then \
-				if lsmod | awk '{print $$1}' | grep -qx "$$MOD"; then \
-					echo "$$MOD already loaded, continuing"; \
-				else \
-					echo "ERROR: failed to load $$MOD"; exit 1; \
-				fi; \
-			fi; \
-		else \
-			echo "WARNING: $$LOAD_SCRIPT not found"; \
-		fi; \
+		echo "Loading $$MOD using $$LOAD_SCRIPT $$INSTALL_DIR"; \
+		sudo "$$LOAD_SCRIPT" "$$INSTALL_DIR" || true; \
 	done
-
-switch: load-kmods
-	@echo "=== Running switchd on hardware (ARCH=$(ARCH)) ==="
-	@if [ -z "$(SDE_INSTALL)" ]; then \
-		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
-		exit 1; \
-	fi
-	@cd open-p4studio && sudo -E ./run_switchd.sh --arch $(ARCH) -p $(PROGRAM_NAME)
 
 # -----------------------------------------------------------------------------
 # Test Targets
@@ -436,6 +426,6 @@ controller:
 
 .PHONY: init-submodule check-python setup-env \
         extract-sde setup-rdc config-profile extract-bsp build-profile setup-model setup-hw \
-	build install model load-kmods switch clean-build \
+	build install model switch load-kmods clean-build \
         test-dataplane test-controller \
         controller clean help
