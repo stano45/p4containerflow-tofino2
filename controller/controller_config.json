@@ -20,7 +20,7 @@
       {
         "ipv4": "10.0.0.2",
         "is_lb_node": true,
-        "sw_port": 1
+        "sw_port": 2
       },
       {
         "ipv4": "10.0.0.3",
