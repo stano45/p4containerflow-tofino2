@@ -379,19 +379,18 @@ load-kmods:
 	for MOD in bf_kdrv bf_kpkt bf_knet; do \
 		UNLOAD_SCRIPT="$$BIN_DIR/$${MOD}_mod_unload"; \
 		LOAD_SCRIPT="$$BIN_DIR/$${MOD}_mod_load"; \
-		if lsmod | awk '{print $$1}' | grep -qx "$$MOD"; then \
-			if [ -x "$$UNLOAD_SCRIPT" ]; then \
-				sudo "$$UNLOAD_SCRIPT" >/dev/null 2>&1 || true; \
-			fi; \
-		fi; \
-		if lsmod | awk '{print $$1}' | grep -qx "$$MOD"; then \
-			echo "$$MOD kernel module already loaded"; \
-			continue; \
+		if [ -x "$$UNLOAD_SCRIPT" ]; then \
+			sudo "$$UNLOAD_SCRIPT" >/dev/null 2>&1 || true; \
 		fi; \
 		if [ -x "$$LOAD_SCRIPT" ]; then \
-			sudo "$$UNLOAD_SCRIPT" >/dev/null 2>&1 || true; \
 			echo "Loading $$MOD kernel module"; \
-			sudo "$$LOAD_SCRIPT" "$$INSTALL_DIR" || { echo "ERROR: failed to load $$MOD"; exit 1; }; \
+			if ! sudo "$$LOAD_SCRIPT" "$$INSTALL_DIR"; then \
+				if lsmod | awk '{print $$1}' | grep -qx "$$MOD"; then \
+					echo "$$MOD already loaded, continuing"; \
+				else \
+					echo "ERROR: failed to load $$MOD"; exit 1; \
+				fi; \
+			fi; \
 		else \
 			echo "WARNING: $$LOAD_SCRIPT not found"; \
 		fi; \
