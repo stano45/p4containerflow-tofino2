@@ -199,9 +199,9 @@ class AbstractTest(BfRuntimeTest):
                     current_imbalance * 100,
                 )
                 max_seen_imbalance = max(max_seen_imbalance, current_imbalance)
-        assert (
-            max_seen_imbalance <= max_imbalance
-        ), f"Traffic imbalance too high: {max_seen_imbalance*100:.2f}%"
+        assert max_seen_imbalance <= max_imbalance, (
+            f"Traffic imbalance too high: {max_seen_imbalance * 100:.2f}%"
+        )
 
     def verifyNoOtherPackets(self):
         verify_no_other_packets(self, self.devId, timeout=2)
@@ -237,7 +237,7 @@ class TestPortChangeKeepConnection(AbstractTest):
         self.clientPort = swports[0]
         self.numServers = 4
         self.serverPorts = [swports[i + 1] for i in range(self.numServers)]
-        self.serverIps = [f"10.0.0.{i+1}" for i in range(self.numServers)]
+        self.serverIps = [f"10.0.0.{i + 1}" for i in range(self.numServers)]
         self.numPackets = 100
         self.clientTcpPort = 65000
         self.serverTcpPort = 12345
@@ -502,7 +502,7 @@ class TestBidirectionalTraffic(AbstractTest):
         self.clientPort = swports[0]
         self.numServers = 4
         self.serverPorts = [swports[i + 1] for i in range(self.numServers)]
-        self.serverIps = [f"10.0.0.{i+1}" for i in range(self.numServers)]
+        self.serverIps = [f"10.0.0.{i + 1}" for i in range(self.numServers)]
         self.numPackets = 200
         self.maxImbalance = 0.3
         self.serverCounters = [0 for _ in range(self.numServers)]
@@ -608,7 +608,7 @@ class TestPortChange(AbstractTest):
         self.windowSize = 2
         self.numServers = 4
         self.serverPorts = [swports[i + 1] for i in range(self.numServers)]
-        self.serverIps = [f"10.0.0.{i+1}" for i in range(self.numServers)]
+        self.serverIps = [f"10.0.0.{i + 1}" for i in range(self.numServers)]
         self.numPackets = 100
         # Higher tolerance because we only send ~33 packets per phase,
         # which can have natural variance > 20%
