@@ -339,7 +339,7 @@ build:
 		ln -sf ../open-p4studio/pkgsrc/p4-examples/p4_16_programs/common load_balancer/common; \
 	fi
 	@mkdir -p $(BUILD_DIR)
-	@echo "Compiling $(P4_PROGRAM) for Tofino2 (t2na)..."
+	@echo "Compiling $(P4_PROGRAM) for $(CHIP_FAMILY) ($(P4_ARCH))..."
 	$(P4C) $(P4C_FLAGS) $(P4_PROGRAM)
 	@echo "Build complete: $(BUILD_DIR)"
 
