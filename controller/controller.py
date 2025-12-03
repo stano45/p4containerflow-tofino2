@@ -36,6 +36,14 @@ def main(config_file_path):
         with open(config_file_path, "r") as config_file:
             switch_configs = json.load(config_file)
 
+        # Determine program name based on ARCH environment variable
+        arch = os.environ.get("ARCH", "tf2")
+        if arch == "tf1":
+            program_name = "tna_load_balancer"
+        else:
+            program_name = "t2na_load_balancer"
+        logger.info(f"Using program name: {program_name} (ARCH={arch})")
+
         switch_controllers = []
         master_config = None
 
@@ -54,7 +62,7 @@ def main(config_file_path):
                 # p4info_file_path=config["p4info_file_path"],
                 # bmv2_file_path=config["bmv2_file_path"],
                 logger=logger,
-                sw_name=config["name"],
+                sw_name=program_name,
                 sw_addr=config["addr"],
                 sw_id=config["id"],
                 client_id=config["client_id"],
@@ -72,7 +80,7 @@ def main(config_file_path):
             # p4info_file_path=master_config["p4info_file_path"],
             # bmv2_file_path=master_config["bmv2_file_path"],
             logger=logger,
-            sw_name=master_config["name"],
+            sw_name=program_name,
             sw_addr=master_config["addr"],
             sw_id=master_config["id"],
             client_id=master_config["client_id"],
