@@ -55,4 +55,10 @@ if [ ! -x "$VENV_PYTHON" ]; then
     exit 1
 fi
 
+# Get the venv's site-packages path and prepend it to PYTHONPATH
+# This ensures venv packages (like grpc) take precedence over SDE packages
+VENV_SITE_PACKAGES="$SCRIPT_DIR/.venv/lib/python${PY_VERSION}/site-packages"
+export PYTHONPATH="$VENV_SITE_PACKAGES:$PYTHONPATH"
+echo "Updated PYTHONPATH with venv: $PYTHONPATH"
+
 sudo env "PATH=$PATH" "PYTHONPATH=$PYTHONPATH" "$VENV_PYTHON" controller.py --config controller_config.json
