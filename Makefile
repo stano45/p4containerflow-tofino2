@@ -434,6 +434,21 @@ test-controller: install
 		-s t2na_load_balancer_controller \
 		-p $(PROGRAM_NAME)
 
+# Hardware test - tests the switch and controller running on real hardware
+# Requires: switch running (make switch), controller running (make controller)
+test-hardware:
+	@echo "=== Running hardware tests (ARCH=$(ARCH)) ==="
+	@echo "NOTE: Requires switch and controller to be running"
+	@if [ -z "$(SDE_INSTALL)" ]; then \
+		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
+		exit 1; \
+	fi
+	@PY_VERSION=$$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'); \
+	SDE_PY_LIB="$(SDE_INSTALL)/lib/python$${PY_VERSION}"; \
+	PYTHONPATH="$${SDE_PY_LIB}/site-packages/tofino/bfrt_grpc:$${SDE_PY_LIB}/site-packages/tofino:$${SDE_PY_LIB}/site-packages"; \
+	export PYTHONPATH; \
+	python3 test/hardware_test.py --arch $(ARCH)
+
 # -----------------------------------------------------------------------------
 # Controller
 # -----------------------------------------------------------------------------
@@ -449,5 +464,5 @@ controller:
 .PHONY: init-submodule check-python setup-env \
         extract-sde setup-rdc config-profile extract-bsp build-profile setup-model setup-hw \
 	build install model switch load-kmods clean-build \
-        test-dataplane test-controller \
+        test-dataplane test-controller test-hardware \
         controller clean help
