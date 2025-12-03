@@ -122,19 +122,22 @@ class TestController(AbstractTest):
         self.lbNodeIps = [n["ipv4"] for n in self.lbNodes]
         self.lbNodePorts = [n["sw_port"] for n in self.lbNodes]
 
+        # Service port from config - this is used for SNAT matching
+        self.servicePort = MASTER_CONFIG["service_port"]
+
         self.numPackets = 300
         self.maxImbalancePercent = 20
         self.server1Counter = 0
         self.server2Counter = 0
-        self.serverTcpPort = 25565
 
         logger.info(
-            "Loaded config: client=%s (port %d), LB nodes=%s (ports %s), VIP=%s",
+            "Loaded config: client=%s (port %d), LB nodes=%s (ports %s), VIP=%s, service_port=%d",
             self.clientIp,
             self.clientPort,
             self.lbNodeIps,
             self.lbNodePorts,
             self.loadBalancerIp,
+            self.servicePort,
         )
 
     def setupCtrlPlane(self):
@@ -157,19 +160,19 @@ class TestController(AbstractTest):
                 ip_src=self.clientIp,
                 ip_dst=self.loadBalancerIp,
                 tcp_sport=clientTcpPort,
-                tcp_dport=self.serverTcpPort,
+                tcp_dport=self.servicePort,
             )
             expectedPktToServer1 = simple_tcp_packet(
                 ip_src=self.clientIp,
                 ip_dst=server_ips[0],
                 tcp_sport=clientTcpPort,
-                tcp_dport=self.serverTcpPort,
+                tcp_dport=self.servicePort,
             )
             expectedPktToServer2 = simple_tcp_packet(
                 ip_src=self.clientIp,
                 ip_dst=server_ips[1],
                 tcp_sport=clientTcpPort,
-                tcp_dport=self.serverTcpPort,
+                tcp_dport=self.servicePort,
             )
 
             logger.info("Verifying packet %d...", i)
@@ -198,7 +201,7 @@ class TestController(AbstractTest):
             serverPkt = simple_tcp_packet(
                 ip_src=serverIp,
                 ip_dst=self.clientIp,
-                tcp_sport=self.serverTcpPort,
+                tcp_sport=self.servicePort,
                 tcp_dport=clientTcpPort,
             )
             send_packet(self, server_ports[rcvIdx], serverPkt)
@@ -207,7 +210,7 @@ class TestController(AbstractTest):
             expectedPktToClient = simple_tcp_packet(
                 ip_src=self.loadBalancerIp,
                 ip_dst=self.clientIp,
-                tcp_sport=self.serverTcpPort,
+                tcp_sport=self.servicePort,
                 tcp_dport=clientTcpPort,
             )
             logger.info("Verifying packet on client port %d...", self.clientPort)
