@@ -4,7 +4,7 @@ import grpc
 
 from utils import printGrpcError
 from bf_switch_controller import SwitchController
-from internal_types import Node
+from internal_types import Node, UpdateType
 
 
 class NodeManager(object):
