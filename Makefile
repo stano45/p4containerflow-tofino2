@@ -343,12 +343,13 @@ build:
 	@mkdir -p $(BUILD_DIR)
 	@echo "Compiling $(P4_PROGRAM) for $(CHIP_FAMILY) ($(P4_ARCH))..."
 	$(P4C) $(P4C_FLAGS) $(P4_PROGRAM)
-	@echo "Running assembler to generate tofino.bin..."
+	@echo "Running assembler to generate $(CHIP_FAMILY).bin..."
 	@BFA_FILE=$$(find $(BUILD_DIR)/pipe -name "*.bfa" | head -1); \
 	if [ -n "$$BFA_FILE" ] && [ -f "$(BFAS)" ]; then \
 		mkdir -p $(BUILD_DIR)/pipe/logs; \
 		$(BFAS) $$BFA_FILE -o $(BUILD_DIR)/pipe; \
-		echo "Assembly complete: $(BUILD_DIR)/pipe/tofino.bin"; \
+		mv $(BUILD_DIR)/pipe/tofino.bin $(BUILD_DIR)/pipe/$(CHIP_FAMILY).bin 2>/dev/null || true; \
+		echo "Assembly complete: $(BUILD_DIR)/pipe/$(CHIP_FAMILY).bin"; \
 	else \
 		echo "WARNING: bfas not found or no .bfa file, skipping assembly"; \
 	fi
