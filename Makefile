@@ -324,6 +324,8 @@ P4C_FLAGS = --target $(P4_TARGET) \
             --bf-rt-schema $(BUILD_DIR)/bf-rt.json \
             -o $(BUILD_DIR)
 
+BFAS = $(SDE_INSTALL)/bin/bfas
+
 build:
 	@echo "=== Building $(PROGRAM_NAME) (ARCH=$(ARCH)) ==="
 	@if [ -z "$(SDE_INSTALL)" ]; then \
@@ -341,6 +343,15 @@ build:
 	@mkdir -p $(BUILD_DIR)
 	@echo "Compiling $(P4_PROGRAM) for $(CHIP_FAMILY) ($(P4_ARCH))..."
 	$(P4C) $(P4C_FLAGS) $(P4_PROGRAM)
+	@echo "Running assembler to generate tofino.bin..."
+	@BFA_FILE=$$(find $(BUILD_DIR)/pipe -name "*.bfa" | head -1); \
+	if [ -n "$$BFA_FILE" ] && [ -f "$(BFAS)" ]; then \
+		mkdir -p $(BUILD_DIR)/pipe/logs; \
+		$(BFAS) $$BFA_FILE -o $(BUILD_DIR)/pipe; \
+		echo "Assembly complete: $(BUILD_DIR)/pipe/tofino.bin"; \
+	else \
+		echo "WARNING: bfas not found or no .bfa file, skipping assembly"; \
+	fi
 	@echo "Build complete: $(BUILD_DIR)"
 
 clean-build:
