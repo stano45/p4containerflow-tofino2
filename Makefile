@@ -379,10 +379,17 @@ load-kmods:
 	for MOD in bf_kdrv bf_kpkt bf_knet; do \
 		UNLOAD_SCRIPT="$$BIN_DIR/$${MOD}_mod_unload"; \
 		LOAD_SCRIPT="$$BIN_DIR/$${MOD}_mod_load"; \
-		if [ -x "$$UNLOAD_SCRIPT" ]; then \
-			sudo "$$UNLOAD_SCRIPT" >/dev/null 2>&1 || true; \
+		if lsmod | awk '{print $$1}' | grep -qx "$$MOD"; then \
+			if [ -x "$$UNLOAD_SCRIPT" ]; then \
+				sudo "$$UNLOAD_SCRIPT" >/dev/null 2>&1 || true; \
+			fi; \
+		fi; \
+		if lsmod | awk '{print $$1}' | grep -qx "$$MOD"; then \
+			echo "$$MOD kernel module already loaded"; \
+			continue; \
 		fi; \
 		if [ -x "$$LOAD_SCRIPT" ]; then \
+			sudo "$$UNLOAD_SCRIPT" >/dev/null 2>&1 || true; \
 			echo "Loading $$MOD kernel module"; \
 			sudo "$$LOAD_SCRIPT" "$$INSTALL_DIR" || { echo "ERROR: failed to load $$MOD"; exit 1; }; \
 		else \
