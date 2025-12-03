@@ -216,9 +216,7 @@ class TestController(AbstractTest):
 
     def sendPacket(self):
         # First phase: initial two LB servers from config
-        self.sendPackets(
-            self.numPackets // 3, self.lbNodeIps, self.lbNodePorts
-        )
+        self.sendPackets(self.numPackets // 3, self.lbNodeIps, self.lbNodePorts)
         self.checkTrafficBalance(
             self.server1Counter, self.server2Counter, self.maxImbalancePercent
         )
