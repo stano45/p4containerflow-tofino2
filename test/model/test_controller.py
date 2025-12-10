@@ -18,7 +18,7 @@ swports = get_sw_ports()
 print("SW Ports: ", swports)
 
 CONFIG_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "controller", "controller_config.json"
+    os.path.dirname(__file__), "..", "..", "controller", "controller_config.json"
 )
 with open(CONFIG_PATH, "r") as f:
     _configs = json.load(f)
