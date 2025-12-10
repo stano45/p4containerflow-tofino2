@@ -3,7 +3,7 @@
 Hardware Controller Test Script for P4 Load Balancer on Tofino
 
 This script tests the controller running on real Tofino hardware.
-Unlike hardware_test.py, this test requires the controller to be running
+Unlike test_hardware_dataplane.py, this test requires the controller to be running
 and tests the controller API endpoints and their effects on table state.
 
 It requires:
@@ -11,7 +11,7 @@ It requires:
 2. The controller to be running (make controller)
 
 Usage:
-    python3 test/hardware_controller_test.py --arch tf1  # or tf2
+    python3 test/test_hardware_controller.py --arch tf1  # or tf2
 
 Tests performed:
 1. Controller health check - verifies controller HTTP API is accessible

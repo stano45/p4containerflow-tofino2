@@ -71,9 +71,10 @@ p4containerflow-tofino2/
 │   ├── controller_config.json  # Configuration file
 │   └── run.sh                  # Launcher script
 ├── test/
-│   ├── t2na_load_balancer_dataplane.py   # Dataplane PTF tests
-│   ├── t2na_load_balancer_controller.py  # Controller integration tests
-│   └── hardware_test.py                  # Hardware integration tests
+│   ├── test_model_dataplane.py      # Dataplane PTF tests (model)
+│   ├── test_model_controller.py     # Controller integration tests (model)
+│   ├── test_hardware_dataplane.py   # Hardware dataplane tests
+│   └── test_hardware_controller.py  # Hardware controller tests
 ├── profiles/
 │   ├── tofino2-hardware.yaml   # P4Studio profile for Tofino 2 hardware
 │   ├── tofino2-model.yaml      # P4Studio profile for Tofino 2 model

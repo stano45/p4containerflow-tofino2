@@ -409,14 +409,14 @@ test-dataplane: install
 	@echo "=== Running dataplane tests ==="
 	@cd open-p4studio && sudo -E ./run_p4_tests.sh --arch $(ARCH) \
 		-t ../test \
-		-s t2na_load_balancer_dataplane \
+		-s test_model_dataplane \
 		-p $(PROGRAM_NAME)
 
 test-controller: install
 	@echo "=== Running controller tests ==="
 	@cd open-p4studio && sudo -E ./run_p4_tests.sh --arch $(ARCH) \
 		-t ../test \
-		-s t2na_load_balancer_controller \
+		-s test_model_controller \
 		-p $(PROGRAM_NAME)
 
 # Hardware test - tests the switch running on real hardware
@@ -432,7 +432,7 @@ test-hardware:
 	SDE_PY_LIB="$(SDE_INSTALL)/lib/python$${PY_VERSION}"; \
 	PYTHONPATH="$${SDE_PY_LIB}/site-packages/tofino/bfrt_grpc:$${SDE_PY_LIB}/site-packages/tofino:$${SDE_PY_LIB}/site-packages"; \
 	export PYTHONPATH; \
-	python3 test/hardware_test.py --arch $(ARCH)
+	python3 test/test_hardware_dataplane.py --arch $(ARCH)
 
 # Hardware controller test - tests the controller running on real hardware
 # Requires: switch running (make switch), controller running (make controller)
@@ -447,7 +447,7 @@ test-hardware-controller:
 	SDE_PY_LIB="$(SDE_INSTALL)/lib/python$${PY_VERSION}"; \
 	PYTHONPATH="$${SDE_PY_LIB}/site-packages/tofino/bfrt_grpc:$${SDE_PY_LIB}/site-packages/tofino:$${SDE_PY_LIB}/site-packages"; \
 	export PYTHONPATH; \
-	python3 test/hardware_controller_test.py --arch $(ARCH)
+	python3 test/test_hardware_controller.py --arch $(ARCH)
 
 # -----------------------------------------------------------------------------
 # Controller

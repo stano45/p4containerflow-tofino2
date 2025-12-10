@@ -4,7 +4,7 @@ This directory contains test scripts for the P4 load balancer on Tofino hardware
 
 ## Test Files
 
-### 1. `t2na_load_balancer_dataplane.py`
+### 1. `test_model_dataplane.py`
 PTF-based dataplane tests for the Tofino model.
 
 **Environment:** Tofino model (simulation)  
@@ -24,7 +24,7 @@ make test-dataplane ARCH=tf2  # or tf1
 - Bidirectional flows with SNAT
 - Dynamic member updates
 
-### 2. `t2na_load_balancer_controller.py`
+### 2. `test_model_controller.py`
 PTF-based controller integration tests for the Tofino model.
 
 **Environment:** Tofino model (simulation)  
@@ -45,7 +45,7 @@ make test-controller
 
 **Note:** Some endpoints tested may be disabled in `controller/controller.py`.
 
-### 3. `hardware_test.py`
+### 3. `test_hardware_dataplane.py`
 Low-level hardware tests using bfrt_grpc directly.
 
 **Environment:** Real Tofino hardware  
@@ -67,7 +67,7 @@ make test-hardware ARCH=tf1  # or tf2
 
 **Note:** This test uses bfrt_grpc to directly manipulate tables, similar to what the controller does.
 
-### 4. `hardware_controller_test.py` ⭐ NEW
+### 4. `test_hardware_controller.py`
 Controller integration tests for real Tofino hardware.
 
 **Environment:** Real Tofino hardware  
@@ -87,7 +87,7 @@ make test-hardware-controller ARCH=tf1  # or tf2
 4. Table state consistency verification
 5. Cleanup API test
 
-**Key differences from `hardware_test.py`:**
+**Key differences from `test_hardware_dataplane.py`:**
 - Tests controller API endpoints instead of direct bfrt_grpc manipulation
 - Requires controller to be running
 - No packet generation (real hardware)
@@ -102,10 +102,10 @@ make controller
 
 | Test File | Environment | Controller Required | Packet Testing | Purpose |
 |-----------|-------------|---------------------|----------------|---------|
-| `t2na_load_balancer_dataplane.py` | Model | ❌ No | ✅ PTF | Dataplane functionality |
-| `t2na_load_balancer_controller.py` | Model | ✅ Yes | ✅ PTF | Controller + traffic |
-| `hardware_test.py` | Hardware | ❌ No | ❌ No | Low-level table ops |
-| `hardware_controller_test.py` | Hardware | ✅ Yes | ❌ No | Controller API + state |
+| `test_model_dataplane.py` | Model | ❌ No | ✅ PTF | Dataplane functionality |
+| `test_model_controller.py` | Model | ✅ Yes | ✅ PTF | Controller + traffic |
+| `test_hardware_dataplane.py` | Hardware | ❌ No | ❌ No | Low-level table ops |
+| `test_hardware_controller.py` | Hardware | ✅ Yes | ❌ No | Controller API + state |
 
 ## Typical Test Workflow
 
@@ -140,7 +140,7 @@ pip install requests
 ```
 
 ### Controller already owns program
-Stop the controller before running tests that require exclusive access (`hardware_test.py`, dataplane tests).
+Stop the controller before running tests that require exclusive access (`test_hardware_dataplane.py`, dataplane tests).
 
 ### Connection refused to controller
 Make sure the controller is running on port 5000:
