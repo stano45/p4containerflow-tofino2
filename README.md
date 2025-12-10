@@ -71,10 +71,13 @@ p4containerflow-tofino2/
 │   ├── controller_config.json  # Configuration file
 │   └── run.sh                  # Launcher script
 ├── test/
-│   ├── test_model_dataplane.py      # Dataplane PTF tests (model)
-│   ├── test_model_controller.py     # Controller integration tests (model)
-│   ├── test_hardware_dataplane.py   # Hardware dataplane tests
-│   └── test_hardware_controller.py  # Hardware controller tests
+│   ├── model/                       # PTF-based tests (tofino-model)
+│   │   ├── test_dataplane.py        # Dataplane functionality tests
+│   │   └── test_controller.py       # Controller integration tests
+│   └── hardware/                    # Pytest-based tests (real hardware)
+│       ├── test_dataplane.py        # Low-level table operations
+│       ├── test_controller.py       # HTTP API tests
+│       └── run.sh                   # Test runner
 ├── profiles/
 │   ├── tofino2-hardware.yaml   # P4Studio profile for Tofino 2 hardware
 │   ├── tofino2-model.yaml      # P4Studio profile for Tofino 2 model

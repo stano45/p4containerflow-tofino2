@@ -1,14 +1,29 @@
 # Testing Guide
 
-This directory contains test scripts for the P4 load balancer on Tofino hardware and model.
+This directory contains test scripts for the P4 load balancer.
 
-## Test Files
+## Directory Structure
 
-### 1. `test_model_dataplane.py`
+```
+test/
+├── model/                    # PTF-based tests (tofino-model)
+│   ├── test_dataplane.py     # Dataplane functionality tests
+│   └── test_controller.py    # Controller integration tests
+├── hardware/                 # Pytest-based tests (real hardware)
+│   ├── test_dataplane.py     # Low-level table operations
+│   ├── test_controller.py    # HTTP API tests
+│   ├── conftest.py           # Pytest fixtures
+│   ├── pyproject.toml        # Dependencies
+│   └── run.sh                # Test runner
+└── TESTING.md
+```
+
+## Model Tests (PTF-based)
+
+### `test/model/test_dataplane.py`
 PTF-based dataplane tests for the Tofino model.
 
-**Environment:** Tofino model (simulation)  
-**Requirements:** 
+**Requirements:**
 - Model running (`make model`)
 - Switch daemon running (`make switch`)
 - Controller NOT running
@@ -24,10 +39,9 @@ make test-dataplane ARCH=tf2  # or tf1
 - Bidirectional flows with SNAT
 - Dynamic member updates
 
-### 2. `test_model_controller.py`
-PTF-based controller integration tests for the Tofino model.
+### `test/model/test_controller.py`
+PTF-based controller integration tests with packet generation.
 
-**Environment:** Tofino model (simulation)  
 **Requirements:**
 - Model running (`make model`)
 - Switch daemon running (`make switch`)
@@ -35,7 +49,7 @@ PTF-based controller integration tests for the Tofino model.
 
 **Run:**
 ```bash
-make test-controller
+make test-controller ARCH=tf2
 ```
 
 **Tests:**
@@ -43,12 +57,11 @@ make test-controller
 - Traffic distribution with packet generation
 - Node migration with traffic verification
 
-**Note:** Some endpoints tested may be disabled in `controller/controller.py`.
+## Hardware Tests (Pytest-based)
 
-### 3. `test_hardware_dataplane.py`
+### `test/hardware/test_dataplane.py`
 Pytest-based low-level hardware tests using bfrt_grpc directly.
 
-**Environment:** Real Tofino hardware  
 **Requirements:**
 - Switch running (`make switch`)
 - Controller NOT running (test takes ownership)
@@ -56,15 +69,11 @@ Pytest-based low-level hardware tests using bfrt_grpc directly.
 
 **Run:**
 ```bash
-# Run all hardware dataplane tests
 make test-hardware ARCH=tf1  # or tf2
 
-# Or run directly with pytest options
-cd test && PYTHONPATH=$SDE_INSTALL/lib/python3.X/site-packages/tofino/bfrt_grpc:... \
-    uv run pytest test_hardware_dataplane.py -v --arch tf1
-
-# Run specific test class
-make test-hardware ARCH=tf1 && cd test && uv run pytest test_hardware_dataplane.py -v -k "TestTableAccess"
+# Or directly:
+cd test/hardware && ./run.sh dataplane -v
+cd test/hardware && ./run.sh dataplane -k "TestTableAccess"
 ```
 
 **Test Classes:**
@@ -74,30 +83,20 @@ make test-hardware ARCH=tf1 && cd test && uv run pytest test_hardware_dataplane.
 - `TestLoadBalancerSetup` - Full load balancer configuration
 - `TestCleanup` - Remove all table entries
 
-**Note:** This test uses bfrt_grpc to directly manipulate tables, similar to what the controller does.
+### `test/hardware/test_controller.py`
+Pytest-based HTTP API tests for the controller.
 
-### 4. `test_hardware_controller.py`
-Pytest-based HTTP API tests for the controller (works on both model and hardware).
-
-**Environment:** Any (tests controller HTTP API only)  
 **Requirements:**
 - Switch running (`make switch`)
 - Controller running (`make controller`)
-- uv installed
 
 **Run:**
 ```bash
-# Run all controller API tests
 make test-hardware-controller
 
-# Or run directly with pytest options
-cd test && uv run pytest test_hardware_controller.py -v
-
-# Run specific test class
-cd test && uv run pytest test_hardware_controller.py -v -k "TestMigrateNodeValid"
-
-# Run with custom controller URL
-cd test && uv run pytest test_hardware_controller.py -v --controller-url http://10.0.0.1:5000
+# Or directly:
+cd test/hardware && ./run.sh controller -v
+cd test/hardware && ./run.sh controller -k "TestMigrateNodeValid"
 ```
 
 **Test Classes:**
@@ -108,67 +107,48 @@ cd test && uv run pytest test_hardware_controller.py -v --controller-url http://
 - `TestResponseTimes` - Performance verification
 - `TestCleanup` - Cleanup functionality (runs last)
 
-**Key features:**
-- Uses pytest with uv for dependency management
-- Tests controller HTTP API only (no gRPC/switch connection)
-- No SDE environment required
-- Comprehensive edge case and error handling tests
-
-**Important:** Cleanup tests clear controller state. Restart the controller afterwards:
-```bash
-make controller
-```
-
 ## Test Matrix
 
-| Test File | Environment | Controller Required | Packet Testing | Purpose |
-|-----------|-------------|---------------------|----------------|---------|
-| `test_model_dataplane.py` | Model | ❌ No | ✅ PTF | Dataplane functionality |
-| `test_model_controller.py` | Model | ✅ Yes | ✅ PTF | Controller + traffic |
-| `test_hardware_dataplane.py` | Hardware | ❌ No | ❌ No | Low-level table ops |
-| `test_hardware_controller.py` | Any | ✅ Yes | ❌ No | HTTP API tests |
+| Test | Location | Environment | Controller | Packets |
+|------|----------|-------------|------------|---------|
+| Model dataplane | `test/model/test_dataplane.py` | Model | ❌ | ✅ PTF |
+| Model controller | `test/model/test_controller.py` | Model | ✅ | ✅ PTF |
+| Hardware dataplane | `test/hardware/test_dataplane.py` | Hardware | ❌ | ❌ |
+| Hardware controller | `test/hardware/test_controller.py` | Any | ✅ | ❌ |
 
-## Typical Test Workflow
+## Typical Workflow
 
 ### Development (Model)
-1. Build: `make build ARCH=tf2`
-2. Start model: `make model ARCH=tf2` (terminal 1)
-3. Start switch: `make switch ARCH=tf2` (terminal 2)
-4. Run dataplane tests: `make test-dataplane ARCH=tf2`
-5. Start controller: `make controller` (terminal 3)
-6. Run controller tests: `make test-controller`
+```bash
+make model ARCH=tf2      # Terminal 1
+make switch ARCH=tf2     # Terminal 2
+make test-dataplane ARCH=tf2
+
+make controller          # Terminal 3
+make test-controller ARCH=tf2
+```
 
 ### Deployment (Hardware)
-1. Build: `make build ARCH=tf1`
-2. Load kernel modules: `make load-kmods`
-3. Start switch: `make switch ARCH=tf1` (terminal 1)
-4. Run hardware tests: `make test-hardware ARCH=tf1`
-5. Start controller: `make controller` (terminal 2)
-6. Run controller API tests: `make test-hardware-controller`
+```bash
+source ~/setup-open-p4studio.bash
+make switch ARCH=tf1     # Terminal 1
+make test-hardware ARCH=tf1
+
+make controller          # Terminal 2
+make test-hardware-controller
+```
 
 ## Troubleshooting
 
 ### ImportError: bfrt_grpc module not found
-Source the SDE environment:
 ```bash
 source ~/setup-open-p4studio.bash
 ```
 
-### ImportError: requests module not found
-Install the requests library:
-```bash
-pip install requests
-```
-
 ### Controller already owns program
-Stop the controller before running tests that require exclusive access (`test_hardware_dataplane.py`, dataplane tests).
+Stop the controller before running `test-hardware`.
 
 ### Connection refused to controller
-Make sure the controller is running on port 5000:
 ```bash
 make controller
 ```
-
-### Test hangs waiting for packets
-- For model tests: ensure model and switch daemon are running
-- For hardware tests: verify kernel modules are loaded (`make load-kmods`)

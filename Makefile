@@ -405,33 +405,31 @@ load-kmods:
 # Test Targets
 # -----------------------------------------------------------------------------
 
+# Model tests (PTF-based, run on tofino-model)
 test-dataplane: install
-	@echo "=== Running dataplane tests ==="
+	@echo "=== Running model dataplane tests ==="
 	@cd open-p4studio && sudo -E ./run_p4_tests.sh --arch $(ARCH) \
-		-t ../test \
-		-s test_model_dataplane \
+		-t ../test/model \
+		-s test_dataplane \
 		-p $(PROGRAM_NAME)
 
 test-controller: install
-	@echo "=== Running controller tests ==="
+	@echo "=== Running model controller tests ==="
 	@cd open-p4studio && sudo -E ./run_p4_tests.sh --arch $(ARCH) \
-		-t ../test \
-		-s test_model_controller \
+		-t ../test/model \
+		-s test_controller \
 		-p $(PROGRAM_NAME)
 
-# Hardware test - tests the switch running on real hardware
-# Requires: switch running (make switch), controller NOT running
+# Hardware tests (pytest-based, run on real hardware)
 test-hardware:
 	@echo "=== Running hardware dataplane tests (ARCH=$(ARCH)) ==="
 	@echo "NOTE: Requires switch running, controller NOT running"
-	ARCH=$(ARCH) test/run.sh dataplane -v
+	ARCH=$(ARCH) test/hardware/run.sh dataplane -v
 
-# Hardware controller test - tests the controller HTTP API
-# Requires: switch running (make switch), controller running (make controller)
 test-hardware-controller:
 	@echo "=== Running hardware controller API tests ==="
 	@echo "NOTE: Requires switch AND controller running"
-	test/run.sh controller -v
+	test/hardware/run.sh controller -v
 
 # -----------------------------------------------------------------------------
 # Controller

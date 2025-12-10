@@ -29,7 +29,6 @@ PYTEST_ARGS="${*:-}"
 
 export ARCH="${ARCH:-tf2}"
 
-# Add ~/.local/bin to PATH for uv
 export PATH="$HOME/.local/bin:$PATH"
 
 if ! command -v uv >/dev/null 2>&1; then
@@ -59,7 +58,6 @@ case "$TEST_TYPE" in
 
         SDE_PY="$SDE_INSTALL/lib/python${PY_VERSION}/site-packages"
         
-        # Build PYTHONPATH: venv first, then specific SDE paths (avoiding grpc conflict)
         PYTHONPATH="$VENV_SITE_PACKAGES"
         PYTHONPATH="$PYTHONPATH:$SDE_PY/tofino/bfrt_grpc"
         PYTHONPATH="$PYTHONPATH:$SDE_PY/tofino"
@@ -69,14 +67,14 @@ case "$TEST_TYPE" in
 
         echo "Running hardware dataplane tests (ARCH=$ARCH)..."
         echo "PYTHONPATH=$PYTHONPATH"
-        exec "$VENV_PYTHON" -m pytest test_hardware_dataplane.py --arch "$ARCH" $PYTEST_ARGS
+        exec "$VENV_PYTHON" -m pytest test_dataplane.py --arch "$ARCH" $PYTEST_ARGS
         ;;
 
     controller)
         export PYTHONPATH="$VENV_SITE_PACKAGES"
 
         echo "Running hardware controller API tests..."
-        exec "$VENV_PYTHON" -m pytest test_hardware_controller.py $PYTEST_ARGS
+        exec "$VENV_PYTHON" -m pytest test_controller.py $PYTEST_ARGS
         ;;
 
     *)
@@ -84,4 +82,3 @@ case "$TEST_TYPE" in
         usage
         ;;
 esac
-
