@@ -10,23 +10,50 @@ P4-based L3/TCP load balancer for Intel Tofino 1/2. This repository contains:
 > **📖 For detailed technical documentation** about the P4 program architecture, control plane internals, packet flows, and ActionSelector implementation, see **[DOC.md](DOC.md)**.
 
 ## Table of Contents
+- [p4containerflow-tofino2](#p4containerflow-tofino2)
+  - [Table of Contents](#table-of-contents)
+  - [Repository Structure](#repository-structure)
+  - [Prerequisites](#prerequisites)
+    - [Operating System](#operating-system)
+    - [Python](#python)
+    - [Git](#git)
+    - [uv (Optional)](#uv-optional)
+  - [Model Setup (Simulation)](#model-setup-simulation)
+    - [Quick Setup](#quick-setup)
+    - [Building the P4 Program](#building-the-p4-program)
+    - [Running the Model](#running-the-model)
+      - [1. Run the Tofino Model](#1-run-the-tofino-model)
+      - [2. Run the Switch Daemon](#2-run-the-switch-daemon)
+      - [3. Start the Controller](#3-start-the-controller)
+    - [Running Tests (Model)](#running-tests-model)
+      - [Dataplane Tests](#dataplane-tests)
+      - [Controller Tests](#controller-tests)
+    - [Clean Targets](#clean-targets)
+  - [Hardware Setup](#hardware-setup)
+    - [Required Files from Intel](#required-files-from-intel)
+    - [Environment Variables](#environment-variables)
+    - [Available Profiles](#available-profiles)
+    - [Quick Setup (All-in-One)](#quick-setup-all-in-one)
+    - [Building the P4 Program](#building-the-p4-program-1)
+    - [Running on Hardware](#running-on-hardware)
+      - [1. Load Kernel Modules](#1-load-kernel-modules)
+      - [2. Run the Switch](#2-run-the-switch)
+      - [3. Start the Controller](#3-start-the-controller-1)
+    - [Running Tests (Hardware)](#running-tests-hardware)
+      - [Dataplane Tests](#dataplane-tests-1)
+      - [Controller Tests](#controller-tests-1)
+    - [Clean Targets](#clean-targets-1)
+  - [Troubleshooting](#troubleshooting)
+    - [Python Version Error](#python-version-error)
+    - [SDE Directory Not Found](#sde-directory-not-found)
+    - [bf-drivers Not Found](#bf-drivers-not-found)
+    - [Device Not Found (/dev/fpga0)](#device-not-found-devfpga0)
+    - [bfrt\_python Not Showing Program](#bfrt_python-not-showing-program)
+    - [Commands Not Found After Setup](#commands-not-found-after-setup)
+  - [License](#license)
+  - [Contact](#contact)
 
-- [Repository Structure](#repository-structure)
-- [Prerequisites](#prerequisites)
-- [Model Setup (Simulation)](#model-setup-simulation)
-  - [Quick Setup](#quick-setup)
-  - [Building the P4 Program](#building-the-p4-program)
-  - [Running Model and Tests](#running-model-and-tests)
-- [Hardware Setup](#hardware-setup)
-  - [Required Files from Intel](#required-files-from-intel)
-  - [Environment Variables](#environment-variables)
-  - [Quick Setup (All-in-One)](#quick-setup-all-in-one)
-  - [Building the P4 Program](#building-the-p4-program-1)
-  - [Running on Hardware](#running-on-hardware)
-  - [Running Tests](#running-tests)
-- [Troubleshooting](#troubleshooting)
-- [License](#license)
-- [Contact](#contact)
+
 
 ## Repository Structure
 
@@ -148,7 +175,7 @@ make build ARCH=tf1
 
 Build output is placed in `build/t2na_load_balancer/` (or `build/tna_load_balancer/` for tf1).
 
-### Running Model and Tests
+### Running the Model
 
 #### 1. Run the Tofino Model
 
@@ -190,7 +217,9 @@ In a third terminal (with environment sourced):
 make controller
 ```
 
-#### Dataplane Tests (PTF)
+### Running Tests (Model)
+
+#### Dataplane Tests
 
 Runs on the Tofino model. Requires model and switch running (steps 1-2 above), controller NOT running:
 
@@ -213,7 +242,7 @@ Tests include:
 - Bidirectional flows with SNAT
 - Dynamic member updates
 
-#### Controller Tests (PTF)
+#### Controller Tests
 
 Runs on the Tofino model. Requires model, switch, and controller running (steps 1-3 above):
 
@@ -375,9 +404,9 @@ In a separate terminal (with environment sourced):
 make controller
 ```
 
-### Running Tests
+### Running Tests (Hardware)
 
-#### Hardware Tests
+#### Dataplane Tests
 
 Tests the switch running on real hardware. Requires:
 
@@ -395,6 +424,34 @@ make test-hardware
 ```bash
 make test-hardware ARCH=tf1
 ```
+
+#### Controller Tests
+
+Tests the controller running on real hardware. Requires:
+
+- Switch running (`make switch` in another terminal)
+- Controller running (`make controller` in another terminal)
+
+**Tofino 2 (default):**
+
+```bash
+make test-hardware-controller
+```
+
+**Tofino 1:**
+
+```bash
+make test-hardware-controller ARCH=tf1
+```
+
+These tests verify:
+- Controller HTTP API health
+- Initial table configuration
+- Node migration endpoint
+- Table state consistency
+- Cleanup endpoint
+
+**Note:** The cleanup test will clear all table entries. You'll need to restart the controller afterwards to restore the configuration.
 
 ### Clean Targets
 

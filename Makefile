@@ -434,6 +434,21 @@ test-hardware:
 	export PYTHONPATH; \
 	python3 test/hardware_test.py --arch $(ARCH)
 
+# Hardware controller test - tests the controller running on real hardware
+# Requires: switch running (make switch), controller running (make controller)
+test-hardware-controller:
+	@echo "=== Running hardware controller tests (ARCH=$(ARCH)) ==="
+	@echo "NOTE: Requires switch AND controller running"
+	@if [ -z "$(SDE_INSTALL)" ]; then \
+		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
+		exit 1; \
+	fi
+	@PY_VERSION=$$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'); \
+	SDE_PY_LIB="$(SDE_INSTALL)/lib/python$${PY_VERSION}"; \
+	PYTHONPATH="$${SDE_PY_LIB}/site-packages/tofino/bfrt_grpc:$${SDE_PY_LIB}/site-packages/tofino:$${SDE_PY_LIB}/site-packages"; \
+	export PYTHONPATH; \
+	python3 test/hardware_controller_test.py --arch $(ARCH)
+
 # -----------------------------------------------------------------------------
 # Controller
 # -----------------------------------------------------------------------------
@@ -449,5 +464,5 @@ controller:
 .PHONY: init-submodule check-python setup-env \
         extract-sde setup-rdc config-profile extract-bsp build-profile setup-model setup-hw \
 	build install model switch load-kmods clean-build \
-        test-dataplane test-controller test-hardware \
+        test-dataplane test-controller test-hardware test-hardware-controller \
         controller clean help
