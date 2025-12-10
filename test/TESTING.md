@@ -46,24 +46,33 @@ make test-controller
 **Note:** Some endpoints tested may be disabled in `controller/controller.py`.
 
 ### 3. `test_hardware_dataplane.py`
-Low-level hardware tests using bfrt_grpc directly.
+Pytest-based low-level hardware tests using bfrt_grpc directly.
 
 **Environment:** Real Tofino hardware  
 **Requirements:**
 - Switch running (`make switch`)
 - Controller NOT running (test takes ownership)
+- SDE environment sourced (`source ~/setup-open-p4studio.bash`)
 
 **Run:**
 ```bash
+# Run all hardware dataplane tests
 make test-hardware ARCH=tf1  # or tf2
+
+# Or run directly with pytest options
+cd test && PYTHONPATH=$SDE_INSTALL/lib/python3.X/site-packages/tofino/bfrt_grpc:... \
+    uv run pytest test_hardware_dataplane.py -v --arch tf1
+
+# Run specific test class
+make test-hardware ARCH=tf1 && cd test && uv run pytest test_hardware_dataplane.py -v -k "TestTableAccess"
 ```
 
-**Tests:**
-1. gRPC connection test
-2. Table access test (verify tables exist)
-3. Table write/read test
-4. Load balancer setup test (full configuration)
-5. Cleanup test (remove all entries)
+**Test Classes:**
+- `TestConnection` - gRPC connection and program binding
+- `TestTableAccess` - Verify P4 tables exist and are accessible
+- `TestTableWriteRead` - Table entry write/read/delete operations
+- `TestLoadBalancerSetup` - Full load balancer configuration
+- `TestCleanup` - Remove all table entries
 
 **Note:** This test uses bfrt_grpc to directly manipulate tables, similar to what the controller does.
 

@@ -1,5 +1,9 @@
 """
 Pytest configuration and fixtures for P4 Load Balancer tests.
+
+This file provides shared fixtures for:
+- Controller API tests (test_hardware_controller.py)
+- Hardware dataplane tests (test_hardware_dataplane.py)
 """
 
 import json
@@ -9,8 +13,13 @@ import pytest
 import requests
 
 
+# =============================================================================
+# Command Line Options
+# =============================================================================
+
 def pytest_addoption(parser):
-    """Add custom command line options."""
+    """Add custom command line options for all tests."""
+    # Controller API test options
     parser.addoption(
         "--controller-url",
         action="store",
@@ -23,7 +32,26 @@ def pytest_addoption(parser):
         default=os.path.join(os.path.dirname(__file__), "..", "controller", "controller_config.json"),
         help="Path to controller config file",
     )
+    
+    # Hardware dataplane test options
+    parser.addoption(
+        "--arch",
+        action="store",
+        default=os.environ.get("ARCH", "tf2"),
+        choices=["tf1", "tf2"],
+        help="Tofino architecture (default: tf2 or from ARCH env var)",
+    )
+    parser.addoption(
+        "--grpc-addr",
+        action="store",
+        default="127.0.0.1:50052",
+        help="gRPC address of the switch (default: 127.0.0.1:50052)",
+    )
 
+
+# =============================================================================
+# Controller API Fixtures
+# =============================================================================
 
 @pytest.fixture(scope="module")
 def controller_url(request):
@@ -104,3 +132,24 @@ def api_client(controller_url):
     """Create an API client for making requests."""
     return APIClient(controller_url)
 
+
+# =============================================================================
+# Hardware Dataplane Fixtures
+# =============================================================================
+
+@pytest.fixture(scope="module")
+def arch(request):
+    """Get architecture from command line."""
+    return request.config.getoption("--arch")
+
+
+@pytest.fixture(scope="module")
+def grpc_addr(request):
+    """Get gRPC address from command line."""
+    return request.config.getoption("--grpc-addr")
+
+
+@pytest.fixture(scope="module")
+def program_name(arch):
+    """Get P4 program name based on architecture."""
+    return "tna_load_balancer" if arch == "tf1" else "t2na_load_balancer"
