@@ -169,3 +169,5 @@ cython_debug/
 
 .vagrant/
 load_balancer/common
+
+Makefile.save
