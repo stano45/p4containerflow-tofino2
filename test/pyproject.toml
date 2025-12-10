@@ -15,8 +15,9 @@ python_functions = ["test_*"]
 addopts = "-v --tb=short"
 markers = [
     "hardware: tests that require hardware switch",
-    "model: tests that require tofino model",
+    "model: tests that require tofino model", 
     "controller: tests that require controller running",
     "slow: tests that take a long time",
+    "cleanup: tests that clear controller state (run last)",
 ]
 

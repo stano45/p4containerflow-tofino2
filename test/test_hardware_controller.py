@@ -46,11 +46,12 @@ class TestControllerHealth:
         data = resp.json()
         assert "error" in data, "Error response should contain 'error' field"
     
-    def test_cleanup_endpoint_exists(self, api_client):
-        """cleanup endpoint should exist."""
-        resp = api_client.cleanup()
+    def test_cleanup_endpoint_responds(self, api_client):
+        """cleanup endpoint should respond to GET (to check it exists without clearing state)."""
+        # Use GET which returns 405 but proves endpoint exists
+        resp = api_client.get("cleanup")
         assert resp is not None, "No response from cleanup endpoint"
-        # Note: This will clear state, so should run last in health checks
+        assert resp.status_code in [200, 405], f"Unexpected status: {resp.status_code}"
 
 
 # =============================================================================
@@ -259,9 +260,14 @@ class TestResponseTimes:
 # Test: Cleanup Endpoint (runs last - clears state)
 # =============================================================================
 
-@pytest.mark.order("last")
+@pytest.mark.cleanup
 class TestCleanup:
-    """Tests for cleanup endpoint. These run last as they clear controller state."""
+    """Tests for cleanup endpoint. 
+    
+    WARNING: These tests clear controller state. Run last or separately:
+        pytest test_hardware_controller.py -v -k "not cleanup"  # skip cleanup
+        pytest test_hardware_controller.py -v -k "cleanup"      # only cleanup
+    """
     
     def test_cleanup_returns_200(self, api_client):
         """cleanup should return 200."""
