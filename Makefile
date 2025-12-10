@@ -428,19 +428,14 @@ test-hardware:
 		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
 		exit 1; \
 	fi
-	@PY_VERSION=$$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'); \
-	SDE_PY_LIB="$(SDE_INSTALL)/lib/python$${PY_VERSION}"; \
-	PYTHONPATH="$${SDE_PY_LIB}/site-packages/tofino/bfrt_grpc:$${SDE_PY_LIB}/site-packages/tofino:$${SDE_PY_LIB}/site-packages"; \
-	export PYTHONPATH; \
-	cd test && uv run pytest test_hardware_dataplane.py -v --arch $(ARCH)
+	cd test && uv run --system pytest test_hardware_dataplane.py -v --arch $(ARCH)
 
 # Hardware controller test - tests the controller HTTP API
 # Requires: switch running (make switch), controller running (make controller)
-# Note: This test only uses HTTP to test the controller API, no SDE required
 test-hardware-controller:
 	@echo "=== Running hardware controller API tests (pytest) ==="
 	@echo "NOTE: Requires switch AND controller running"
-	cd test && uv run pytest test_hardware_controller.py -v
+	cd test && uv run --system pytest test_hardware_controller.py -v
 
 # -----------------------------------------------------------------------------
 # Controller
