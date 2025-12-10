@@ -17,19 +17,16 @@ swports = get_sw_ports()
 
 print("SW Ports: ", swports)
 
-# Load controller config to get node/port mappings
 CONFIG_PATH = os.path.join(
     os.path.dirname(__file__), "..", "controller", "controller_config.json"
 )
 with open(CONFIG_PATH, "r") as f:
     _configs = json.load(f)
-    # Find the master switch config
     MASTER_CONFIG = next(c for c in _configs if c.get("master", False))
 
 
 class AbstractTest(BfRuntimeTest):
     def setUp(self):
-        # Setting up PTF dataplane
         self.dataplane = ptf.dataplane_instance
         self.dataplane.flush()
 
@@ -86,7 +83,6 @@ class AbstractTest(BfRuntimeTest):
         self.tearDown()
         logger.info("Done!")
 
-    # Placeholder methods to be overridden by subclasses
     def setupCtrlPlane(self):
         pass
 
@@ -98,31 +94,24 @@ class AbstractTest(BfRuntimeTest):
 
 
 class TestController(AbstractTest):
-    # Test normal load balancing, change ports dynamically, and verify load balancing
 
     def setUp(self):
         super().setUp()
 
-        # Load configuration from controller_config.json
         nodes = MASTER_CONFIG["nodes"]
         self.loadBalancerIp = MASTER_CONFIG["load_balancer_ip"]
 
-        # Build node mappings from config
         self.nodesByIp = {node["ipv4"]: node for node in nodes}
 
-        # Find client (non-LB node, first one) and LB nodes
         self.lbNodes = [n for n in nodes if n.get("is_lb_node", False)]
         clientNodes = [n for n in nodes if not n.get("is_lb_node", False)]
 
-        # Client is the first non-LB node
         self.clientIp = clientNodes[0]["ipv4"]
         self.clientPort = clientNodes[0]["sw_port"]
 
-        # LB node IPs and ports
         self.lbNodeIps = [n["ipv4"] for n in self.lbNodes]
         self.lbNodePorts = [n["sw_port"] for n in self.lbNodes]
 
-        # Service port from config - this is used for SNAT matching
         self.servicePort = MASTER_CONFIG["service_port"]
 
         self.numPackets = 300
@@ -141,7 +130,6 @@ class TestController(AbstractTest):
         )
 
     def tearDown(self):
-        """Call the controller's cleanup endpoint to remove all table entries."""
         logger.info("Cleaning up: calling controller cleanup endpoint...")
         try:
             url = "http://127.0.0.1:5000/cleanup"
@@ -157,7 +145,6 @@ class TestController(AbstractTest):
         super().tearDown()
 
     def setupCtrlPlane(self):
-        # Nodes are pre-configured via the controller's config file.
         logger.info(
             "Setting up test: Client port: %s, LB node ports: %s",
             self.clientPort,
@@ -168,10 +155,8 @@ class TestController(AbstractTest):
     def sendPackets(self, num_packets, server_ips, server_ports):
         for i in range(num_packets):
             logger.info("Sending packet %d...", i)
-            # Random source port
             clientTcpPort = random.randint(1024, 65535)
 
-            # Client sends to the load balancer VIP
             clientPkt = simple_tcp_packet(
                 ip_src=self.clientIp,
                 ip_dst=self.loadBalancerIp,
@@ -206,7 +191,6 @@ class TestController(AbstractTest):
             else:
                 self.server2Counter += 1
 
-            # Sending response from server to client
             logger.info(
                 "Sending response from port %d to client port %d...",
                 server_ports[rcvIdx],
@@ -222,7 +206,6 @@ class TestController(AbstractTest):
             )
             send_packet(self, server_ports[rcvIdx], serverPkt)
 
-            # Response should appear to come from the load balancer VIP
             expectedPktToClient = simple_tcp_packet(
                 ip_src=self.loadBalancerIp,
                 ip_dst=self.clientIp,
@@ -234,24 +217,19 @@ class TestController(AbstractTest):
             logger.info("Client packet received on port %d!", self.clientPort)
 
     def sendPacket(self):
-        # First phase: initial two LB servers from config
         self.sendPackets(self.numPackets // 3, self.lbNodeIps, self.lbNodePorts)
         self.checkTrafficBalance(
             self.server1Counter, self.server2Counter, self.maxImbalancePercent
         )
 
-        # Reset counters
         self.server1Counter = 0
         self.server2Counter = 0
 
-        # Migrate first LB node to a new IP (10.0.0.4)
-        # The new IP inherits the same port as the old one
         newIp1 = "10.0.0.4"
         resp = self.migrate_node(old_ipv4=self.lbNodeIps[0], new_ipv4=newIp1)
         assert resp, "Response is nil, is the controller running?"
         assert resp.status_code == 200, f"Response is {resp.status_code}: {resp.text}"
 
-        # Now LB nodes are newIp1 (same port as first LB node) and second original LB node
         self.sendPackets(
             self.numPackets // 3,
             [newIp1, self.lbNodeIps[1]],
@@ -261,17 +239,14 @@ class TestController(AbstractTest):
             self.server1Counter, self.server2Counter, self.maxImbalancePercent
         )
 
-        # Reset counters
         self.server1Counter = 0
         self.server2Counter = 0
 
-        # Migrate second LB node to another new IP (10.0.0.5)
         newIp2 = "10.0.0.5"
         resp = self.migrate_node(old_ipv4=self.lbNodeIps[1], new_ipv4=newIp2)
         assert resp is not None, "Response is nil, is the controller running?"
         assert resp.status_code == 200, f"Response is {resp.status_code}: {resp.text}"
 
-        # Now LB nodes are newIp1 and newIp2, keeping original ports
         self.sendPackets(
             self.numPackets // 3,
             [newIp1, newIp2],
@@ -282,7 +257,6 @@ class TestController(AbstractTest):
         )
 
     def verifyPackets(self):
-        # All verification is done during sendPacket
         pass
 
     def runTest(self):

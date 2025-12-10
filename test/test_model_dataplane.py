@@ -29,7 +29,6 @@ class AbstractTest(BfRuntimeTest):
         self.tableEntries = {}
         self.bfrtInfo = self.interface.bfrt_info_get("t2na_load_balancer")
 
-        # Set target to all pipes on device self.devId.
         self.target = gc.Target(device_id=0, pipe_id=0xFFFF)
         self.lbIp = "10.0.0.10"
         self.clientIp = "10.0.0.0"
@@ -64,7 +63,6 @@ class AbstractTest(BfRuntimeTest):
         testTable.entry_mod(self.target, keyList, dataList)
         existingEntries = self.tableEntries.get(tableName, [])
         existingEntries.extend(keyList)
-        # No duplicates, otherwise there's an error when deleting
         self.tableEntries[tableName] = list(set(existingEntries))
 
     def overrideDefaultEntry(self, tableName, actionName=None, dataFields=[]):
@@ -218,7 +216,6 @@ class AbstractTest(BfRuntimeTest):
         self.tearDown()
         logger.info("Done!")
 
-    # Placeholder methods to be overridden by subclasses
     def setupCtrlPlane(self):
         pass
 
@@ -230,7 +227,6 @@ class AbstractTest(BfRuntimeTest):
 
 
 class TestPortChangeKeepConnection(AbstractTest):
-    # Test normal load balancing, change ports dynamically, and verify connection is working
 
     def setUp(self):
         super().setUp()
@@ -254,7 +250,6 @@ class TestPortChangeKeepConnection(AbstractTest):
         self.insertClientSnatEntry(src_port=12345, new_src=self.lbIp)
         self.insertForwardEntry(dst_addr=self.clientIp, port=self.clientPort)
 
-        # Insert action table entries and forward entries for ALL
         for i in range(self.numServers):
             logger.info(
                 f"Adding action entry: node_index={i}, ipv4={self.serverIps[i]}, port={self.serverPorts[i]}"
@@ -263,7 +258,6 @@ class TestPortChangeKeepConnection(AbstractTest):
                 dst_addr=self.serverIps[i], port=self.serverPorts[i]
             )
 
-        # Member status True only for currently active servers (accepting connections)
         self.numNodes = self.numServers - 1
         for i in range(self.numNodes):
             self.insertActionTableEntry(node_index=i, new_dst=self.serverIps[i])
@@ -310,13 +304,11 @@ class TestPortChangeKeepConnection(AbstractTest):
                 assert rcvIdx == prevRcvIdx
             prevRcvIdx = rcvIdx
 
-        # Update the first node in the list to point to the last server
         targetServerIdx = self.numServers - 1
         self.modifyActionTableEntry(
             node_index=rcvIdx, new_dst=self.serverIps[targetServerIdx]
         )
         for j in range(i, self.numPackets):
-            # Send packets on the same conn
             clientPkt = simple_tcp_packet(
                 ip_src=self.clientIp,
                 ip_dst=self.lbIp,
@@ -339,7 +331,6 @@ class TestPortChangeKeepConnection(AbstractTest):
             )
 
     def verifyPackets(self):
-        # All verification is done during sendPacket
         pass
 
     def runTest(self):
@@ -347,7 +338,6 @@ class TestPortChangeKeepConnection(AbstractTest):
 
 
 class TestRewriteSource(AbstractTest):
-    # Test rewriting source IP when server sends packet to client
 
     def setUp(self):
         super().setUp()
@@ -387,7 +377,6 @@ class TestRewriteSource(AbstractTest):
 
 
 class TestForwarding(AbstractTest):
-    # Test basic L3 forwarding (required for k8s traffic)
 
     def setUp(self):
         super().setUp()
@@ -426,7 +415,6 @@ class TestForwarding(AbstractTest):
 
 
 class TestEvenTrafficBalancingToServer(AbstractTest):
-    # Test even traffic balancing from one client to two servers
 
     def setUp(self):
         super().setUp()
@@ -495,7 +483,6 @@ class TestEvenTrafficBalancingToServer(AbstractTest):
 
 
 class TestBidirectionalTraffic(AbstractTest):
-    # Test even traffic balancing from one client to two servers, and traffic from servers back to client
 
     def setUp(self):
         super().setUp()
@@ -537,7 +524,6 @@ class TestBidirectionalTraffic(AbstractTest):
     def sendPacket(self):
         for i in range(self.numPackets):
             logger.info("Sending packet %d...", i)
-            # Random source port
             clientTcpPort = random.randint(12346, 65535)
 
             clientPkt = simple_tcp_packet(
@@ -566,7 +552,6 @@ class TestBidirectionalTraffic(AbstractTest):
             logger.info("Packet %d received on port %d...", i, self.serverPorts[rcvIdx])
             self.serverCounters[rcvIdx] += 1
 
-            # Sending response from server to client
             logger.info(
                 "Sending response from port %d to client port %d...",
                 self.serverPorts[rcvIdx],
@@ -599,7 +584,6 @@ class TestBidirectionalTraffic(AbstractTest):
 
 
 class TestPortChange(AbstractTest):
-    # Test normal load balancing, change ports dynamically, and verify load balancing
 
     def setUp(self):
         super().setUp()
@@ -610,8 +594,6 @@ class TestPortChange(AbstractTest):
         self.serverPorts = [swports[i + 1] for i in range(self.numServers)]
         self.serverIps = [f"10.0.0.{i + 1}" for i in range(self.numServers)]
         self.numPackets = 100
-        # Higher tolerance because we only send ~33 packets per phase,
-        # which can have natural variance > 20%
         self.maxImbalance = 0.35
         self.serverCounters = [0 for _ in range(self.numServers)]
         self.serverTcpPort = 12345
@@ -635,14 +617,12 @@ class TestPortChange(AbstractTest):
         self.insertClientSnatEntry(src_port=12345, new_src=self.lbIp)
         self.insertForwardEntry(dst_addr=self.clientIp, port=self.clientPort)
 
-        # Insert action table entries and forward entries for ALL
         for i in range(self.numServers):
             self.insertActionTableEntry(node_index=i, new_dst=self.serverIps[i])
             self.insertForwardEntry(
                 dst_addr=self.serverIps[i], port=self.serverPorts[i]
             )
 
-        # Member status True only for currently active servers (accepting connections)
         self.selection_members = list(range(self.numServers))
         member_status = self.get_member_status()
         self.insertSelectionTableEntry(
@@ -654,7 +634,6 @@ class TestPortChange(AbstractTest):
     def sendPackets(self, num_packets, server_ips, server_ports):
         for i in range(num_packets):
             logger.info("Sending packet %d...", i)
-            # Random source port
             clientTcpPort = random.randint(12346, 65535)
 
             clientPkt = simple_tcp_packet(
@@ -686,7 +665,6 @@ class TestPortChange(AbstractTest):
             logger.info("Packet %d received on port %d...", i, server_ports[rcvIdx])
             self.serverCounters[rcvIdx] += 1
 
-            # Sending response from server to client
             logger.info(
                 "Sending response from port %d to client port %d...",
                 server_ports[rcvIdx],
@@ -767,7 +745,6 @@ class TestPortChange(AbstractTest):
         )
 
     def verifyPackets(self):
-        # All verification is done during sendPacket
         pass
 
     def runTest(self):
