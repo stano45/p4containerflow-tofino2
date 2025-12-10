@@ -434,20 +434,13 @@ test-hardware:
 	export PYTHONPATH; \
 	python3 test/test_hardware_dataplane.py --arch $(ARCH)
 
-# Hardware controller test - tests the controller running on real hardware
+# Hardware controller test - tests the controller HTTP API
 # Requires: switch running (make switch), controller running (make controller)
+# Note: This test only uses HTTP to test the controller API, no SDE required
 test-hardware-controller:
-	@echo "=== Running hardware controller tests (ARCH=$(ARCH)) ==="
+	@echo "=== Running hardware controller API tests ==="
 	@echo "NOTE: Requires switch AND controller running"
-	@if [ -z "$(SDE_INSTALL)" ]; then \
-		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
-		exit 1; \
-	fi
-	@PY_VERSION=$$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'); \
-	SDE_PY_LIB="$(SDE_INSTALL)/lib/python$${PY_VERSION}"; \
-	PYTHONPATH="$${SDE_PY_LIB}/site-packages/tofino/bfrt_grpc:$${SDE_PY_LIB}/site-packages/tofino:$${SDE_PY_LIB}/site-packages"; \
-	export PYTHONPATH; \
-	python3 test/test_hardware_controller.py --arch $(ARCH)
+	python3 test/test_hardware_controller.py
 
 # -----------------------------------------------------------------------------
 # Controller

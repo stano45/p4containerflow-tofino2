@@ -68,32 +68,34 @@ make test-hardware ARCH=tf1  # or tf2
 **Note:** This test uses bfrt_grpc to directly manipulate tables, similar to what the controller does.
 
 ### 4. `test_hardware_controller.py`
-Controller integration tests for real Tofino hardware.
+HTTP API tests for the controller (works on both model and hardware).
 
-**Environment:** Real Tofino hardware  
+**Environment:** Any (tests controller HTTP API only)  
 **Requirements:**
 - Switch running (`make switch`)
 - Controller running (`make controller`)
 
 **Run:**
 ```bash
-make test-hardware-controller ARCH=tf1  # or tf2
+make test-hardware-controller
 ```
 
 **Tests:**
-1. Controller health check (HTTP API)
-2. Initial configuration verification (table entries)
-3. Node migration API test
-4. Table state consistency verification
-5. Cleanup API test
+1. Controller health/reachability
+2. migrateNode endpoint - valid requests
+3. migrateNode endpoint - invalid requests and edge cases
+4. cleanup endpoint - functionality and idempotency
+5. Invalid endpoints (404 handling)
+6. Response time verification
 
 **Key differences from `test_hardware_dataplane.py`:**
-- Tests controller API endpoints instead of direct bfrt_grpc manipulation
+- Tests controller HTTP API endpoints only (no gRPC/switch connection)
 - Requires controller to be running
-- No packet generation (real hardware)
-- Verifies controller behavior through table state inspection
+- No packet generation
+- No SDE environment required
+- Comprehensive edge case and error handling tests
 
-**Important:** The cleanup test clears all table entries. Restart the controller afterwards:
+**Important:** Tests may modify controller state. Restart the controller afterwards:
 ```bash
 make controller
 ```
@@ -105,7 +107,7 @@ make controller
 | `test_model_dataplane.py` | Model | ❌ No | ✅ PTF | Dataplane functionality |
 | `test_model_controller.py` | Model | ✅ Yes | ✅ PTF | Controller + traffic |
 | `test_hardware_dataplane.py` | Hardware | ❌ No | ❌ No | Low-level table ops |
-| `test_hardware_controller.py` | Hardware | ✅ Yes | ❌ No | Controller API + state |
+| `test_hardware_controller.py` | Any | ✅ Yes | ❌ No | HTTP API tests |
 
 ## Typical Test Workflow
 
@@ -123,7 +125,7 @@ make controller
 3. Start switch: `make switch ARCH=tf1` (terminal 1)
 4. Run hardware tests: `make test-hardware ARCH=tf1`
 5. Start controller: `make controller` (terminal 2)
-6. Run controller tests: `make test-hardware-controller ARCH=tf1`
+6. Run controller API tests: `make test-hardware-controller`
 
 ## Troubleshooting
 

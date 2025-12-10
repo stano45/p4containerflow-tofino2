@@ -428,31 +428,23 @@ make test-hardware ARCH=tf1
 
 #### Controller Tests
 
-Tests the controller running on real hardware. Requires:
+Tests the controller's HTTP API. Requires:
 
 - Switch running (`make switch` in another terminal)
 - Controller running (`make controller` in another terminal)
-
-**Tofino 2 (default):**
 
 ```bash
 make test-hardware-controller
 ```
 
-**Tofino 1:**
-
-```bash
-make test-hardware-controller ARCH=tf1
-```
-
 These tests verify:
-- Controller HTTP API health
-- Initial table configuration
-- Node migration endpoint
-- Table state consistency
-- Cleanup endpoint
+- Controller HTTP API health and reachability
+- Node migration endpoint (valid and invalid requests)
+- Cleanup endpoint (functionality and idempotency)
+- Error handling and edge cases
+- Response times
 
-**Note:** The cleanup test will clear all table entries. You'll need to restart the controller afterwards to restore the configuration.
+**Note:** Tests may modify controller state. Restart the controller afterwards to restore the configuration.
 
 ### Clean Targets
 

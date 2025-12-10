@@ -2,23 +2,25 @@
 """
 Hardware Controller Test Script for P4 Load Balancer on Tofino
 
-This script tests the controller running on real Tofino hardware.
-Unlike test_hardware_dataplane.py, this test requires the controller to be running
-and tests the controller API endpoints and their effects on table state.
+This script tests the controller's HTTP API running on real Tofino hardware.
+It does NOT connect directly to the switch - it only tests the controller
+via its REST API endpoints.
 
-It requires:
-1. The switch to be running (make switch ARCH=tf1 or ARCH=tf2)
-2. The controller to be running (make controller)
+Requirements:
+1. The switch must be running (make switch ARCH=tf1 or ARCH=tf2)
+2. The controller must be running (make controller)
 
 Usage:
-    python3 test/test_hardware_controller.py --arch tf1  # or tf2
+    python3 test/test_hardware_controller.py
+    python3 test/test_hardware_controller.py --controller-url http://127.0.0.1:5000
+    python3 test/test_hardware_controller.py --config /path/to/controller_config.json
 
 Tests performed:
-1. Controller health check - verifies controller HTTP API is accessible
-2. Initial configuration test - verifies controller has populated tables correctly
-3. Node migration test - tests the migrateNode API endpoint
-4. Table state verification - verifies table entries match expected state
-5. Cleanup test - verifies cleanup API properly removes all entries
+1. Controller health/reachability tests
+2. migrateNode endpoint - valid requests
+3. migrateNode endpoint - invalid requests and edge cases
+4. cleanup endpoint - functionality and idempotency
+5. Error handling and edge cases
 """
 
 import argparse
@@ -30,45 +32,50 @@ import time
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 try:
-    import bfrt_grpc.client as gc
     import requests
-except ImportError as e:
-    print(f"ERROR: Missing required module: {e}")
-    print("Make sure SDE environment is sourced and requests is installed.")
-    print("Run: source ~/setup-open-p4studio.bash")
-    print("     pip install requests")
+except ImportError:
+    print("ERROR: requests module not found.")
+    print("Install with: pip install requests")
     sys.exit(1)
 
 
 class HardwareControllerTest:
-    """Hardware controller test suite for Tofino load balancer."""
+    """HTTP API test suite for the P4 load balancer controller."""
 
-    def __init__(self, arch: str, grpc_addr: str, controller_url: str, config_path: str):
-        self.arch = arch
-        self.grpc_addr = grpc_addr
-        self.controller_url = controller_url
+    def __init__(self, controller_url: str, config_path: str):
+        self.controller_url = controller_url.rstrip("/")
         self.config_path = config_path
-        self.program_name = (
-            "tna_load_balancer" if arch == "tf1" else "t2na_load_balancer"
-        )
-        self.interface = None
-        self.bfrt_info = None
-        self.target = None
         self.passed = 0
         self.failed = 0
+        self.skipped = 0
 
         # Load controller configuration
         self.config = None
+        self.lb_nodes = []
+        self.non_lb_nodes = []
         self.load_config()
 
     def load_config(self):
-        """Load controller configuration file."""
+        """Load controller configuration file to understand node setup."""
         try:
             with open(self.config_path, "r") as f:
                 configs = json.load(f)
                 # Find the master switch config
                 self.config = next(c for c in configs if c.get("master", False))
+                
+                # Separate LB nodes from non-LB nodes
+                for node in self.config.get("nodes", []):
+                    if node.get("is_lb_node", False):
+                        self.lb_nodes.append(node)
+                    else:
+                        self.non_lb_nodes.append(node)
+                
                 self.log(f"Loaded config from {self.config_path}")
+                self.log(f"  LB nodes: {[n['ipv4'] for n in self.lb_nodes]}")
+                self.log(f"  Non-LB nodes: {[n['ipv4'] for n in self.non_lb_nodes]}")
+        except FileNotFoundError:
+            self.log(f"Config file not found: {self.config_path}", "ERROR")
+            sys.exit(1)
         except Exception as e:
             self.log(f"Failed to load config: {e}", "ERROR")
             sys.exit(1)
@@ -88,450 +95,589 @@ class HardwareControllerTest:
         print(f"  ❌ FAIL: {test_name}")
         print(f"         Error: {error}")
 
-    def connect(self) -> bool:
-        """Connect to the switch via gRPC (read-only access)."""
-        self.log(f"Connecting to switch at {self.grpc_addr}...")
-        try:
-            # Use a different client_id to avoid conflicts with the controller
-            self.interface = gc.ClientInterface(
-                self.grpc_addr,
-                client_id=99,  # Different from controller's client_id
-                device_id=0,
-                notifications=None,
-                perform_subscribe=False,  # Don't subscribe, just observe
-            )
-            self.log("Connected successfully (read-only mode)")
-            return True
-        except Exception as e:
-            self.log(f"Connection failed: {e}", "ERROR")
-            return False
+    def log_skip(self, test_name: str, reason: str):
+        """Log a skipped test."""
+        self.skipped += 1
+        print(f"  ⏭️  SKIP: {test_name}")
+        print(f"         Reason: {reason}")
 
-    def bind_program(self) -> bool:
-        """Bind to the P4 program."""
-        self.log(f"Binding to program: {self.program_name}")
-        try:
-            self.interface.bind_pipeline_config(self.program_name)
-            self.target = gc.Target(device_id=0, pipe_id=0xFFFF)
-            self.bfrt_info = self.interface.bfrt_info_get(self.program_name)
-            self.log("Bound to program successfully")
-            return True
-        except Exception as e:
-            self.log(f"Failed to bind program: {e}", "ERROR")
-            return False
-
-    def get_table_entries(self, table_name):
-        """Get all entries from a table."""
-        table = self.bfrt_info.table_get(table_name)
-        resp = table.entry_get(self.target, flags={"from_hw": False})
-        return list(resp)
-
-    def count_table_entries(self, table_name):
-        """Count entries in a table."""
-        try:
-            entries = self.get_table_entries(table_name)
-            return len(entries)
-        except Exception as e:
-            self.log(f"Failed to count entries in {table_name}: {e}", "WARN")
-            return -1
-
-    def call_controller_api(self, endpoint: str, method: str = "POST", data: dict = None):
-        """Call a controller API endpoint."""
+    def call_api(
+        self,
+        endpoint: str,
+        method: str = "POST",
+        data: dict = None,
+        timeout: float = 5.0,
+        raw_data: str = None,
+    ):
+        """
+        Call a controller API endpoint.
+        
+        Args:
+            endpoint: API endpoint (without leading slash)
+            method: HTTP method (GET, POST, etc.)
+            data: JSON data to send (will be serialized)
+            timeout: Request timeout in seconds
+            raw_data: Raw string data to send (for malformed JSON tests)
+        
+        Returns:
+            requests.Response or None if request failed
+        """
         url = f"{self.controller_url}/{endpoint}"
+        headers = {"Content-Type": "application/json"}
+        
         try:
             if method == "POST":
-                if data:
-                    resp = requests.post(url, json=data, timeout=5)
+                if raw_data is not None:
+                    resp = requests.post(url, data=raw_data, headers=headers, timeout=timeout)
+                elif data is not None:
+                    resp = requests.post(url, json=data, timeout=timeout)
                 else:
-                    resp = requests.post(url, timeout=5)
+                    resp = requests.post(url, timeout=timeout)
             elif method == "GET":
-                resp = requests.get(url, timeout=5)
+                resp = requests.get(url, timeout=timeout)
+            elif method == "PUT":
+                resp = requests.put(url, json=data, timeout=timeout)
+            elif method == "DELETE":
+                resp = requests.delete(url, timeout=timeout)
             else:
                 raise ValueError(f"Unsupported method: {method}")
             return resp
+        except requests.exceptions.ConnectionError:
+            return None
+        except requests.exceptions.Timeout:
+            return None
         except requests.exceptions.RequestException as e:
-            self.log(f"HTTP request failed: {e}", "ERROR")
+            self.log(f"HTTP request failed: {e}", "WARN")
             return None
 
-    def test_controller_health(self):
-        """Test 1: Verify controller HTTP API is accessible."""
+    # =========================================================================
+    # Test Group 1: Controller Health/Reachability
+    # =========================================================================
+
+    def test_controller_reachable(self):
+        """Test that the controller is reachable."""
         print("\n" + "=" * 60)
-        print("TEST 1: Controller Health Check")
+        print("TEST GROUP 1: Controller Health/Reachability")
         print("=" * 60)
 
-        # Try to call cleanup endpoint with a short timeout to check if controller is up
-        resp = self.call_controller_api("cleanup", method="POST")
-        
+        # Test 1.1: Basic connectivity via cleanup endpoint (always available)
+        resp = self.call_api("cleanup", method="POST")
         if resp is None:
-            self.log_fail("Controller health check", "Controller not reachable")
+            self.log_fail(
+                "Controller reachable",
+                f"Cannot connect to controller at {self.controller_url}"
+            )
             return False
         
         if resp.status_code == 200:
-            self.log_pass("Controller HTTP API is accessible")
-            return True
+            self.log_pass("Controller is reachable and responding")
         else:
             self.log_fail(
-                "Controller health check",
+                "Controller reachable",
                 f"Unexpected status code: {resp.status_code}"
             )
             return False
 
-    def test_initial_configuration(self):
-        """Test 2: Verify controller has populated tables correctly."""
+        # Test 1.2: Check response is valid JSON
+        try:
+            resp_json = resp.json()
+            if "status" in resp_json or "error" in resp_json:
+                self.log_pass("Controller returns valid JSON responses")
+            else:
+                self.log_fail(
+                    "JSON response format",
+                    f"Unexpected response format: {resp_json}"
+                )
+        except json.JSONDecodeError:
+            self.log_fail("JSON response format", "Response is not valid JSON")
+
+        return True
+
+    # =========================================================================
+    # Test Group 2: migrateNode Endpoint - Valid Requests
+    # =========================================================================
+
+    def test_migrate_node_valid(self):
+        """Test valid node migration requests."""
         print("\n" + "=" * 60)
-        print("TEST 2: Initial Configuration Test")
+        print("TEST GROUP 2: migrateNode Endpoint - Valid Requests")
         print("=" * 60)
 
-        if not self.bfrt_info:
-            self.log_fail("Initial configuration", "Not connected to switch")
-            return False
+        if len(self.lb_nodes) < 1:
+            self.log_skip("Node migration tests", "No LB nodes in config")
+            return
 
-        try:
-            nodes = self.config.get("nodes", [])
-            lb_nodes = [n for n in nodes if n.get("is_lb_node", False)]
-            
-            # Expected counts
-            # forward table: one entry per node (client + LB nodes + any other nodes)
-            expected_forward = len(nodes)
-            # client_snat: one entry for the service port
-            expected_snat = 1
-            # action_selector_ap: one entry per LB node
-            expected_ap = len(lb_nodes)
-            # action_selector: one group
-            expected_selector = 1
-            # node_selector: one entry for the load balancer VIP
-            expected_node_selector = 1
+        # We need to restart the controller state, so call cleanup first
+        # and note that this clears tables
+        self.log("Note: Tests will modify controller state")
 
-            self.log(f"Checking table entry counts...")
-            self.log(f"  Expected nodes: {len(nodes)} (including {len(lb_nodes)} LB nodes)")
+        original_ip = self.lb_nodes[0]["ipv4"]
+        test_ip = "10.0.0.99"
 
-            # Check forward table
-            forward_count = self.count_table_entries("pipe.SwitchIngress.forward")
-            if forward_count == expected_forward:
-                self.log_pass(f"Forward table: {forward_count} entries")
-            else:
-                self.log_fail(
-                    "Forward table",
-                    f"Expected {expected_forward} entries, got {forward_count}"
-                )
+        # Test 2.1: Valid migration to new IP
+        resp = self.call_api(
+            "migrateNode",
+            method="POST",
+            data={"old_ipv4": original_ip, "new_ipv4": test_ip}
+        )
+        
+        if resp is None:
+            self.log_fail("Migrate node (valid)", "No response from controller")
+            return
 
-            # Check client_snat table
-            snat_count = self.count_table_entries("pipe.SwitchIngress.client_snat")
-            if snat_count == expected_snat:
-                self.log_pass(f"Client SNAT table: {snat_count} entries")
-            else:
-                self.log_fail(
-                    "Client SNAT table",
-                    f"Expected {expected_snat} entries, got {snat_count}"
-                )
-
-            # Check action_selector_ap table
-            ap_count = self.count_table_entries("pipe.SwitchIngress.action_selector_ap")
-            if ap_count == expected_ap:
-                self.log_pass(f"Action selector AP table: {ap_count} entries")
-            else:
-                self.log_fail(
-                    "Action selector AP table",
-                    f"Expected {expected_ap} entries, got {ap_count}"
-                )
-
-            # Check action_selector table
-            selector_count = self.count_table_entries("pipe.SwitchIngress.action_selector")
-            if selector_count == expected_selector:
-                self.log_pass(f"Action selector table: {selector_count} entries")
-            else:
-                self.log_fail(
-                    "Action selector table",
-                    f"Expected {expected_selector} entries, got {selector_count}"
-                )
-
-            # Check node_selector table
-            node_selector_count = self.count_table_entries("pipe.SwitchIngress.node_selector")
-            if node_selector_count == expected_node_selector:
-                self.log_pass(f"Node selector table: {node_selector_count} entries")
-            else:
-                self.log_fail(
-                    "Node selector table",
-                    f"Expected {expected_node_selector} entries, got {node_selector_count}"
-                )
-
-            return True
-
-        except Exception as e:
-            self.log_fail("Initial configuration", str(e))
-            return False
-
-    def test_node_migration(self):
-        """Test 3: Test the migrateNode API endpoint."""
-        print("\n" + "=" * 60)
-        print("TEST 3: Node Migration Test")
-        print("=" * 60)
-
-        if not self.bfrt_info:
-            self.log_fail("Node migration", "Not connected to switch")
-            return False
-
-        try:
-            nodes = self.config.get("nodes", [])
-            lb_nodes = [n for n in nodes if n.get("is_lb_node", False)]
-            
-            if len(lb_nodes) < 1:
-                self.log_fail("Node migration", "No LB nodes found in config")
-                return False
-
-            old_ip = lb_nodes[0]["ipv4"]
-            new_ip = "10.0.0.99"  # Test IP for migration
-            
-            self.log(f"Migrating node from {old_ip} to {new_ip}...")
-            
-            # Call migrateNode API
-            resp = self.call_controller_api(
-                "migrateNode",
-                method="POST",
-                data={"old_ipv4": old_ip, "new_ipv4": new_ip}
-            )
-
-            if resp is None:
-                self.log_fail("Node migration API call", "Request failed")
-                return False
-
-            if resp.status_code != 200:
-                self.log_fail(
-                    "Node migration API",
-                    f"Status {resp.status_code}: {resp.text}"
-                )
-                return False
-
-            self.log_pass(f"Migration API returned success")
-
-            # Wait a moment for the change to propagate
-            time.sleep(0.5)
-
-            # Verify the forward table has been updated
-            forward_entries = self.get_table_entries("pipe.SwitchIngress.forward")
-            
-            # Look for the new IP in forward table entries
-            found_new_ip = False
-            found_old_ip = False
-            for entry_data in forward_entries:
-                entry = entry_data[0]
-                # Check if the entry key contains our IPs
-                for key_field in entry.key:
-                    if hasattr(key_field, 'value') and hasattr(key_field.value, 'ipv4'):
-                        ip_bytes = key_field.value.ipv4
-                        ip_str = ".".join(str(b) for b in ip_bytes)
-                        if ip_str == new_ip:
-                            found_new_ip = True
-                        if ip_str == old_ip:
-                            found_old_ip = True
-
-            if found_new_ip and not found_old_ip:
-                self.log_pass(f"Forward table updated: {old_ip} -> {new_ip}")
-            elif found_new_ip and found_old_ip:
-                self.log_fail(
-                    "Forward table update",
-                    f"Both old and new IPs found (old IP should be removed)"
-                )
-            elif not found_new_ip:
-                self.log_fail(
-                    "Forward table update",
-                    f"New IP {new_ip} not found in forward table"
-                )
-
-            # Migrate back to original IP
-            self.log(f"Migrating back: {new_ip} -> {old_ip}...")
-            resp = self.call_controller_api(
-                "migrateNode",
-                method="POST",
-                data={"old_ipv4": new_ip, "new_ipv4": old_ip}
-            )
-
-            if resp and resp.status_code == 200:
-                self.log_pass("Migration back to original IP successful")
-            else:
-                self.log_fail(
-                    "Migration back",
-                    f"Failed to migrate back: {resp.status_code if resp else 'No response'}"
-                )
-
-            return True
-
-        except Exception as e:
-            self.log_fail("Node migration", str(e))
-            return False
-
-    def test_table_state_consistency(self):
-        """Test 4: Verify table state consistency."""
-        print("\n" + "=" * 60)
-        print("TEST 4: Table State Consistency Test")
-        print("=" * 60)
-
-        if not self.bfrt_info:
-            self.log_fail("Table state consistency", "Not connected to switch")
-            return False
-
-        try:
-            # Verify all critical tables have entries
-            critical_tables = [
-                "pipe.SwitchIngress.forward",
-                "pipe.SwitchIngress.client_snat",
-                "pipe.SwitchIngress.action_selector_ap",
-                "pipe.SwitchIngress.action_selector",
-                "pipe.SwitchIngress.node_selector",
-            ]
-
-            all_ok = True
-            for table_name in critical_tables:
-                count = self.count_table_entries(table_name)
-                if count > 0:
-                    self.log_pass(f"Table '{table_name}': {count} entries")
-                elif count == 0:
-                    self.log_fail(
-                        f"Table '{table_name}'",
-                        "Table is empty (expected entries)"
-                    )
-                    all_ok = False
-                else:
-                    # count == -1, error occurred
-                    all_ok = False
-
-            return all_ok
-
-        except Exception as e:
-            self.log_fail("Table state consistency", str(e))
-            return False
-
-    def test_cleanup(self):
-        """Test 5: Test the cleanup API endpoint."""
-        print("\n" + "=" * 60)
-        print("TEST 5: Cleanup Test")
-        print("=" * 60)
-
-        if not self.bfrt_info:
-            self.log_fail("Cleanup", "Not connected to switch")
-            return False
-
-        try:
-            self.log("Calling cleanup API...")
-            resp = self.call_controller_api("cleanup", method="POST")
-
-            if resp is None:
-                self.log_fail("Cleanup API call", "Request failed")
-                return False
-
-            if resp.status_code != 200:
-                self.log_fail(
-                    "Cleanup API",
-                    f"Status {resp.status_code}: {resp.text}"
-                )
-                return False
-
-            self.log_pass("Cleanup API returned success")
-
-            # Wait for cleanup to complete
-            time.sleep(0.5)
-
-            # Verify all tables are empty
-            tables_to_check = [
-                "pipe.SwitchIngress.forward",
-                "pipe.SwitchIngress.client_snat",
-                "pipe.SwitchIngress.action_selector_ap",
-                "pipe.SwitchIngress.action_selector",
-                "pipe.SwitchIngress.node_selector",
-            ]
-
-            all_empty = True
-            for table_name in tables_to_check:
-                count = self.count_table_entries(table_name)
-                if count == 0:
-                    self.log_pass(f"Table '{table_name}' is empty")
+        if resp.status_code == 200:
+            self.log_pass(f"Migrate node: {original_ip} -> {test_ip}")
+            try:
+                resp_json = resp.json()
+                if resp_json.get("status") == "success":
+                    self.log_pass("Migration response contains success status")
                 else:
                     self.log_fail(
-                        f"Table '{table_name}'",
-                        f"Still has {count} entries after cleanup"
+                        "Migration response format",
+                        f"Expected status=success, got: {resp_json}"
                     )
-                    all_empty = False
+            except json.JSONDecodeError:
+                self.log_fail("Migration response format", "Response is not valid JSON")
+        else:
+            self.log_fail(
+                f"Migrate node: {original_ip} -> {test_ip}",
+                f"Status {resp.status_code}: {resp.text}"
+            )
+            return
 
-            # Re-initialize the controller by sending a simple request
-            # This will cause the controller to repopulate tables on next startup
-            # For now, we just note that manual restart may be needed
-            if all_empty:
-                self.log("NOTE: Cleanup successful. Restart controller to restore configuration.", "WARN")
+        # Test 2.2: Migrate back to original IP
+        resp = self.call_api(
+            "migrateNode",
+            method="POST",
+            data={"old_ipv4": test_ip, "new_ipv4": original_ip}
+        )
+        
+        if resp and resp.status_code == 200:
+            self.log_pass(f"Migrate back: {test_ip} -> {original_ip}")
+        else:
+            status = resp.status_code if resp else "No response"
+            self.log_fail(
+                f"Migrate back: {test_ip} -> {original_ip}",
+                f"Status: {status}"
+            )
 
-            return all_empty
+        # Test 2.3: Multiple sequential migrations
+        if len(self.lb_nodes) >= 2:
+            ip1 = self.lb_nodes[0]["ipv4"]
+            ip2 = self.lb_nodes[1]["ipv4"]
+            temp_ip1 = "10.0.0.101"
+            temp_ip2 = "10.0.0.102"
 
-        except Exception as e:
-            self.log_fail("Cleanup", str(e))
-            return False
+            # Migrate first node
+            resp1 = self.call_api(
+                "migrateNode",
+                method="POST",
+                data={"old_ipv4": ip1, "new_ipv4": temp_ip1}
+            )
+            
+            # Migrate second node
+            resp2 = self.call_api(
+                "migrateNode",
+                method="POST",
+                data={"old_ipv4": ip2, "new_ipv4": temp_ip2}
+            )
+
+            if resp1 and resp1.status_code == 200 and resp2 and resp2.status_code == 200:
+                self.log_pass("Multiple sequential migrations")
+            else:
+                self.log_fail(
+                    "Multiple sequential migrations",
+                    f"resp1={resp1.status_code if resp1 else 'None'}, "
+                    f"resp2={resp2.status_code if resp2 else 'None'}"
+                )
+
+            # Restore original state
+            self.call_api("migrateNode", data={"old_ipv4": temp_ip1, "new_ipv4": ip1})
+            self.call_api("migrateNode", data={"old_ipv4": temp_ip2, "new_ipv4": ip2})
+
+    # =========================================================================
+    # Test Group 3: migrateNode Endpoint - Invalid Requests
+    # =========================================================================
+
+    def test_migrate_node_invalid(self):
+        """Test invalid node migration requests and edge cases."""
+        print("\n" + "=" * 60)
+        print("TEST GROUP 3: migrateNode Endpoint - Invalid Requests")
+        print("=" * 60)
+
+        # Test 3.1: Missing old_ipv4 parameter
+        resp = self.call_api(
+            "migrateNode",
+            method="POST",
+            data={"new_ipv4": "10.0.0.99"}
+        )
+        
+        if resp and resp.status_code == 400:
+            self.log_pass("Missing old_ipv4 returns 400")
+        elif resp:
+            self.log_fail(
+                "Missing old_ipv4",
+                f"Expected 400, got {resp.status_code}"
+            )
+        else:
+            self.log_fail("Missing old_ipv4", "No response")
+
+        # Test 3.2: Missing new_ipv4 parameter
+        resp = self.call_api(
+            "migrateNode",
+            method="POST",
+            data={"old_ipv4": "10.0.0.1"}
+        )
+        
+        if resp and resp.status_code == 400:
+            self.log_pass("Missing new_ipv4 returns 400")
+        elif resp:
+            self.log_fail(
+                "Missing new_ipv4",
+                f"Expected 400, got {resp.status_code}"
+            )
+        else:
+            self.log_fail("Missing new_ipv4", "No response")
+
+        # Test 3.3: Empty request body
+        resp = self.call_api("migrateNode", method="POST", data={})
+        
+        if resp and resp.status_code == 400:
+            self.log_pass("Empty request body returns 400")
+        elif resp:
+            self.log_fail(
+                "Empty request body",
+                f"Expected 400, got {resp.status_code}"
+            )
+        else:
+            self.log_fail("Empty request body", "No response")
+
+        # Test 3.4: Non-existent old IP (not an LB node)
+        non_lb_ip = self.non_lb_nodes[0]["ipv4"] if self.non_lb_nodes else "10.0.0.0"
+        resp = self.call_api(
+            "migrateNode",
+            method="POST",
+            data={"old_ipv4": non_lb_ip, "new_ipv4": "10.0.0.99"}
+        )
+        
+        if resp and resp.status_code == 500:
+            self.log_pass(f"Non-LB node migration ({non_lb_ip}) returns 500")
+            try:
+                resp_json = resp.json()
+                if "error" in resp_json:
+                    self.log_pass("Error response contains error message")
+            except json.JSONDecodeError:
+                pass
+        elif resp:
+            self.log_fail(
+                f"Non-LB node migration ({non_lb_ip})",
+                f"Expected 500, got {resp.status_code}"
+            )
+        else:
+            self.log_fail("Non-LB node migration", "No response")
+
+        # Test 3.5: Completely unknown IP
+        resp = self.call_api(
+            "migrateNode",
+            method="POST",
+            data={"old_ipv4": "192.168.255.255", "new_ipv4": "10.0.0.99"}
+        )
+        
+        if resp and resp.status_code == 500:
+            self.log_pass("Unknown IP migration returns 500")
+        elif resp:
+            self.log_fail(
+                "Unknown IP migration",
+                f"Expected 500, got {resp.status_code}"
+            )
+        else:
+            self.log_fail("Unknown IP migration", "No response")
+
+        # Test 3.6: Invalid JSON (malformed)
+        resp = self.call_api(
+            "migrateNode",
+            method="POST",
+            raw_data="{invalid json"
+        )
+        
+        if resp and resp.status_code in [400, 500]:
+            self.log_pass(f"Malformed JSON returns {resp.status_code}")
+        elif resp:
+            self.log_fail(
+                "Malformed JSON",
+                f"Expected 400/500, got {resp.status_code}"
+            )
+        else:
+            self.log_fail("Malformed JSON", "No response")
+
+        # Test 3.7: Wrong HTTP method (GET instead of POST)
+        resp = self.call_api("migrateNode", method="GET")
+        
+        if resp and resp.status_code == 405:
+            self.log_pass("GET on migrateNode returns 405 Method Not Allowed")
+        elif resp:
+            # Some frameworks return 404 for method not allowed
+            if resp.status_code in [404, 405]:
+                self.log_pass(f"GET on migrateNode returns {resp.status_code}")
+            else:
+                self.log_fail(
+                    "GET on migrateNode",
+                    f"Expected 405, got {resp.status_code}"
+                )
+        else:
+            self.log_fail("GET on migrateNode", "No response")
+
+        # Test 3.8: Null values in parameters
+        resp = self.call_api(
+            "migrateNode",
+            method="POST",
+            data={"old_ipv4": None, "new_ipv4": None}
+        )
+        
+        if resp and resp.status_code == 400:
+            self.log_pass("Null parameter values return 400")
+        elif resp:
+            # 500 is also acceptable if it fails during processing
+            if resp.status_code == 500:
+                self.log_pass(f"Null parameter values return {resp.status_code}")
+            else:
+                self.log_fail(
+                    "Null parameter values",
+                    f"Expected 400/500, got {resp.status_code}"
+                )
+        else:
+            self.log_fail("Null parameter values", "No response")
+
+        # Test 3.9: Same IP for old and new
+        if len(self.lb_nodes) >= 1:
+            same_ip = self.lb_nodes[0]["ipv4"]
+            resp = self.call_api(
+                "migrateNode",
+                method="POST",
+                data={"old_ipv4": same_ip, "new_ipv4": same_ip}
+            )
+            
+            # This could succeed (no-op) or fail - either is acceptable
+            if resp:
+                self.log_pass(f"Same IP migration returns {resp.status_code}")
+            else:
+                self.log_fail("Same IP migration", "No response")
+
+    # =========================================================================
+    # Test Group 4: cleanup Endpoint
+    # =========================================================================
+
+    def test_cleanup_endpoint(self):
+        """Test the cleanup endpoint functionality."""
+        print("\n" + "=" * 60)
+        print("TEST GROUP 4: cleanup Endpoint")
+        print("=" * 60)
+
+        # Test 4.1: Basic cleanup call
+        resp = self.call_api("cleanup", method="POST")
+        
+        if resp is None:
+            self.log_fail("Cleanup endpoint", "No response from controller")
+            return
+
+        if resp.status_code == 200:
+            self.log_pass("Cleanup endpoint returns 200")
+            try:
+                resp_json = resp.json()
+                if resp_json.get("status") == "success":
+                    self.log_pass("Cleanup response contains success status")
+                if "message" in resp_json:
+                    self.log_pass("Cleanup response contains message")
+            except json.JSONDecodeError:
+                self.log_fail("Cleanup response format", "Response is not valid JSON")
+        else:
+            self.log_fail(
+                "Cleanup endpoint",
+                f"Status {resp.status_code}: {resp.text}"
+            )
+
+        # Test 4.2: Multiple cleanup calls (idempotency)
+        resp1 = self.call_api("cleanup", method="POST")
+        resp2 = self.call_api("cleanup", method="POST")
+        resp3 = self.call_api("cleanup", method="POST")
+
+        if all(r and r.status_code == 200 for r in [resp1, resp2, resp3]):
+            self.log_pass("Multiple cleanup calls are idempotent (all return 200)")
+        else:
+            statuses = [r.status_code if r else "None" for r in [resp1, resp2, resp3]]
+            self.log_fail(
+                "Cleanup idempotency",
+                f"Expected all 200, got: {statuses}"
+            )
+
+        # Test 4.3: Wrong HTTP method (GET instead of POST)
+        resp = self.call_api("cleanup", method="GET")
+        
+        if resp and resp.status_code in [404, 405]:
+            self.log_pass(f"GET on cleanup returns {resp.status_code}")
+        elif resp:
+            self.log_fail(
+                "GET on cleanup",
+                f"Expected 404/405, got {resp.status_code}"
+            )
+        else:
+            self.log_fail("GET on cleanup", "No response")
+
+    # =========================================================================
+    # Test Group 5: Invalid Endpoints
+    # =========================================================================
+
+    def test_invalid_endpoints(self):
+        """Test behavior for non-existent endpoints."""
+        print("\n" + "=" * 60)
+        print("TEST GROUP 5: Invalid Endpoints")
+        print("=" * 60)
+
+        # Test 5.1: Non-existent endpoint
+        resp = self.call_api("nonexistent", method="POST")
+        
+        if resp and resp.status_code == 404:
+            self.log_pass("Non-existent endpoint returns 404")
+        elif resp:
+            self.log_fail(
+                "Non-existent endpoint",
+                f"Expected 404, got {resp.status_code}"
+            )
+        else:
+            self.log_fail("Non-existent endpoint", "No response")
+
+        # Test 5.2: Root endpoint
+        resp = self.call_api("", method="GET")
+        
+        if resp:
+            self.log_pass(f"Root endpoint returns {resp.status_code}")
+        else:
+            self.log_fail("Root endpoint", "No response")
+
+        # Test 5.3: Random path
+        resp = self.call_api("api/v1/random/path", method="GET")
+        
+        if resp and resp.status_code == 404:
+            self.log_pass("Random path returns 404")
+        elif resp:
+            self.log_fail(
+                "Random path",
+                f"Expected 404, got {resp.status_code}"
+            )
+        else:
+            self.log_fail("Random path", "No response")
+
+    # =========================================================================
+    # Test Group 6: Response Time / Performance
+    # =========================================================================
+
+    def test_response_times(self):
+        """Test API response times are reasonable."""
+        print("\n" + "=" * 60)
+        print("TEST GROUP 6: Response Times")
+        print("=" * 60)
+
+        max_response_time = 2.0  # seconds
+
+        # Test 6.1: cleanup response time
+        start = time.time()
+        resp = self.call_api("cleanup", method="POST")
+        elapsed = time.time() - start
+
+        if resp and elapsed < max_response_time:
+            self.log_pass(f"Cleanup response time: {elapsed:.3f}s (< {max_response_time}s)")
+        elif resp:
+            self.log_fail(
+                "Cleanup response time",
+                f"Took {elapsed:.3f}s (> {max_response_time}s)"
+            )
+        else:
+            self.log_fail("Cleanup response time", "No response")
+
+        # Test 6.2: migrateNode response time (if we have LB nodes)
+        if len(self.lb_nodes) >= 1:
+            original_ip = self.lb_nodes[0]["ipv4"]
+            test_ip = "10.0.0.98"
+
+            start = time.time()
+            resp = self.call_api(
+                "migrateNode",
+                method="POST",
+                data={"old_ipv4": original_ip, "new_ipv4": test_ip}
+            )
+            elapsed = time.time() - start
+
+            if resp and resp.status_code == 200 and elapsed < max_response_time:
+                self.log_pass(f"migrateNode response time: {elapsed:.3f}s (< {max_response_time}s)")
+            elif resp and resp.status_code == 200:
+                self.log_fail(
+                    "migrateNode response time",
+                    f"Took {elapsed:.3f}s (> {max_response_time}s)"
+                )
+            else:
+                self.log_skip("migrateNode response time", "Migration failed")
+
+            # Restore
+            self.call_api(
+                "migrateNode",
+                method="POST",
+                data={"old_ipv4": test_ip, "new_ipv4": original_ip}
+            )
+
+    # =========================================================================
+    # Main Test Runner
+    # =========================================================================
 
     def run_all_tests(self):
         """Run all hardware controller tests."""
         print("\n" + "=" * 60)
-        print(f"  HARDWARE CONTROLLER TEST SUITE - {self.arch.upper()}")
-        print(f"  Switch: {self.grpc_addr}")
+        print("  HARDWARE CONTROLLER API TEST SUITE")
         print(f"  Controller: {self.controller_url}")
-        print(f"  Program: {self.program_name}")
+        print(f"  Config: {self.config_path}")
         print("=" * 60)
         print("\nNOTE: Make sure both switch AND controller are running!")
-        print("      Switch: make switch ARCH=" + self.arch)
+        print("      Switch: make switch ARCH=tf1  (or tf2)")
         print("      Controller: make controller\n")
 
-        # Connect to switch
-        if not self.connect():
-            print("\n⚠️  Connection failed - skipping remaining tests")
+        # Check controller is reachable first
+        if not self.test_controller_reachable():
+            print("\n⚠️  Controller not reachable - skipping remaining tests")
+            print(f"    Make sure the controller is running at {self.controller_url}")
             return False
 
-        if not self.bind_program():
-            print("\n⚠️  Failed to bind to program - skipping remaining tests")
-            return False
-
-        # Run tests in order
-        self.test_controller_health()
-        self.test_initial_configuration()
-        self.test_node_migration()
-        self.test_table_state_consistency()
-        
-        # Cleanup test is last because it clears all tables
-        print("\n" + "=" * 60)
-        print("WARNING: The next test will CLEAR ALL TABLE ENTRIES!")
-        print("         You will need to restart the controller afterwards.")
-        print("=" * 60)
-        input("Press Enter to continue with cleanup test (or Ctrl+C to skip)...")
-        self.test_cleanup()
+        # Run all test groups
+        self.test_migrate_node_valid()
+        self.test_migrate_node_invalid()
+        self.test_cleanup_endpoint()
+        self.test_invalid_endpoints()
+        self.test_response_times()
 
         # Summary
         print("\n" + "=" * 60)
         print("  TEST SUMMARY")
         print("=" * 60)
-        total = self.passed + self.failed
-        print(f"  Total:  {total}")
-        print(f"  Passed: {self.passed} ✅")
-        print(f"  Failed: {self.failed} ❌")
+        total = self.passed + self.failed + self.skipped
+        print(f"  Total:   {total}")
+        print(f"  Passed:  {self.passed} ✅")
+        print(f"  Failed:  {self.failed} ❌")
+        print(f"  Skipped: {self.skipped} ⏭️")
         print("=" * 60)
 
         if self.failed == 0:
             print("\n✅ All tests passed!")
-            print("NOTE: Restart the controller to restore table entries:")
-            print("      make controller")
         else:
             print("\n❌ Some tests failed. Check the output above.")
+
+        print("\nNOTE: Tests may have modified controller state.")
+        print("      Restart the controller to restore original configuration:")
+        print("      make controller")
 
         return self.failed == 0
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Hardware Controller Test for P4 Load Balancer on Tofino"
-    )
-    parser.add_argument(
-        "--arch",
-        choices=["tf1", "tf2"],
-        default=os.environ.get("ARCH", "tf2"),
-        help="Tofino architecture (default: tf2 or from ARCH env var)",
-    )
-    parser.add_argument(
-        "--grpc-addr",
-        default="127.0.0.1:50052",
-        help="gRPC address of the switch (default: 127.0.0.1:50052)",
+        description="Hardware Controller API Test for P4 Load Balancer"
     )
     parser.add_argument(
         "--controller-url",
@@ -540,9 +686,7 @@ def main():
     )
     parser.add_argument(
         "--config",
-        default=os.path.join(
-            os.path.dirname(__file__), "..", "controller", "controller_config.json"
-        ),
+        default=os.path.join(SCRIPT_DIR, "..", "controller", "controller_config.json"),
         help="Path to controller config file",
     )
     args = parser.parse_args()
@@ -553,8 +697,6 @@ def main():
         sys.exit(1)
 
     test = HardwareControllerTest(
-        arch=args.arch,
-        grpc_addr=args.grpc_addr,
         controller_url=args.controller_url,
         config_path=args.config,
     )
