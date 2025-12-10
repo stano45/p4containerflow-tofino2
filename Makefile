@@ -438,9 +438,9 @@ test-hardware:
 # Requires: switch running (make switch), controller running (make controller)
 # Note: This test only uses HTTP to test the controller API, no SDE required
 test-hardware-controller:
-	@echo "=== Running hardware controller API tests ==="
+	@echo "=== Running hardware controller API tests (pytest) ==="
 	@echo "NOTE: Requires switch AND controller running"
-	python3 test/test_hardware_controller.py
+	cd test && uv run pytest test_hardware_controller.py -v
 
 # -----------------------------------------------------------------------------
 # Controller

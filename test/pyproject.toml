@@ -1,0 +1,22 @@
+[project]
+name = "p4containerflow-tests"
+version = "0.1.0"
+description = "Tests for p4containerflow Load Balancer"
+requires-python = ">=3.8"
+dependencies = [
+    "pytest>=7.0.0",
+    "requests>=2.28.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "hardware: tests that require hardware switch",
+    "model: tests that require tofino model",
+    "controller: tests that require controller running",
+    "slow: tests that take a long time",
+]
+

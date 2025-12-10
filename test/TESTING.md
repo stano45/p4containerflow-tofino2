@@ -68,34 +68,44 @@ make test-hardware ARCH=tf1  # or tf2
 **Note:** This test uses bfrt_grpc to directly manipulate tables, similar to what the controller does.
 
 ### 4. `test_hardware_controller.py`
-HTTP API tests for the controller (works on both model and hardware).
+Pytest-based HTTP API tests for the controller (works on both model and hardware).
 
 **Environment:** Any (tests controller HTTP API only)  
 **Requirements:**
 - Switch running (`make switch`)
 - Controller running (`make controller`)
+- uv installed
 
 **Run:**
 ```bash
+# Run all controller API tests
 make test-hardware-controller
+
+# Or run directly with pytest options
+cd test && uv run pytest test_hardware_controller.py -v
+
+# Run specific test class
+cd test && uv run pytest test_hardware_controller.py -v -k "TestMigrateNodeValid"
+
+# Run with custom controller URL
+cd test && uv run pytest test_hardware_controller.py -v --controller-url http://10.0.0.1:5000
 ```
 
-**Tests:**
-1. Controller health/reachability
-2. migrateNode endpoint - valid requests
-3. migrateNode endpoint - invalid requests and edge cases
-4. cleanup endpoint - functionality and idempotency
-5. Invalid endpoints (404 handling)
-6. Response time verification
+**Test Classes:**
+- `TestControllerHealth` - Reachability and basic endpoint checks
+- `TestMigrateNodeValid` - Valid migration requests
+- `TestMigrateNodeInvalid` - Invalid requests and edge cases
+- `TestInvalidEndpoints` - 404 handling
+- `TestResponseTimes` - Performance verification
+- `TestCleanup` - Cleanup functionality (runs last)
 
-**Key differences from `test_hardware_dataplane.py`:**
-- Tests controller HTTP API endpoints only (no gRPC/switch connection)
-- Requires controller to be running
-- No packet generation
+**Key features:**
+- Uses pytest with uv for dependency management
+- Tests controller HTTP API only (no gRPC/switch connection)
 - No SDE environment required
 - Comprehensive edge case and error handling tests
 
-**Important:** Tests may modify controller state. Restart the controller afterwards:
+**Important:** Cleanup tests clear controller state. Restart the controller afterwards:
 ```bash
 make controller
 ```
