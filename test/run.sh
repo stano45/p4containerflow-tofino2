@@ -38,7 +38,7 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 echo "Syncing dependencies with uv..."
-uv sync --frozen --no-progress
+uv sync --no-progress
 
 PY_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 VENV_PYTHON="$SCRIPT_DIR/.venv/bin/python"
