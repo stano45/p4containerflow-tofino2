@@ -15,12 +15,13 @@ Usage:
     python3 test/test_hardware_controller.py --controller-url http://127.0.0.1:5000
     python3 test/test_hardware_controller.py --config /path/to/controller_config.json
 
-Tests performed:
-1. Controller health/reachability tests
+Test Groups (in execution order):
+1. Controller health/reachability (non-destructive)
 2. migrateNode endpoint - valid requests
-3. migrateNode endpoint - invalid requests and edge cases
-4. cleanup endpoint - functionality and idempotency
-5. Error handling and edge cases
+3. migrateNode endpoint - invalid requests and edge cases  
+4. Invalid endpoints (404 handling)
+5. Response time verification
+6. cleanup endpoint - functionality and idempotency (runs LAST - clears state)
 """
 
 import argparse
@@ -142,12 +143,17 @@ class HardwareControllerTest:
             else:
                 raise ValueError(f"Unsupported method: {method}")
             return resp
-        except requests.exceptions.ConnectionError:
+        except requests.exceptions.ConnectionError as e:
+            self.log(f"Connection error: {e}", "DEBUG")
             return None
-        except requests.exceptions.Timeout:
+        except requests.exceptions.Timeout as e:
+            self.log(f"Request timeout: {e}", "DEBUG")
             return None
         except requests.exceptions.RequestException as e:
             self.log(f"HTTP request failed: {e}", "WARN")
+            return None
+        except Exception as e:
+            self.log(f"Unexpected error calling {endpoint}: {type(e).__name__}: {e}", "WARN")
             return None
 
     # =========================================================================
@@ -155,13 +161,14 @@ class HardwareControllerTest:
     # =========================================================================
 
     def test_controller_reachable(self):
-        """Test that the controller is reachable."""
+        """Test that the controller is reachable without modifying state."""
         print("\n" + "=" * 60)
         print("TEST GROUP 1: Controller Health/Reachability")
         print("=" * 60)
 
-        # Test 1.1: Basic connectivity via cleanup endpoint (always available)
-        resp = self.call_api("cleanup", method="POST")
+        # Test 1.1: Basic connectivity - try a GET on root (should return 404 but proves connectivity)
+        # We avoid POST endpoints that modify state
+        resp = self.call_api("", method="GET")
         if resp is None:
             self.log_fail(
                 "Controller reachable",
@@ -169,27 +176,29 @@ class HardwareControllerTest:
             )
             return False
         
-        if resp.status_code == 200:
-            self.log_pass("Controller is reachable and responding")
+        # Any response (even 404) proves connectivity
+        self.log_pass(f"Controller is reachable (status {resp.status_code})")
+
+        # Test 1.2: Check migrateNode endpoint exists (use invalid request to avoid state change)
+        resp = self.call_api("migrateNode", method="POST", data={})
+        if resp is None:
+            self.log_fail("migrateNode endpoint", "No response")
+            return False
+        
+        # 400 means endpoint exists but we sent bad data (expected)
+        if resp.status_code == 400:
+            self.log_pass("migrateNode endpoint is accessible")
+            try:
+                resp_json = resp.json()
+                if "error" in resp_json:
+                    self.log_pass("Controller returns valid JSON error responses")
+            except json.JSONDecodeError:
+                self.log_fail("JSON error response", "Response is not valid JSON")
         else:
             self.log_fail(
-                "Controller reachable",
-                f"Unexpected status code: {resp.status_code}"
+                "migrateNode endpoint",
+                f"Expected 400 for empty body, got {resp.status_code}"
             )
-            return False
-
-        # Test 1.2: Check response is valid JSON
-        try:
-            resp_json = resp.json()
-            if "status" in resp_json or "error" in resp_json:
-                self.log_pass("Controller returns valid JSON responses")
-            else:
-                self.log_fail(
-                    "JSON response format",
-                    f"Unexpected response format: {resp_json}"
-                )
-        except json.JSONDecodeError:
-            self.log_fail("JSON response format", "Response is not valid JSON")
 
         return True
 
@@ -207,12 +216,11 @@ class HardwareControllerTest:
             self.log_skip("Node migration tests", "No LB nodes in config")
             return
 
-        # We need to restart the controller state, so call cleanup first
-        # and note that this clears tables
-        self.log("Note: Tests will modify controller state")
+        self.log("Note: Tests will modify controller state (migrations will be reverted)")
 
         original_ip = self.lb_nodes[0]["ipv4"]
         test_ip = "10.0.0.99"
+        migration_succeeded = False
 
         # Test 2.1: Valid migration to new IP
         resp = self.call_api(
@@ -223,10 +231,9 @@ class HardwareControllerTest:
         
         if resp is None:
             self.log_fail("Migrate node (valid)", "No response from controller")
-            return
-
-        if resp.status_code == 200:
+        elif resp.status_code == 200:
             self.log_pass(f"Migrate node: {original_ip} -> {test_ip}")
+            migration_succeeded = True
             try:
                 resp_json = resp.json()
                 if resp_json.get("status") == "success":
@@ -243,23 +250,26 @@ class HardwareControllerTest:
                 f"Migrate node: {original_ip} -> {test_ip}",
                 f"Status {resp.status_code}: {resp.text}"
             )
-            return
 
-        # Test 2.2: Migrate back to original IP
-        resp = self.call_api(
-            "migrateNode",
-            method="POST",
-            data={"old_ipv4": test_ip, "new_ipv4": original_ip}
-        )
-        
-        if resp and resp.status_code == 200:
-            self.log_pass(f"Migrate back: {test_ip} -> {original_ip}")
-        else:
-            status = resp.status_code if resp else "No response"
-            self.log_fail(
-                f"Migrate back: {test_ip} -> {original_ip}",
-                f"Status: {status}"
+        # Test 2.2: Migrate back to original IP (only if first migration succeeded)
+        if migration_succeeded:
+            resp = self.call_api(
+                "migrateNode",
+                method="POST",
+                data={"old_ipv4": test_ip, "new_ipv4": original_ip}
             )
+            
+            if resp and resp.status_code == 200:
+                self.log_pass(f"Migrate back: {test_ip} -> {original_ip}")
+            else:
+                status = resp.status_code if resp else "No response"
+                text = resp.text if resp else ""
+                self.log_fail(
+                    f"Migrate back: {test_ip} -> {original_ip}",
+                    f"Status: {status} {text}"
+                )
+        else:
+            self.log_skip("Migrate back", "First migration failed")
 
         # Test 2.3: Multiple sequential migrations
         if len(self.lb_nodes) >= 2:
@@ -284,16 +294,17 @@ class HardwareControllerTest:
 
             if resp1 and resp1.status_code == 200 and resp2 and resp2.status_code == 200:
                 self.log_pass("Multiple sequential migrations")
+                # Restore original state
+                self.call_api("migrateNode", data={"old_ipv4": temp_ip1, "new_ipv4": ip1})
+                self.call_api("migrateNode", data={"old_ipv4": temp_ip2, "new_ipv4": ip2})
             else:
                 self.log_fail(
                     "Multiple sequential migrations",
-                    f"resp1={resp1.status_code if resp1 else 'None'}, "
-                    f"resp2={resp2.status_code if resp2 else 'None'}"
+                    f"resp1={resp1.status_code if resp1 else 'None'} {resp1.text if resp1 else ''}, "
+                    f"resp2={resp2.status_code if resp2 else 'None'} {resp2.text if resp2 else ''}"
                 )
-
-            # Restore original state
-            self.call_api("migrateNode", data={"old_ipv4": temp_ip1, "new_ipv4": ip1})
-            self.call_api("migrateNode", data={"old_ipv4": temp_ip2, "new_ipv4": ip2})
+        else:
+            self.log_skip("Multiple sequential migrations", "Need at least 2 LB nodes")
 
     # =========================================================================
     # Test Group 3: migrateNode Endpoint - Invalid Requests
@@ -464,16 +475,16 @@ class HardwareControllerTest:
                 self.log_fail("Same IP migration", "No response")
 
     # =========================================================================
-    # Test Group 4: cleanup Endpoint
+    # Test Group 6: cleanup Endpoint (run last - clears state)
     # =========================================================================
 
     def test_cleanup_endpoint(self):
         """Test the cleanup endpoint functionality."""
         print("\n" + "=" * 60)
-        print("TEST GROUP 4: cleanup Endpoint")
+        print("TEST GROUP 6: cleanup Endpoint (clears controller state)")
         print("=" * 60)
 
-        # Test 4.1: Basic cleanup call
+        # Test 6.1: Basic cleanup call
         resp = self.call_api("cleanup", method="POST")
         
         if resp is None:
@@ -496,7 +507,7 @@ class HardwareControllerTest:
                 f"Status {resp.status_code}: {resp.text}"
             )
 
-        # Test 4.2: Multiple cleanup calls (idempotency)
+        # Test 6.2: Multiple cleanup calls (idempotency)
         resp1 = self.call_api("cleanup", method="POST")
         resp2 = self.call_api("cleanup", method="POST")
         resp3 = self.call_api("cleanup", method="POST")
@@ -510,7 +521,7 @@ class HardwareControllerTest:
                 f"Expected all 200, got: {statuses}"
             )
 
-        # Test 4.3: Wrong HTTP method (GET instead of POST)
+        # Test 6.3: Wrong HTTP method (GET instead of POST)
         resp = self.call_api("cleanup", method="GET")
         
         if resp and resp.status_code in [404, 405]:
@@ -524,13 +535,13 @@ class HardwareControllerTest:
             self.log_fail("GET on cleanup", "No response")
 
     # =========================================================================
-    # Test Group 5: Invalid Endpoints
+    # Test Group 4: Invalid Endpoints
     # =========================================================================
 
     def test_invalid_endpoints(self):
         """Test behavior for non-existent endpoints."""
         print("\n" + "=" * 60)
-        print("TEST GROUP 5: Invalid Endpoints")
+        print("TEST GROUP 4: Invalid Endpoints")
         print("=" * 60)
 
         # Test 5.1: Non-existent endpoint
@@ -574,27 +585,13 @@ class HardwareControllerTest:
     def test_response_times(self):
         """Test API response times are reasonable."""
         print("\n" + "=" * 60)
-        print("TEST GROUP 6: Response Times")
+        print("TEST GROUP 5: Response Times")
         print("=" * 60)
 
         max_response_time = 2.0  # seconds
 
-        # Test 6.1: cleanup response time
-        start = time.time()
-        resp = self.call_api("cleanup", method="POST")
-        elapsed = time.time() - start
-
-        if resp and elapsed < max_response_time:
-            self.log_pass(f"Cleanup response time: {elapsed:.3f}s (< {max_response_time}s)")
-        elif resp:
-            self.log_fail(
-                "Cleanup response time",
-                f"Took {elapsed:.3f}s (> {max_response_time}s)"
-            )
-        else:
-            self.log_fail("Cleanup response time", "No response")
-
-        # Test 6.2: migrateNode response time (if we have LB nodes)
+        # Test 5.1: migrateNode response time (if we have LB nodes)
+        # Test this BEFORE cleanup since cleanup clears state
         if len(self.lb_nodes) >= 1:
             original_ip = self.lb_nodes[0]["ipv4"]
             test_ip = "10.0.0.98"
@@ -607,22 +604,40 @@ class HardwareControllerTest:
             )
             elapsed = time.time() - start
 
-            if resp and resp.status_code == 200 and elapsed < max_response_time:
-                self.log_pass(f"migrateNode response time: {elapsed:.3f}s (< {max_response_time}s)")
-            elif resp and resp.status_code == 200:
-                self.log_fail(
-                    "migrateNode response time",
-                    f"Took {elapsed:.3f}s (> {max_response_time}s)"
+            if resp and resp.status_code == 200:
+                if elapsed < max_response_time:
+                    self.log_pass(f"migrateNode response time: {elapsed:.3f}s (< {max_response_time}s)")
+                else:
+                    self.log_fail(
+                        "migrateNode response time",
+                        f"Took {elapsed:.3f}s (> {max_response_time}s)"
+                    )
+                # Restore
+                self.call_api(
+                    "migrateNode",
+                    method="POST",
+                    data={"old_ipv4": test_ip, "new_ipv4": original_ip}
                 )
             else:
-                self.log_skip("migrateNode response time", "Migration failed")
+                status = resp.status_code if resp else "No response"
+                self.log_skip("migrateNode response time", f"Migration failed: {status}")
+        else:
+            self.log_skip("migrateNode response time", "No LB nodes in config")
 
-            # Restore
-            self.call_api(
-                "migrateNode",
-                method="POST",
-                data={"old_ipv4": test_ip, "new_ipv4": original_ip}
+        # Test 5.2: Test an invalid request response time (doesn't modify state)
+        start = time.time()
+        resp = self.call_api("migrateNode", method="POST", data={})
+        elapsed = time.time() - start
+
+        if resp and elapsed < max_response_time:
+            self.log_pass(f"Error response time: {elapsed:.3f}s (< {max_response_time}s)")
+        elif resp:
+            self.log_fail(
+                "Error response time",
+                f"Took {elapsed:.3f}s (> {max_response_time}s)"
             )
+        else:
+            self.log_fail("Error response time", "No response")
 
     # =========================================================================
     # Main Test Runner
@@ -639,18 +654,27 @@ class HardwareControllerTest:
         print("      Switch: make switch ARCH=tf1  (or tf2)")
         print("      Controller: make controller\n")
 
-        # Check controller is reachable first
+        # Check controller is reachable first (without modifying state)
         if not self.test_controller_reachable():
             print("\n⚠️  Controller not reachable - skipping remaining tests")
             print(f"    Make sure the controller is running at {self.controller_url}")
             return False
 
-        # Run all test groups
+        # Run test groups in order that preserves state:
+        # 1. Valid migrations (these modify and restore state)
         self.test_migrate_node_valid()
+        
+        # 2. Invalid requests (these shouldn't modify state)
         self.test_migrate_node_invalid()
-        self.test_cleanup_endpoint()
+        
+        # 3. Invalid endpoints (these don't modify state)
         self.test_invalid_endpoints()
+        
+        # 4. Response times (these use cleanup which modifies state)
         self.test_response_times()
+        
+        # 5. Cleanup tests LAST (these clear all state)
+        self.test_cleanup_endpoint()
 
         # Summary
         print("\n" + "=" * 60)
@@ -668,8 +692,8 @@ class HardwareControllerTest:
         else:
             print("\n❌ Some tests failed. Check the output above.")
 
-        print("\nNOTE: Tests may have modified controller state.")
-        print("      Restart the controller to restore original configuration:")
+        print("\nNOTE: Cleanup tests cleared controller state.")
+        print("      Restart the controller to restore configuration:")
         print("      make controller")
 
         return self.failed == 0
