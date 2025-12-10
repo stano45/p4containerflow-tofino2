@@ -117,7 +117,7 @@ class TestMigrateNodeValid:
         api_client.migrate_node(temp2, ip2)
     
     def test_migrate_same_ip(self, api_client, lb_nodes):
-        """Migrating to same IP should succeed (no-op) or fail gracefully."""
+        """Migrating to same IP should succeed as no-op."""
         if not lb_nodes:
             pytest.skip("No LB nodes in config")
         
@@ -125,7 +125,7 @@ class TestMigrateNodeValid:
         resp = api_client.migrate_node(same_ip, same_ip)
         
         assert resp is not None, "No response for same-IP migration"
-        # Either success (no-op) or error is acceptable
+        assert resp.status_code == 200, f"Same-IP migration should succeed: {resp.text}"
 
 
 # =============================================================================

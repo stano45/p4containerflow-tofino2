@@ -118,6 +118,11 @@ class NodeManager(object):
                 )
 
     def migrateNode(self, old_ipv4, new_ipv4):
+        # No-op if migrating to same IP
+        if old_ipv4 == new_ipv4:
+            self.logger.info(f"Migration to same IP {old_ipv4} is a no-op")
+            return
+        
         if old_ipv4 not in self.lb_nodes:
             raise Exception(
                 f"Failed to update node {old_ipv4=}, {new_ipv4=}: Node with IP {old_ipv4} is not LB node"
