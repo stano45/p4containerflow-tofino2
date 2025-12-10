@@ -424,18 +424,14 @@ test-controller: install
 test-hardware:
 	@echo "=== Running hardware dataplane tests (ARCH=$(ARCH)) ==="
 	@echo "NOTE: Requires switch running, controller NOT running"
-	@if [ -z "$(SDE_INSTALL)" ]; then \
-		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
-		exit 1; \
-	fi
-	cd test && uv run pytest test_hardware_dataplane.py -v --arch $(ARCH)
+	ARCH=$(ARCH) test/run.sh dataplane -v
 
 # Hardware controller test - tests the controller HTTP API
 # Requires: switch running (make switch), controller running (make controller)
 test-hardware-controller:
-	@echo "=== Running hardware controller API tests (pytest) ==="
+	@echo "=== Running hardware controller API tests ==="
 	@echo "NOTE: Requires switch AND controller running"
-	cd test && uv run pytest test_hardware_controller.py -v
+	test/run.sh controller -v
 
 # -----------------------------------------------------------------------------
 # Controller
