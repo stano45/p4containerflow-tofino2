@@ -408,14 +408,14 @@ load-kmods:
 # Model tests (PTF-based, run on tofino-model)
 test-dataplane: install
 	@echo "=== Running model dataplane tests ==="
-	@cd open-p4studio && sudo -E ./run_p4_tests.sh --arch $(ARCH) \
+	@cd open-p4studio && sudo -E env ARCH=$(ARCH) ./run_p4_tests.sh --arch $(ARCH) \
 		-t ../test/model \
 		-s test_dataplane \
 		-p $(PROGRAM_NAME)
 
 test-controller: install
 	@echo "=== Running model controller tests ==="
-	@cd open-p4studio && sudo -E ./run_p4_tests.sh --arch $(ARCH) \
+	@cd open-p4studio && sudo -E env ARCH=$(ARCH) ./run_p4_tests.sh --arch $(ARCH) \
 		-t ../test/model \
 		-s test_controller \
 		-p $(PROGRAM_NAME)
