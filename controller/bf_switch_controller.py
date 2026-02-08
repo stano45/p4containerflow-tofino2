@@ -191,6 +191,27 @@ class SwitchController(AbstractSwitchController):
             ],
         )
 
+    def insertArpForwardEntry(
+        self,
+        target_ip: str,
+        port: int,
+        update_type: UpdateType = UpdateType.INSERT,
+    ):
+        self.getUpdateFn(update_type)(
+            "pipe.SwitchIngress.arp_forward",
+            [gc.KeyTuple("hdr.arp.target_proto_addr", gc.ipv4_to_bytes(target_ip))],
+            "SwitchIngress.set_egress_port",
+            [
+                gc.DataTuple("port", port),
+            ],
+        )
+
+    def deleteArpForwardEntry(self, target_ip: str):
+        self.deleteTableEntry(
+            "pipe.SwitchIngress.arp_forward",
+            [gc.KeyTuple("hdr.arp.target_proto_addr", gc.ipv4_to_bytes(target_ip))],
+        )
+
     def deleteTableEntry(self, tableName: str, keyFields=None):
         """Delete a specific table entry by key."""
         table = self.bfrt_info.table_get(tableName)

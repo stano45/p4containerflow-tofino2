@@ -77,6 +77,7 @@ class TableHelper:
 
     TABLES = [
         "pipe.SwitchIngress.forward",
+        "pipe.SwitchIngress.arp_forward",
         "pipe.SwitchIngress.node_selector",
         "pipe.SwitchIngress.action_selector",
         "pipe.SwitchIngress.action_selector_ap",
@@ -165,6 +166,32 @@ class TestTableWriteRead:
         )
 
 
+class TestArpTableWriteRead:
+
+    def test_arp_forward_table_write(self, table_helper):
+        test_ip = "192.168.1.1"
+        test_port = 5
+
+        table_helper.insert_entry(
+            "pipe.SwitchIngress.arp_forward",
+            [gc.KeyTuple("hdr.arp.target_proto_addr", gc.ipv4_to_bytes(test_ip))],
+            "SwitchIngress.set_egress_port",
+            [gc.DataTuple("port", test_port)],
+        )
+
+    def test_arp_forward_table_read(self, table_helper):
+        entries = table_helper.get_entries("pipe.SwitchIngress.arp_forward")
+        assert len(entries) > 0, "No ARP forward entries found after write"
+
+    def test_arp_forward_table_delete(self, table_helper):
+        test_ip = "192.168.1.1"
+
+        table_helper.delete_entry(
+            "pipe.SwitchIngress.arp_forward",
+            [gc.KeyTuple("hdr.arp.target_proto_addr", gc.ipv4_to_bytes(test_ip))],
+        )
+
+
 class TestLoadBalancerSetup:
 
     def test_clear_existing_entries(self, table_helper):
@@ -182,6 +209,22 @@ class TestLoadBalancerSetup:
             table_helper.insert_entry(
                 "pipe.SwitchIngress.forward",
                 [gc.KeyTuple("hdr.ipv4.dst_addr", gc.ipv4_to_bytes(server_ip))],
+                "SwitchIngress.set_egress_port",
+                [gc.DataTuple("port", table_helper.SERVER_PORTS[i])],
+            )
+
+    def test_add_arp_forward_entries(self, table_helper):
+        table_helper.insert_entry(
+            "pipe.SwitchIngress.arp_forward",
+            [gc.KeyTuple("hdr.arp.target_proto_addr", gc.ipv4_to_bytes(table_helper.CLIENT_IP))],
+            "SwitchIngress.set_egress_port",
+            [gc.DataTuple("port", table_helper.CLIENT_PORT)],
+        )
+
+        for i, server_ip in enumerate(table_helper.SERVER_IPS):
+            table_helper.insert_entry(
+                "pipe.SwitchIngress.arp_forward",
+                [gc.KeyTuple("hdr.arp.target_proto_addr", gc.ipv4_to_bytes(server_ip))],
                 "SwitchIngress.set_egress_port",
                 [gc.DataTuple("port", table_helper.SERVER_PORTS[i])],
             )
@@ -239,6 +282,7 @@ class TestCleanup:
         "pipe.SwitchIngress.action_selector_ap",
         "pipe.SwitchIngress.client_snat",
         "pipe.SwitchIngress.forward",
+        "pipe.SwitchIngress.arp_forward",
     ])
     def test_clear_table(self, table_helper, table_name):
         try:

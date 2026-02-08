@@ -10,6 +10,7 @@ from ptf.testutils import (
     verify_packet,
     verify_no_other_packets,
     verify_any_packet_any_port,
+    simple_arp_packet,
 )
 
 logger = get_logger()
@@ -162,6 +163,16 @@ class AbstractTest(BfRuntimeTest):
         self.insertTableEntry(
             "SwitchIngress.forward",
             [gc.KeyTuple("hdr.ipv4.dst_addr", ip(dst_addr))],
+            "SwitchIngress.set_egress_port",
+            [
+                gc.DataTuple("port", port),
+            ],
+        )
+
+    def insertArpForwardEntry(self, target_ip, port):
+        self.insertTableEntry(
+            "SwitchIngress.arp_forward",
+            [gc.KeyTuple("hdr.arp.target_proto_addr", ip(target_ip))],
             "SwitchIngress.set_egress_port",
             [
                 gc.DataTuple("port", port),
@@ -578,6 +589,67 @@ class TestBidirectionalTraffic(AbstractTest):
 
     def verifyPackets(self):
         self.checkTrafficBalance(self.serverCounters, self.maxImbalance)
+
+    def runTest(self):
+        self.runTestImpl()
+
+
+class TestArpForwarding(AbstractTest):
+    """Test that ARP packets are forwarded based on the arp_forward table."""
+
+    def setUp(self):
+        super().setUp()
+        self.num_nodes = 4
+        self.ports = [swports[i] for i in range(self.num_nodes)]
+        self.ips = [f"10.0.0.{i}" for i in range(self.num_nodes)]
+        self.macs = [f"00:00:00:00:00:0{i}" for i in range(self.num_nodes)]
+
+    def setupCtrlPlane(self):
+        self.clearTables()
+
+        for i in range(self.num_nodes):
+            self.insertArpForwardEntry(self.ips[i], self.ports[i])
+
+    def sendPacket(self):
+        for i in range(self.num_nodes):
+            for j in range(self.num_nodes):
+                if i == j:
+                    continue
+                # ARP request from node i asking for node j's MAC
+                arp_req = simple_arp_packet(
+                    eth_src=self.macs[i],
+                    eth_dst="ff:ff:ff:ff:ff:ff",
+                    arp_op=1,
+                    ip_snd=self.ips[i],
+                    ip_tgt=self.ips[j],
+                    hw_snd=self.macs[i],
+                    hw_tgt="00:00:00:00:00:00",
+                )
+                logger.info(
+                    "Sending ARP request from port %d (%s) for %s",
+                    self.ports[i], self.ips[i], self.ips[j],
+                )
+                send_packet(self, self.ports[i], arp_req)
+                # Should arrive on node j's port
+                verify_packet(self, arp_req, self.ports[j])
+
+                # ARP reply from node j back to node i
+                arp_reply = simple_arp_packet(
+                    eth_src=self.macs[j],
+                    eth_dst=self.macs[i],
+                    arp_op=2,
+                    ip_snd=self.ips[j],
+                    ip_tgt=self.ips[i],
+                    hw_snd=self.macs[j],
+                    hw_tgt=self.macs[i],
+                )
+                logger.info(
+                    "Sending ARP reply from port %d (%s) to %s",
+                    self.ports[j], self.ips[j], self.ips[i],
+                )
+                send_packet(self, self.ports[j], arp_reply)
+                # Should arrive on node i's port
+                verify_packet(self, arp_reply, self.ports[i])
 
     def runTest(self):
         self.runTestImpl()

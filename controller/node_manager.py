@@ -67,6 +67,23 @@ class NodeManager(object):
                         f"Failed to insert forward table entry for {node=}: {e}"
                     )
 
+                try:
+                    self.switch_controller.insertArpForwardEntry(
+                        port=node.sw_port,
+                        target_ip=node.ipv4,
+                    )
+                    self.logger.info(
+                        f"Inserted ARP forward entry for {node.ipv4} -> port {node.sw_port}"
+                    )
+                except grpc.RpcError as e:
+                    raise Exception(
+                        f"Failed to insert ARP forward entry for {node=}: {printGrpcError(e)}"
+                    )
+                except Exception as e:
+                    raise Exception(
+                        f"Failed to insert ARP forward entry for {node=}: {e}"
+                    )
+
                 if node.is_lb_node:
                     try:
                         self.switch_controller.insertActionTableEntry(
@@ -156,6 +173,14 @@ class NodeManager(object):
                 self.logger.info(
                     f"Inserted forward entry for new IP: {new_ipv4} -> port {old_node.sw_port}"
                 )
+
+                self.switch_controller.insertArpForwardEntry(
+                    port=old_node.sw_port,
+                    target_ip=new_ipv4,
+                )
+                self.logger.info(
+                    f"Inserted ARP forward entry for new IP: {new_ipv4} -> port {old_node.sw_port}"
+                )
             else:
                 self.logger.info(
                     f"Forward entry for {new_ipv4} already exists, skipping insertion"
@@ -218,13 +243,21 @@ class NodeManager(object):
                     f"Failed to delete action table entry for {ipv4}: {e}"
                 )
 
-        # 4. Delete forward entries for all nodes
+        # 4. Delete forward entries and ARP forward entries for all nodes
         for ipv4 in list(self.nodes.keys()):
             try:
                 self.switch_controller.deleteForwardEntry(dst_addr=ipv4)
                 self.logger.info(f"Deleted forward entry for {ipv4}")
             except Exception as e:
                 self.logger.warning(f"Failed to delete forward entry for {ipv4}: {e}")
+
+            try:
+                self.switch_controller.deleteArpForwardEntry(target_ip=ipv4)
+                self.logger.info(f"Deleted ARP forward entry for {ipv4}")
+            except Exception as e:
+                self.logger.warning(
+                    f"Failed to delete ARP forward entry for {ipv4}: {e}"
+                )
 
         # 5. Delete client SNAT entry
         try:

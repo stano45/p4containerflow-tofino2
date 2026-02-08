@@ -322,8 +322,8 @@ build:
 		exit 1; \
 	fi
 	@if [ ! -d "load_balancer/common" ]; then \
-		echo "Creating symlink to common P4 includes..."; \
-		ln -sf ../open-p4studio/pkgsrc/p4-examples/p4_16_programs/common load_balancer/common; \
+		echo "Copying common P4 includes locally..."; \
+		cp -r open-p4studio/pkgsrc/p4-examples/p4_16_programs/common load_balancer/common; \
 	fi
 	@mkdir -p $(BUILD_DIR)
 	@echo "Compiling $(P4_PROGRAM) for $(CHIP_FAMILY) ($(P4_ARCH))..."

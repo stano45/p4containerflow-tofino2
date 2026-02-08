@@ -168,6 +168,6 @@ cython_debug/
 #.idea/
 
 .vagrant/
-load_balancer/common
+# load_balancer/common is now a local copy (not a symlink), tracked in git
 
 Makefile.save

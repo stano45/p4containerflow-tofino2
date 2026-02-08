@@ -38,8 +38,14 @@ parser SwitchIngressParser(
 
         transition select(hdr.ethernet.ether_type) {
             ETHERTYPE_IPV4 : parse_ipv4;
+            ETHERTYPE_ARP  : parse_arp;
             default : reject;
         }
+    }
+
+    state parse_arp {
+        pkt.extract(hdr.arp);
+        transition accept;
     }
 
     state parse_ipv4 {
@@ -154,6 +160,18 @@ control SwitchIngress(
         implementation = action_selector;
     }
 
+    table arp_forward {
+        key = {
+            hdr.arp.target_proto_addr: exact;
+        }
+        actions = {
+            set_egress_port;
+            NoAction;
+        }
+        const default_action = NoAction;
+        size = 64;
+    }
+
     table forward {
         key = {
             hdr.ipv4.dst_addr: exact;
@@ -168,7 +186,14 @@ control SwitchIngress(
 
 
     apply {
-        // Ignore invalid packets
+        // Handle ARP: forward based on target protocol address
+        if (hdr.arp.isValid()) {
+            arp_forward.apply();
+            bypass_egress.apply(ig_tm_md);
+            return;
+        }
+
+        // Ignore invalid IPv4 packets
         if (!hdr.ipv4.isValid() || hdr.ipv4.ttl < 1) {
             return;
         }
