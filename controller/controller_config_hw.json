@@ -1,0 +1,41 @@
+[
+  {
+    "id": 0,
+    "client_id": 0,
+    "name": "t2na_load_balancer",
+    "addr": "127.0.0.1:50052",
+    "master": true,
+    "load_balancer_ip": "192.168.12.10",
+    "service_port": 8080,
+    "port_setup": [
+      {
+        "dev_port": 140,
+        "speed": "BF_SPEED_25G",
+        "fec": "BF_FEC_TYP_REED_SOLOMON",
+        "auto_neg": "PM_AN_DEFAULT"
+      },
+      {
+        "dev_port": 148,
+        "speed": "BF_SPEED_25G",
+        "fec": "BF_FEC_TYP_REED_SOLOMON",
+        "auto_neg": "PM_AN_DEFAULT"
+      }
+    ],
+    "nodes": [
+      {
+        "ipv4": "192.168.12.100",
+        "sw_port": 140
+      },
+      {
+        "ipv4": "192.168.12.2",
+        "is_lb_node": true,
+        "sw_port": 140
+      },
+      {
+        "ipv4": "192.168.12.3",
+        "is_lb_node": true,
+        "sw_port": 148
+      }
+    ]
+  }
+]

@@ -70,4 +70,7 @@ FILTERED_PYTHONPATH="$FILTERED_PYTHONPATH:$SDE_PY_LIB/site-packages/p4testutils"
 export PYTHONPATH="$FILTERED_PYTHONPATH"
 echo "Filtered PYTHONPATH: $PYTHONPATH"
 
-sudo env "PATH=$PATH" "PYTHONPATH=$PYTHONPATH" "ARCH=$ARCH" "$VENV_PYTHON" controller.py --config controller_config.json
+CONFIG_FILE="${CONFIG_FILE:-controller_config.json}"
+echo "Using config: $CONFIG_FILE"
+
+sudo env "PATH=$PATH" "PYTHONPATH=$PYTHONPATH" "ARCH=$ARCH" "$VENV_PYTHON" controller.py --config "$CONFIG_FILE"

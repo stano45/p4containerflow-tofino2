@@ -17,7 +17,8 @@
 # =============================================================================
 
 .PHONY: all build-server build-loadgen build controller migrate \
-        collector plot clean
+        collector plot clean \
+        hw-build hw-migrate hw-collector hw-run hw-clean
 
 all: build-server build-loadgen build controller
 
@@ -71,3 +72,28 @@ plot:
 
 clean:
 	./clean.sh
+
+# ---------------------------------------------------------------------------
+# Hardware (Multi-Node) Targets
+# ---------------------------------------------------------------------------
+
+hw-build: hw-clean
+	./build_hw.sh
+
+hw-migrate:
+	./cr_hw.sh
+
+hw-collector:
+	go run ./cmd/collector/ \
+		-server-metrics http://192.168.12.10:8081/metrics \
+		-ping-hosts 192.168.12.2,192.168.12.3 \
+		-containers webrtc-server \
+		-ssh-host stan@131.130.124.72 \
+		-migration-flag /tmp/migration_event \
+		-output results/metrics.csv
+
+hw-run:
+	./run_experiment.sh
+
+hw-clean:
+	./clean_hw.sh
