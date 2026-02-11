@@ -1,6 +1,4 @@
-import os
 import random
-from time import sleep
 import bfrt_grpc.bfruntime_pb2 as bfruntime_pb2
 import bfrt_grpc.client as gc
 from bfruntime_client_base_tests import BfRuntimeTest
@@ -16,12 +14,7 @@ from ptf.testutils import (
 logger = get_logger()
 swports = get_sw_ports()
 
-# Derive program name from ARCH env var (set by Makefile test targets)
-_arch = os.environ.get("ARCH", "tf2")
-PROGRAM_NAME = "tna_load_balancer" if _arch == "tf1" else "t2na_load_balancer"
-
 print("SW Ports: ", swports)
-print("ARCH: ", _arch, " Program: ", PROGRAM_NAME)
 
 
 def ip(ip_string):
@@ -30,10 +23,12 @@ def ip(ip_string):
 
 class AbstractTest(BfRuntimeTest):
     def setUp(self):
-        super().setUp(0, PROGRAM_NAME)
+        # Pass p4_name=None so the framework auto-detects from the running
+        # switch/model (works for both tna_load_balancer and t2na_load_balancer).
+        super().setUp(0, None)
         self.devId = 0
         self.tableEntries = {}
-        self.bfrtInfo = self.interface.bfrt_info_get(PROGRAM_NAME)
+        self.bfrtInfo = self.bfrt_info  # already set by BfRuntimeTest.setUp
 
         self.target = gc.Target(device_id=0, pipe_id=0xFFFF)
         self.lbIp = "10.0.0.10"
