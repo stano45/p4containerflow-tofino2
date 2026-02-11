@@ -88,6 +88,7 @@ printf "\n----- Step 3: Edit checkpoint IPs on loveland (%s -> %s) -----\n" \
     "$SOURCE_IP" "$TARGET_IP"
 
 on_loveland "
+    export PATH=\"\$HOME/.local/bin:\$PATH\"
     sudo -E env PATH=\"\$PATH\" python3 $REMOTE_EDIT_SCRIPT \
         $CHECKPOINT_DIR/checkpoint.tar \
         $SOURCE_IP $TARGET_IP
