@@ -1,7 +1,7 @@
-# Build outputs
-server
-loadgen
-collector
+# Build outputs (compiled Go binaries at repo root, not cmd/ source dirs)
+/server
+/loadgen
+/collector
 
 # Results (keep directory via .gitkeep)
 results/*.csv
