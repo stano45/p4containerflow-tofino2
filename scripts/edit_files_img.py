@@ -10,16 +10,9 @@ import tempfile
 
 
 def check_crit_installed():
-    try:
-        subprocess.run(
-            ["crit", "--version"],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    if not shutil.which("crit"):
         print(
-            "Error: 'crit' command not found."
+            "Error: 'crit' command not found. "
             "Please install CRIU and ensure 'crit' is in your PATH."
         )
         sys.exit(1)
