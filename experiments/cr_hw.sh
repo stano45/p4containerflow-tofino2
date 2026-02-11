@@ -111,8 +111,9 @@ on_loveland "
         --tcp-established \
         --ignore-static-ip \
         --ignore-static-mac \
-        --pod h3-pod
-    sudo podman rename $CONTAINER_NAME h3 2>/dev/null || true
+        --name h3 \
+        --network $HW_NET \
+        --ip $TARGET_IP
 "
 
 RESTORE_DONE=$(date +%s%N)
