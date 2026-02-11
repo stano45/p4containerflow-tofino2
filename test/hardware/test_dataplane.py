@@ -12,8 +12,10 @@ Usage:
     cd test && uv run pytest test_hardware_dataplane.py -v -k "TestTableAccess"
 """
 
+import json
 import os
 import sys
+import time
 
 import pytest
 
@@ -59,6 +61,28 @@ def switch_connection(grpc_addr, program_name):
         "bfrt_info": bfrt_info,
         "program_name": program_name,
     }
+
+
+@pytest.fixture(scope="module")
+def port_table(switch_connection):
+    """Get the $PORT fixed table for port configuration tests."""
+    bfrt_info = switch_connection["bfrt_info"]
+    try:
+        return bfrt_info.table_get("$PORT")
+    except Exception:
+        # $PORT may not be in the P4-bound bfrt_info; try global
+        interface = switch_connection["interface"]
+        global_info = interface.bfrt_info_get()
+        return global_info.table_get("$PORT")
+
+
+@pytest.fixture(scope="module")
+def port_setup_config(config_path):
+    """Load port_setup from controller config, if present."""
+    with open(config_path, "r") as f:
+        configs = json.load(f)
+    master = next(c for c in configs if c.get("master", False))
+    return master.get("port_setup", [])
 
 
 @pytest.fixture(scope="module")
@@ -271,6 +295,189 @@ class TestLoadBalancerSetup:
     def test_verify_setup(self, table_helper):
         entries = table_helper.get_entries("pipe.SwitchIngress.forward")
         assert len(entries) >= 3, f"Expected 3+ forward entries, got {len(entries)}"
+
+
+class TestPortTableAccess:
+    """Test that the $PORT BF-RT table is accessible for port configuration."""
+
+    def test_port_table_exists(self, port_table):
+        assert port_table is not None, "$PORT table not found"
+
+    def test_port_table_readable(self, port_table, switch_connection):
+        target = switch_connection["target"]
+        try:
+            resp = port_table.entry_get(target, [])
+            entries = list(resp)
+            # On fresh switchd, may have only internal ports or none at all
+            assert isinstance(entries, list)
+        except Exception as e:
+            pytest.fail(f"Failed to read $PORT table: {e}")
+
+
+class TestPortConfiguration:
+    """Test adding, reading, and removing ports via the $PORT table.
+
+    Uses a test port (D_P 140 by default, matching Wedge100BF cage 2/0).
+    Skipped if no port_setup is defined in the controller config.
+    """
+
+    # Use a known-good port for testing; can be overridden via config
+    TEST_DEV_PORT = 140
+    TEST_SPEED = "BF_SPEED_25G"
+    TEST_FEC = "BF_FEC_TYP_REED_SOLOMON"
+
+    def test_add_port(self, port_table, switch_connection, port_setup_config):
+        if not port_setup_config:
+            pytest.skip("No port_setup in config; port config tests skipped")
+
+        target = switch_connection["target"]
+        dev_port = port_setup_config[0]["dev_port"]
+        speed = port_setup_config[0].get("speed", self.TEST_SPEED)
+        fec = port_setup_config[0].get("fec", self.TEST_FEC)
+
+        try:
+            port_table.entry_add(
+                target,
+                [port_table.make_key([gc.KeyTuple("$DEV_PORT", dev_port)])],
+                [port_table.make_data([
+                    gc.DataTuple("$SPEED", str_val=speed),
+                    gc.DataTuple("$FEC", str_val=fec),
+                    gc.DataTuple("$PORT_ENABLE", bool_val=True),
+                ])],
+            )
+        except Exception:
+            # Port may already exist; try modify
+            port_table.entry_mod(
+                target,
+                [port_table.make_key([gc.KeyTuple("$DEV_PORT", dev_port)])],
+                [port_table.make_data([
+                    gc.DataTuple("$SPEED", str_val=speed),
+                    gc.DataTuple("$FEC", str_val=fec),
+                    gc.DataTuple("$PORT_ENABLE", bool_val=True),
+                ])],
+            )
+
+    def test_read_port(self, port_table, switch_connection, port_setup_config):
+        if not port_setup_config:
+            pytest.skip("No port_setup in config; port config tests skipped")
+
+        target = switch_connection["target"]
+        dev_port = port_setup_config[0]["dev_port"]
+
+        resp = port_table.entry_get(
+            target,
+            [port_table.make_key([gc.KeyTuple("$DEV_PORT", dev_port)])],
+        )
+        entries = list(resp)
+        assert len(entries) > 0, f"Port D_P={dev_port} not found after add"
+
+        data, key = entries[0]
+        data_dict = data.to_dict()
+        assert data_dict["$PORT_ENABLE"] is True, "Port should be enabled"
+
+    def test_add_all_config_ports(self, port_table, switch_connection, port_setup_config):
+        """Add all ports from port_setup config and verify they come up."""
+        if not port_setup_config:
+            pytest.skip("No port_setup in config; port config tests skipped")
+
+        target = switch_connection["target"]
+
+        for entry in port_setup_config:
+            dev_port = entry["dev_port"]
+            speed = entry.get("speed", self.TEST_SPEED)
+            fec = entry.get("fec", self.TEST_FEC)
+
+            try:
+                port_table.entry_add(
+                    target,
+                    [port_table.make_key([gc.KeyTuple("$DEV_PORT", dev_port)])],
+                    [port_table.make_data([
+                        gc.DataTuple("$SPEED", str_val=speed),
+                        gc.DataTuple("$FEC", str_val=fec),
+                        gc.DataTuple("$PORT_ENABLE", bool_val=True),
+                    ])],
+                )
+            except Exception:
+                port_table.entry_mod(
+                    target,
+                    [port_table.make_key([gc.KeyTuple("$DEV_PORT", dev_port)])],
+                    [port_table.make_data([
+                        gc.DataTuple("$SPEED", str_val=speed),
+                        gc.DataTuple("$FEC", str_val=fec),
+                        gc.DataTuple("$PORT_ENABLE", bool_val=True),
+                    ])],
+                )
+
+        # Wait briefly for ports to initialize
+        time.sleep(2)
+
+        # Verify all ports are present
+        for entry in port_setup_config:
+            dev_port = entry["dev_port"]
+            resp = port_table.entry_get(
+                target,
+                [port_table.make_key([gc.KeyTuple("$DEV_PORT", dev_port)])],
+            )
+            entries = list(resp)
+            assert len(entries) > 0, f"Port D_P={dev_port} not found"
+
+    def test_disable_port(self, port_table, switch_connection, port_setup_config):
+        if not port_setup_config:
+            pytest.skip("No port_setup in config; port config tests skipped")
+
+        target = switch_connection["target"]
+        dev_port = port_setup_config[0]["dev_port"]
+
+        port_table.entry_mod(
+            target,
+            [port_table.make_key([gc.KeyTuple("$DEV_PORT", dev_port)])],
+            [port_table.make_data([
+                gc.DataTuple("$PORT_ENABLE", bool_val=False),
+            ])],
+        )
+
+        resp = port_table.entry_get(
+            target,
+            [port_table.make_key([gc.KeyTuple("$DEV_PORT", dev_port)])],
+        )
+        entries = list(resp)
+        data, _ = entries[0]
+        data_dict = data.to_dict()
+        assert data_dict["$PORT_ENABLE"] is False, "Port should be disabled"
+
+        # Re-enable for subsequent tests
+        port_table.entry_mod(
+            target,
+            [port_table.make_key([gc.KeyTuple("$DEV_PORT", dev_port)])],
+            [port_table.make_data([
+                gc.DataTuple("$PORT_ENABLE", bool_val=True),
+            ])],
+        )
+
+    def test_delete_port(self, port_table, switch_connection, port_setup_config):
+        if not port_setup_config:
+            pytest.skip("No port_setup in config; port config tests skipped")
+
+        target = switch_connection["target"]
+        dev_port = port_setup_config[0]["dev_port"]
+
+        port_table.entry_del(
+            target,
+            [port_table.make_key([gc.KeyTuple("$DEV_PORT", dev_port)])],
+        )
+
+        # Re-add for subsequent tests
+        speed = port_setup_config[0].get("speed", self.TEST_SPEED)
+        fec = port_setup_config[0].get("fec", self.TEST_FEC)
+        port_table.entry_add(
+            target,
+            [port_table.make_key([gc.KeyTuple("$DEV_PORT", dev_port)])],
+            [port_table.make_data([
+                gc.DataTuple("$SPEED", str_val=speed),
+                gc.DataTuple("$FEC", str_val=fec),
+                gc.DataTuple("$PORT_ENABLE", bool_val=True),
+            ])],
+        )
 
 
 @pytest.mark.cleanup

@@ -1,0 +1,12 @@
+# Build outputs
+server
+loadgen
+collector
+
+# Results (keep directory via .gitkeep)
+results/*.csv
+results/*.png
+results/*.json
+
+# Go build cache
+/vendor/

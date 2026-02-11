@@ -88,6 +88,75 @@ class SwitchController(AbstractSwitchController):
         self.target = gc.Target(device_id=self.sw_id, pipe_id=0xFFFF)
         self.bfrt_info = self.interface.bfrt_info_get(self.sw_name)
 
+    def setup_ports(self, port_setup: list[dict]):
+        """Configure switch front-panel ports via the BF-RT $PORT table.
+
+        Each entry in port_setup should be a dict with:
+            dev_port (int):  Device port number (D_P), e.g. 140
+            speed (str):     BF speed string, e.g. "BF_SPEED_25G"
+            fec (str):       BF FEC string, e.g. "BF_FEC_TYP_REED_SOLOMON"
+            auto_neg (str):  Optional, default "PM_AN_DEFAULT"
+        """
+        if not port_setup:
+            return
+
+        self.logger.info("Configuring %d switch port(s)...", len(port_setup))
+
+        # $PORT is a fixed (non-P4) table; retrieve from the P4-bound bfrt_info
+        # which also includes fixed tables once the pipeline is bound.
+        try:
+            port_table = self.bfrt_info.table_get("$PORT")
+        except Exception:
+            # Fallback: get global bfrt_info (includes all fixed tables)
+            self.logger.info("$PORT not in P4 bfrt_info, trying global bfrt_info")
+            global_bfrt_info = self.interface.bfrt_info_get()
+            port_table = global_bfrt_info.table_get("$PORT")
+
+        target = gc.Target(device_id=self.sw_id, pipe_id=0xFFFF)
+
+        for entry in port_setup:
+            dev_port = entry["dev_port"]
+            speed = entry.get("speed", "BF_SPEED_25G")
+            fec = entry.get("fec", "BF_FEC_TYP_REED_SOLOMON")
+            auto_neg = entry.get("auto_neg", "PM_AN_DEFAULT")
+
+            try:
+                port_table.entry_add(
+                    target,
+                    [port_table.make_key([gc.KeyTuple("$DEV_PORT", dev_port)])],
+                    [port_table.make_data([
+                        gc.DataTuple("$SPEED", str_val=speed),
+                        gc.DataTuple("$FEC", str_val=fec),
+                        gc.DataTuple("$AUTO_NEGOTIATION", str_val=auto_neg),
+                        gc.DataTuple("$PORT_ENABLE", bool_val=True),
+                    ])],
+                )
+                self.logger.info(
+                    "Added port D_P=%d  speed=%s  fec=%s", dev_port, speed, fec
+                )
+            except Exception as e:
+                # Port may already exist (e.g. re-run); try modify instead
+                try:
+                    port_table.entry_mod(
+                        target,
+                        [port_table.make_key([gc.KeyTuple("$DEV_PORT", dev_port)])],
+                        [port_table.make_data([
+                            gc.DataTuple("$SPEED", str_val=speed),
+                            gc.DataTuple("$FEC", str_val=fec),
+                            gc.DataTuple("$AUTO_NEGOTIATION", str_val=auto_neg),
+                            gc.DataTuple("$PORT_ENABLE", bool_val=True),
+                        ])],
+                    )
+                    self.logger.info(
+                        "Modified existing port D_P=%d  speed=%s  fec=%s",
+                        dev_port, speed, fec,
+                    )
+                except Exception as e2:
+                    self.logger.error(
+                        "Failed to add/modify port D_P=%d: add=%s  mod=%s",
+                        dev_port, e, e2,
+                    )
+
     def __del__(self):
         pass
 

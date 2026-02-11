@@ -463,6 +463,35 @@ controller:
 	cd ./controller && ./run.sh
 
 # -----------------------------------------------------------------------------
+# Experiment Targets
+# -----------------------------------------------------------------------------
+
+experiment-build-images:
+	@echo "=== Building experiment container images ==="
+	cd experiments && $(MAKE) build-server
+	cd experiments && $(MAKE) build-loadgen
+
+experiment-setup: experiment-build-images
+	@echo "=== Setting up experiment ==="
+	cd experiments && $(MAKE) build
+
+experiment-migrate:
+	@echo "=== Running migration ==="
+	cd experiments && $(MAKE) migrate SOURCE=$(SOURCE) TARGET=$(TARGET)
+
+experiment-collector:
+	@echo "=== Running metrics collector ==="
+	cd experiments && $(MAKE) collector
+
+experiment-plot:
+	@echo "=== Generating charts ==="
+	cd experiments && $(MAKE) plot
+
+experiment-clean:
+	@echo "=== Cleaning experiment ==="
+	cd experiments && $(MAKE) clean
+
+# -----------------------------------------------------------------------------
 # Phony Targets
 # -----------------------------------------------------------------------------
 
@@ -470,4 +499,6 @@ controller:
         extract-sde setup-rdc config-profile extract-bsp build-profile setup-model setup-hw \
 	build install model switch load-kmods clean-build \
         test-dataplane test-controller test-hardware test-hardware-controller \
-        controller clean help
+        controller clean help \
+        experiment-build-images experiment-setup experiment-migrate \
+        experiment-collector experiment-plot experiment-clean

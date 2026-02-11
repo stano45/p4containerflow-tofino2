@@ -93,6 +93,63 @@ class AbstractTest(BfRuntimeTest):
         pass
 
 
+class TestPortSetupConfigModel(AbstractTest):
+    """Validate port_setup handling in the controller config for model mode.
+
+    In model/simulation mode, port_setup is typically absent from the config.
+    If present, the controller calls setup_ports() on startup. This test
+    validates the config structure is correct either way.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.port_setup = MASTER_CONFIG.get("port_setup", [])
+
+    def setupCtrlPlane(self):
+        pass
+
+    def sendPacket(self):
+        pass
+
+    def verifyPackets(self):
+        pass
+
+    def runTest(self):
+        # For model tests, port_setup is typically empty
+        logger.info("port_setup entries in config: %d", len(self.port_setup))
+
+        if not self.port_setup:
+            logger.info("No port_setup in config (expected for model/simulation mode)")
+            return
+
+        # If port_setup is present, validate its structure
+        valid_speeds = {
+            "BF_SPEED_1G", "BF_SPEED_10G", "BF_SPEED_25G",
+            "BF_SPEED_40G", "BF_SPEED_50G", "BF_SPEED_100G",
+        }
+        valid_fecs = {
+            "BF_FEC_TYP_NONE", "BF_FEC_TYP_FIRECODE", "BF_FEC_TYP_REED_SOLOMON",
+        }
+
+        dev_ports_seen = set()
+        for i, entry in enumerate(self.port_setup):
+            assert "dev_port" in entry, f"port_setup[{i}] missing 'dev_port'"
+            assert isinstance(entry["dev_port"], int), f"port_setup[{i}].dev_port must be int"
+            assert entry["dev_port"] > 0, f"port_setup[{i}].dev_port must be positive"
+            assert entry["dev_port"] not in dev_ports_seen, (
+                f"Duplicate dev_port {entry['dev_port']} in port_setup"
+            )
+            dev_ports_seen.add(entry["dev_port"])
+
+            speed = entry.get("speed", "BF_SPEED_25G")
+            assert speed in valid_speeds, f"port_setup[{i}].speed '{speed}' invalid"
+
+            fec = entry.get("fec", "BF_FEC_TYP_REED_SOLOMON")
+            assert fec in valid_fecs, f"port_setup[{i}].fec '{fec}' invalid"
+
+        logger.info("All %d port_setup entries are valid", len(self.port_setup))
+
+
 class TestController(AbstractTest):
 
     def setUp(self):

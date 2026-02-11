@@ -90,6 +90,13 @@ def main(config_file_path):
             # initial_table_rules_file=master_config["runtime_file"],
         )
 
+        # Configure switch ports if port_setup is specified in config.
+        # This adds front-panel ports with speed/FEC via the BF-RT $PORT table,
+        # replacing the need for manual bfshell port-add commands after switchd starts.
+        port_setup = master_config.get("port_setup", [])
+        if port_setup:
+            master_controller.setup_ports(port_setup)
+
         global nodeManager
         nodeManager = NodeManager(
             logger=logger, switch_controller=master_controller, initial_nodes=nodes

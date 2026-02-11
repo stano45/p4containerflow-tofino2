@@ -67,6 +67,12 @@ def non_lb_nodes(controller_config):
     return [n for n in nodes if not n.get("is_lb_node", False)]
 
 
+@pytest.fixture(scope="module")
+def port_setup(controller_config):
+    """Return port_setup from controller config, or empty list if not present."""
+    return controller_config.get("port_setup", [])
+
+
 class APIClient:
 
     def __init__(self, base_url: str, timeout: float = 5.0):

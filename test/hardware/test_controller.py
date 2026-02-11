@@ -40,6 +40,64 @@ class TestControllerHealth:
         assert resp.status_code in [200, 405], f"Unexpected status: {resp.status_code}"
 
 
+class TestPortSetupConfig:
+    """Verify that port_setup configuration is valid when present.
+
+    These tests validate the port_setup entries in the controller config
+    without needing direct gRPC access. The controller configures ports
+    via the BF-RT $PORT table on startup when port_setup is specified.
+    """
+
+    def test_port_setup_entries_valid(self, port_setup):
+        """Each port_setup entry must have dev_port, speed, and fec."""
+        if not port_setup:
+            pytest.skip("No port_setup in config (model/simulation mode)")
+
+        for i, entry in enumerate(port_setup):
+            assert "dev_port" in entry, f"port_setup[{i}] missing 'dev_port'"
+            assert isinstance(entry["dev_port"], int), f"port_setup[{i}].dev_port must be int"
+            assert entry["dev_port"] > 0, f"port_setup[{i}].dev_port must be positive"
+
+    def test_port_setup_speeds_valid(self, port_setup):
+        """Speed values must be valid BF speed strings."""
+        if not port_setup:
+            pytest.skip("No port_setup in config (model/simulation mode)")
+
+        valid_speeds = {
+            "BF_SPEED_1G", "BF_SPEED_10G", "BF_SPEED_25G",
+            "BF_SPEED_40G", "BF_SPEED_50G", "BF_SPEED_100G",
+        }
+        for i, entry in enumerate(port_setup):
+            speed = entry.get("speed", "BF_SPEED_25G")
+            assert speed in valid_speeds, (
+                f"port_setup[{i}].speed '{speed}' not in {valid_speeds}"
+            )
+
+    def test_port_setup_fecs_valid(self, port_setup):
+        """FEC values must be valid BF FEC type strings."""
+        if not port_setup:
+            pytest.skip("No port_setup in config (model/simulation mode)")
+
+        valid_fecs = {
+            "BF_FEC_TYP_NONE", "BF_FEC_TYP_FIRECODE", "BF_FEC_TYP_REED_SOLOMON",
+        }
+        for i, entry in enumerate(port_setup):
+            fec = entry.get("fec", "BF_FEC_TYP_REED_SOLOMON")
+            assert fec in valid_fecs, (
+                f"port_setup[{i}].fec '{fec}' not in {valid_fecs}"
+            )
+
+    def test_port_setup_no_duplicates(self, port_setup):
+        """No duplicate dev_port values."""
+        if not port_setup:
+            pytest.skip("No port_setup in config (model/simulation mode)")
+
+        dev_ports = [e["dev_port"] for e in port_setup]
+        assert len(dev_ports) == len(set(dev_ports)), (
+            f"Duplicate dev_port values in port_setup: {dev_ports}"
+        )
+
+
 class TestMigrateNodeValid:
 
     def test_migrate_to_new_ip(self, api_client, lb_nodes):
