@@ -71,6 +71,7 @@ on_lakewood "
 
     sudo podman run --replace --detach --privileged \
         --name webrtc-server --pod h2-pod \
+        -e GODEBUG=multipathtcp=0 \
         $SERVER_IMAGE \
         ./server -signaling-addr :${SIGNALING_PORT} -metrics-addr :${METRICS_PORT}
 
@@ -80,6 +81,7 @@ on_lakewood "
 
     sudo podman run --replace --detach --privileged \
         --name webrtc-loadgen --pod h1-pod \
+        -e GODEBUG=multipathtcp=0 \
         $LOADGEN_IMAGE \
         ./loadgen -server http://${VIP}:${SIGNALING_PORT} -peers $LOADGEN_PEERS
 
