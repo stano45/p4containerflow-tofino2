@@ -70,7 +70,7 @@ on_lakewood "
     sudo podman pod create --name h2-pod --network $HW_NET --ip $H2_IP
 
     sudo podman run --replace --detach --privileged \
-        --name webrtc-server --pod h2-pod --cap-add NET_ADMIN \
+        --name webrtc-server --pod h2-pod \
         $SERVER_IMAGE \
         ./server -signaling-addr :${SIGNALING_PORT} -metrics-addr :${METRICS_PORT}
 
@@ -79,7 +79,7 @@ on_lakewood "
     sudo podman pod create --name h1-pod --network $HW_NET --ip $H1_IP
 
     sudo podman run --replace --detach --privileged \
-        --name webrtc-loadgen --pod h1-pod --cap-add NET_ADMIN \
+        --name webrtc-loadgen --pod h1-pod \
         $LOADGEN_IMAGE \
         ./loadgen -server http://${VIP}:${SIGNALING_PORT} -peers $LOADGEN_PEERS
 
