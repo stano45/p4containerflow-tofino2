@@ -1,16 +1,15 @@
 #!/bin/bash
 # =============================================================================
-# run_experiment.sh — End-to-end multi-node experiment orchestration
+# run_experiment.sh — End-to-end multi-node experiment (from control machine)
 # =============================================================================
-# Coordinates the full WebRTC migration experiment across:
-#   lakewood  (131.130.124.71) — client + server
-#   loveland  (131.130.124.72) — migration target
-#   wedge100bf (131.130.124.74) — Tofino switch + controller
+# Orchestrates the full WebRTC migration experiment via SSH to all 3 nodes.
+# Run from your dev machine.
 #
-# Run from lakewood. Assumes:
-#   - Container images already built on lakewood and loveland
+# Assumes:
+#   - Container images already built on lakewood (and loveland has podman/criu)
 #   - Switch (switchd) already running on wedge100bf
-#   - SSH key-based access to loveland and tofino
+#   - Controller already started on wedge100bf
+#   - SSH key-based access to all nodes
 #
 # Usage:
 #   ./run_experiment.sh [--steady-state SECS] [--post-migration SECS] [--skip-controller]
@@ -36,63 +35,62 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-remote() {
-    local host="$1"; shift
-    ssh -o BatchMode=yes -o StrictHostKeyChecking=no "$host" "$@"
-}
+on_lakewood() { ssh $SSH_OPTS "$LAKEWOOD_SSH" "$@"; }
+on_loveland() { ssh $SSH_OPTS "$LOVELAND_SSH" "$@"; }
+
+COLLECTOR_PID=""
 
 cleanup_on_exit() {
-    printf "\n===== Stopping background processes =====\n"
-    # Kill collector if running
-    if [ -n "${COLLECTOR_PID:-}" ] && kill -0 "$COLLECTOR_PID" 2>/dev/null; then
+    if [[ -n "$COLLECTOR_PID" ]] && kill -0 "$COLLECTOR_PID" 2>/dev/null; then
         kill "$COLLECTOR_PID" 2>/dev/null || true
         wait "$COLLECTOR_PID" 2>/dev/null || true
-        printf "Collector stopped (PID %s)\n" "$COLLECTOR_PID"
     fi
 }
 trap cleanup_on_exit EXIT
 
 # =============================================================================
-# Step 1: Preflight checks
+# Step 1: Preflight
 # =============================================================================
 printf "\n╔══════════════════════════════════════════╗\n"
 printf "║  Multi-Node Experiment — Preflight       ║\n"
 printf "╚══════════════════════════════════════════╝\n\n"
 
-echo "--- Checking SSH connectivity ---"
-remote "$LOVELAND_SSH" "echo 'loveland OK'" || { echo "FAIL: cannot SSH to loveland"; exit 1; }
-remote "$TOFINO_SSH"   "echo 'tofino OK'"   || { echo "FAIL: cannot SSH to tofino"; exit 1; }
+echo "--- SSH connectivity ---"
+on_lakewood "echo 'lakewood OK'" || { echo "FAIL: lakewood"; exit 1; }
+on_loveland "echo 'loveland OK'" || { echo "FAIL: loveland"; exit 1; }
+ssh $SSH_OPTS "$TOFINO_SSH" "echo 'tofino OK'" || { echo "FAIL: tofino"; exit 1; }
 
-echo "--- Checking Netronome NICs ---"
-ip link show "$LAKEWOOD_NIC" >/dev/null 2>&1 || { echo "FAIL: $LAKEWOOD_NIC not found locally"; exit 1; }
-remote "$LOVELAND_SSH" "ip link show $LOVELAND_NIC" >/dev/null 2>&1 || { echo "FAIL: $LOVELAND_NIC not found on loveland"; exit 1; }
+echo "--- Netronome NICs ---"
+on_lakewood "ip link show $LAKEWOOD_NIC >/dev/null 2>&1" || { echo "FAIL: $LAKEWOOD_NIC on lakewood"; exit 1; }
+on_loveland "ip link show $LOVELAND_NIC >/dev/null 2>&1" || { echo "FAIL: $LOVELAND_NIC on loveland"; exit 1; }
 
-echo "--- Checking controller reachability ---"
+echo "--- Controller ---"
 if ! $SKIP_CONTROLLER; then
-    HTTP=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 3 "${CONTROLLER_URL}/reinitialize" -X POST 2>/dev/null || echo "000")
-    if [ "$HTTP" = "000" ]; then
-        echo "WARNING: Controller not reachable at $CONTROLLER_URL"
-        echo "  Start it on tofino: cd controller && CONFIG_FILE=controller_config_hw.json ./run.sh"
+    HTTP=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 3 \
+        "${CONTROLLER_URL}/reinitialize" -X POST 2>/dev/null || echo "000")
+    if [[ "$HTTP" == "000" ]]; then
+        echo "FAIL: controller not reachable at $CONTROLLER_URL"
+        echo "  On tofino: ARCH=tf1 CONFIG_FILE=controller_config_hw.json ./run.sh"
         echo "  Or re-run with --skip-controller"
         exit 1
     fi
-    printf "Controller OK (HTTP %s from /reinitialize)\n" "$HTTP"
+    echo "Controller OK (HTTP $HTTP)"
 fi
 
 echo ""
 echo "Preflight passed."
 
 # =============================================================================
-# Step 2: Clean previous run
+# Step 2: Clean
 # =============================================================================
 printf "\n╔══════════════════════════════════════════╗\n"
-printf "║  Step 2: Cleanup previous experiment     ║\n"
+printf "║  Step 2: Cleanup previous run            ║\n"
 printf "╚══════════════════════════════════════════╝\n\n"
 
 "$SCRIPT_DIR/clean_hw.sh" || true
 
 # =============================================================================
-# Step 3: Build (create networks, pods, containers)
+# Step 3: Build
 # =============================================================================
 printf "\n╔══════════════════════════════════════════╗\n"
 printf "║  Step 3: Build experiment infrastructure ║\n"
@@ -101,7 +99,7 @@ printf "╚═══════════════════════
 "$SCRIPT_DIR/build_hw.sh"
 
 # =============================================================================
-# Step 4: Reinitialize controller (ensure clean table state)
+# Step 4: Reinitialize controller
 # =============================================================================
 if ! $SKIP_CONTROLLER; then
     printf "\n╔══════════════════════════════════════════╗\n"
@@ -114,7 +112,7 @@ if ! $SKIP_CONTROLLER; then
 fi
 
 # =============================================================================
-# Step 5: Start collector (background)
+# Step 5: Start collector (local background process, polls via network)
 # =============================================================================
 printf "\n╔══════════════════════════════════════════╗\n"
 printf "║  Step 5: Start metrics collector         ║\n"
@@ -128,12 +126,12 @@ go run "$SCRIPT_DIR/cmd/collector/" \
     -ping-hosts "${H2_IP},${H3_IP}" \
     -containers "webrtc-server" \
     -ssh-host "$LOVELAND_SSH" \
-    -migration-flag "$MIGRATION_FLAG_FILE" \
+    -migration-flag "$SCRIPT_DIR/$RESULTS_DIR/migration_timing.txt" \
     -output "$COLLECTOR_OUTPUT" \
     -interval "$METRICS_INTERVAL" &
 COLLECTOR_PID=$!
 
-printf "Collector started (PID %s), writing to %s\n" "$COLLECTOR_PID" "$COLLECTOR_OUTPUT"
+printf "Collector started (PID %s)\n" "$COLLECTOR_PID"
 
 # =============================================================================
 # Step 6: Wait for steady-state
@@ -142,10 +140,9 @@ printf "\n╔══════════════════════�
 printf "║  Step 6: Waiting %3ds for steady-state   ║\n" "$STEADY_STATE_WAIT"
 printf "╚══════════════════════════════════════════╝\n\n"
 
-# Quick health check — wait for server to respond
 echo "Waiting for server to become healthy..."
 for i in $(seq 1 30); do
-    if curl -s --connect-timeout 2 "http://${H2_IP}:${METRICS_PORT}/health" >/dev/null 2>&1; then
+    if on_lakewood "curl -s --connect-timeout 2 http://${H2_IP}:${METRICS_PORT}/health" >/dev/null 2>&1; then
         echo "Server healthy after ${i}s"
         break
     fi
@@ -156,7 +153,7 @@ echo "Waiting ${STEADY_STATE_WAIT}s for steady-state streaming..."
 sleep "$STEADY_STATE_WAIT"
 
 # =============================================================================
-# Step 7: Trigger migration
+# Step 7: Migrate
 # =============================================================================
 printf "\n╔══════════════════════════════════════════╗\n"
 printf "║  Step 7: CRIU migration lakewood→loveland║\n"
@@ -165,7 +162,7 @@ printf "╚═══════════════════════
 "$SCRIPT_DIR/cr_hw.sh"
 
 # =============================================================================
-# Step 8: Wait for post-migration steady-state
+# Step 8: Post-migration
 # =============================================================================
 printf "\n╔══════════════════════════════════════════╗\n"
 printf "║  Step 8: Waiting %3ds post-migration     ║\n" "$POST_MIGRATION_WAIT"
@@ -174,38 +171,29 @@ printf "╚═══════════════════════
 sleep "$POST_MIGRATION_WAIT"
 
 # =============================================================================
-# Step 9: Stop collector, summarize
+# Step 9: Collect results
 # =============================================================================
 printf "\n╔══════════════════════════════════════════╗\n"
 printf "║  Step 9: Collecting results              ║\n"
 printf "╚══════════════════════════════════════════╝\n\n"
 
-# Stop collector gracefully
-if kill -0 "$COLLECTOR_PID" 2>/dev/null; then
+if [[ -n "$COLLECTOR_PID" ]] && kill -0 "$COLLECTOR_PID" 2>/dev/null; then
     kill -TERM "$COLLECTOR_PID"
     wait "$COLLECTOR_PID" 2>/dev/null || true
 fi
-unset COLLECTOR_PID
+COLLECTOR_PID=""
 
-# Copy migration timing to results
-if [ -f "$MIGRATION_FLAG_FILE" ]; then
-    cp "$MIGRATION_FLAG_FILE" "$SCRIPT_DIR/$RESULTS_DIR/migration_timing.txt"
-    echo "Migration timing:"
-    cat "$MIGRATION_FLAG_FILE"
-fi
-
-echo ""
 echo "Results saved to: $SCRIPT_DIR/$RESULTS_DIR/"
-ls -la "$SCRIPT_DIR/$RESULTS_DIR/"
+ls -la "$SCRIPT_DIR/$RESULTS_DIR/" 2>/dev/null || true
 
 # =============================================================================
-# Step 10: Plot (optional)
+# Step 10: Plot
 # =============================================================================
 printf "\n╔══════════════════════════════════════════╗\n"
 printf "║  Step 10: Generate plots                 ║\n"
 printf "╚══════════════════════════════════════════╝\n\n"
 
-if [ -f "$SCRIPT_DIR/analysis/plot_metrics.py" ] && [ -f "$COLLECTOR_OUTPUT" ]; then
+if [[ -f "$SCRIPT_DIR/analysis/plot_metrics.py" ]] && [[ -f "$COLLECTOR_OUTPUT" ]]; then
     cd "$SCRIPT_DIR/analysis"
     pip install -q -r requirements.txt 2>/dev/null || true
     python3 plot_metrics.py \
@@ -214,7 +202,7 @@ if [ -f "$SCRIPT_DIR/analysis/plot_metrics.py" ] && [ -f "$COLLECTOR_OUTPUT" ]; 
         2>/dev/null && echo "Plots generated." || echo "Plot generation failed (non-fatal)."
     cd "$SCRIPT_DIR"
 else
-    echo "Skipping plots (missing plot script or CSV)."
+    echo "Skipping plots."
 fi
 
 printf "\n╔══════════════════════════════════════════╗\n"

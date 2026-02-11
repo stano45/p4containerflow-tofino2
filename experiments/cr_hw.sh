@@ -2,77 +2,84 @@
 # =============================================================================
 # cr_hw.sh — Cross-node CRIU migration (lakewood → loveland)
 # =============================================================================
-# Multi-node version of cr.sh:
-#   1. Checkpoint the server container on lakewood (local)
-#   2. SCP the checkpoint tarball to loveland
-#   3. Edit checkpoint IPs on loveland (via SSH)
-#   4. Restore on loveland's target pod (via SSH)
-#   5. Update switch tables via controller /migrateNode API
-#   6. Signal the metrics collector
+# Run from your control machine. Orchestrates via SSH:
+#   1. Checkpoint on lakewood
+#   2. Pull checkpoint to control machine, push to loveland (proxy transfer)
+#   3. Edit checkpoint IPs on loveland
+#   4. Restore on loveland
+#   5. Update switch tables via controller API
+#   6. Write migration timing to flag file
 #
 # Usage:
-#   ./cr_hw.sh              # migrate webrtc-server from lakewood to loveland
+#   ./cr_hw.sh
 # =============================================================================
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/config_hw.env"
 
-# Source and target are fixed for the hardware topology
 SOURCE_IP="$H2_IP"       # server on lakewood
 TARGET_IP="$H3_IP"       # target on loveland
 
-CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoint.tar"
 CONTAINER_NAME=webrtc-server
+LOCAL_TMP="/tmp/cr_hw_transfer"
 
-remote() {
-    local host="$1"; shift
-    ssh -o BatchMode=yes -o StrictHostKeyChecking=no "$host" "$@"
-}
+on_lakewood() { ssh $SSH_OPTS "$LAKEWOOD_SSH" "$@"; }
+on_loveland() { ssh $SSH_OPTS "$LOVELAND_SSH" "$@"; }
+
+cleanup_tmp() { rm -rf "$LOCAL_TMP" 2>/dev/null || true; }
+trap cleanup_tmp EXIT
 
 printf "===== Cross-node migration: lakewood (%s) -> loveland (%s) =====\n" \
     "$SOURCE_IP" "$TARGET_IP"
 
-# Record start time for migration duration measurement
 MIGRATION_START=$(date +%s%N)
 
 # =============================================================================
-# Step 1: Checkpoint the source container (on lakewood)
+# Step 1: Checkpoint on lakewood
 # =============================================================================
 printf "\n----- Step 1: Checkpoint %s on lakewood -----\n" "$CONTAINER_NAME"
-sudo mkdir -p "$CHECKPOINT_DIR"
 
-sudo podman container checkpoint \
-    --export "$CHECKPOINT_PATH" \
-    --compress none \
-    --keep \
-    --tcp-established \
-    "$CONTAINER_NAME"
+on_lakewood "
+    sudo mkdir -p $CHECKPOINT_DIR
+    sudo podman container checkpoint \
+        --export $CHECKPOINT_DIR/checkpoint.tar \
+        --compress none \
+        --keep \
+        --tcp-established \
+        $CONTAINER_NAME
+    sudo podman rm -f $CONTAINER_NAME
+"
 
 CHECKPOINT_DONE=$(date +%s%N)
 CHECKPOINT_MS=$(( (CHECKPOINT_DONE - MIGRATION_START) / 1000000 ))
 printf "Checkpoint completed in %d ms\n" "$CHECKPOINT_MS"
 
-# Remove the source container
-sudo podman rm -f "$CONTAINER_NAME"
-
 # =============================================================================
-# Step 2: Transfer checkpoint to loveland (SCP)
+# Step 2: Transfer checkpoint (lakewood → control → loveland)
 # =============================================================================
-printf "\n----- Step 2: SCP checkpoint to loveland -----\n"
+printf "\n----- Step 2: Proxy transfer via control machine -----\n"
 
-# Ensure remote checkpoint dir exists
-remote "$LOVELAND_SSH" "sudo mkdir -p $REMOTE_CHECKPOINT_DIR && sudo chmod 777 $REMOTE_CHECKPOINT_DIR"
+mkdir -p "$LOCAL_TMP"
 
-# Transfer (sudo tar read → ssh → remote write to handle root-owned checkpoint)
-sudo cat "$CHECKPOINT_PATH" | ssh -o BatchMode=yes "$LOVELAND_SSH" \
-    "cat > ${REMOTE_CHECKPOINT_DIR}/checkpoint.tar"
+# Pull from lakewood
+ssh $SSH_OPTS "$LAKEWOOD_SSH" "sudo cat $CHECKPOINT_DIR/checkpoint.tar" \
+    > "$LOCAL_TMP/checkpoint.tar"
+
+CHECKPOINT_SIZE=$(stat -c%s "$LOCAL_TMP/checkpoint.tar" 2>/dev/null || stat -f%z "$LOCAL_TMP/checkpoint.tar" 2>/dev/null || echo 0)
+printf "Downloaded %.1f MB from lakewood\n" "$(echo "scale=1; $CHECKPOINT_SIZE / 1048576" | bc)"
+
+# Push to loveland
+on_loveland "sudo mkdir -p $CHECKPOINT_DIR && sudo chmod 777 $CHECKPOINT_DIR"
+cat "$LOCAL_TMP/checkpoint.tar" | ssh $SSH_OPTS "$LOVELAND_SSH" "cat > $CHECKPOINT_DIR/checkpoint.tar"
 
 TRANSFER_DONE=$(date +%s%N)
 TRANSFER_MS=$(( (TRANSFER_DONE - CHECKPOINT_DONE) / 1000000 ))
-CHECKPOINT_SIZE=$(sudo stat -c%s "$CHECKPOINT_PATH" 2>/dev/null || echo 0)
-printf "Transfer completed in %d ms (%.1f MB)\n" \
-    "$TRANSFER_MS" "$(echo "scale=1; $CHECKPOINT_SIZE / 1048576" | bc)"
+printf "Transfer completed in %d ms (%.1f MB)\n" "$TRANSFER_MS" \
+    "$(echo "scale=1; $CHECKPOINT_SIZE / 1048576" | bc)"
+
+# Clean local temp
+rm -rf "$LOCAL_TMP"
 
 # =============================================================================
 # Step 3: Edit checkpoint IPs on loveland
@@ -80,9 +87,9 @@ printf "Transfer completed in %d ms (%.1f MB)\n" \
 printf "\n----- Step 3: Edit checkpoint IPs on loveland (%s -> %s) -----\n" \
     "$SOURCE_IP" "$TARGET_IP"
 
-remote "$LOVELAND_SSH" "
+on_loveland "
     sudo -E env PATH=\"\$PATH\" python3 $REMOTE_EDIT_SCRIPT \
-        ${REMOTE_CHECKPOINT_DIR}/checkpoint.tar \
+        $CHECKPOINT_DIR/checkpoint.tar \
         $SOURCE_IP $TARGET_IP
 "
 
@@ -91,23 +98,19 @@ EDIT_MS=$(( (EDIT_DONE - TRANSFER_DONE) / 1000000 ))
 printf "IP edit completed in %d ms\n" "$EDIT_MS"
 
 # =============================================================================
-# Step 4: Restore on loveland's target pod
+# Step 4: Restore on loveland
 # =============================================================================
 printf "\n----- Step 4: Restore on h3-pod (loveland) -----\n"
 
-remote "$LOVELAND_SSH" "
-    # Remove any existing container on target
+on_loveland "
     sudo podman container rm -f h3 2>/dev/null || true
-
     sudo podman container restore \
-        --import ${REMOTE_CHECKPOINT_DIR}/checkpoint.tar \
+        --import $CHECKPOINT_DIR/checkpoint.tar \
         --keep \
         --tcp-established \
         --ignore-static-ip \
         --ignore-static-mac \
         --pod h3-pod
-
-    # Rename the restored container
     sudo podman rename $CONTAINER_NAME h3 2>/dev/null || true
 "
 
@@ -138,13 +141,15 @@ else
 fi
 
 # =============================================================================
-# Step 6: Signal migration event to collector
+# Step 6: Write migration timing
 # =============================================================================
-printf "\n----- Step 6: Signal migration event -----\n"
 MIGRATION_END=$(date +%s%N)
 TOTAL_MS=$(( (MIGRATION_END - MIGRATION_START) / 1000000 ))
 
-cat > "$MIGRATION_FLAG_FILE" <<EOF
+RESULTS_PATH="$SCRIPT_DIR/$RESULTS_DIR"
+mkdir -p "$RESULTS_PATH"
+
+cat > "$RESULTS_PATH/migration_timing.txt" <<EOF
 migration_start_ns=$MIGRATION_START
 checkpoint_done_ns=$CHECKPOINT_DONE
 transfer_done_ns=$TRANSFER_DONE
@@ -165,9 +170,17 @@ source_node=lakewood
 target_node=loveland
 EOF
 
+# Also write flag file on lakewood (collector may watch it)
+on_lakewood "cat > /tmp/migration_event" <<EOF
+migration_end_ns=$MIGRATION_END
+total_ms=$TOTAL_MS
+source_ip=$SOURCE_IP
+target_ip=$TARGET_IP
+EOF
+
 printf "\n===== Migration complete: lakewood -> loveland in %d ms =====\n" "$TOTAL_MS"
 printf "  Checkpoint:    %4d ms\n" "$CHECKPOINT_MS"
-printf "  Transfer:      %4d ms  (%.1f MB)\n" "$TRANSFER_MS" \
+printf "  Transfer:      %4d ms  (%.1f MB, via control machine)\n" "$TRANSFER_MS" \
     "$(echo "scale=1; $CHECKPOINT_SIZE / 1048576" | bc)"
 printf "  IP edit:       %4d ms\n" "$EDIT_MS"
 printf "  Restore:       %4d ms\n" "$RESTORE_MS"
