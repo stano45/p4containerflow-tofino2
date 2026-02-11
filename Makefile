@@ -1,25 +1,6 @@
 # =============================================================================
 # p4containerflow-tofino2 Makefile
 # =============================================================================
-#
-# This Makefile automates building and running P4 programs on Tofino hardware
-# using the open-p4studio (open-source Intel P4 Studio SDE).
-#
-# REQUIRED VARIABLES (for hardware setup):
-#   SDE      Path to Intel bf-sde-X.Y.Z directory (proprietary, download from Intel)
-#   BSP      Path to BSP .tgz file (e.g., bf-reference-bsp-9.13.4.tgz)
-#
-# OPTIONAL VARIABLES:
-#   ARCH     Tofino architecture: tf1 (Tofino 1) or tf2 (Tofino 2) [default: tf2]
-#   PROFILE  Path to p4studio profile YAML [default: profiles/tofino2-hardware.yaml]
-#
-# QUICK START (hardware):
-#   make setup-hw SDE=/path/to/bf-sde-9.13.4 BSP=/path/to/bf-reference-bsp-9.13.4.tgz
-#   source ~/setup-open-p4studio.bash
-#   make build
-#   make switch
-#
-# =============================================================================
 
 # -----------------------------------------------------------------------------
 # Variables
@@ -47,6 +28,8 @@ BUILD_DIR_tf1 = build/$(PROGRAM_NAME_tf1)
 BUILD_DIR_tf2 = build/$(PROGRAM_NAME_tf2)
 CONF_FILE_tf1 = load_balancer/tna_load_balancer.conf
 CONF_FILE_tf2 = load_balancer/t2na_load_balancer.conf
+MODEL_CONF_FILE_tf1 = load_balancer/tna_load_balancer.model.conf
+MODEL_CONF_FILE_tf2 = load_balancer/t2na_load_balancer.model.conf
 
 PROGRAM_NAME := $(PROGRAM_NAME_$(ARCH))
 CHIP_FAMILY := $(CHIP_FAMILY_$(ARCH))
@@ -54,6 +37,7 @@ P4_TARGET := $(P4_TARGET_$(ARCH))
 P4_ARCH := $(P4_ARCH_$(ARCH))
 BUILD_DIR := $(BUILD_DIR_$(ARCH))
 CONF_FILE := $(CONF_FILE_$(ARCH))
+MODEL_CONF_FILE := $(MODEL_CONF_FILE_$(ARCH))
 
 # -----------------------------------------------------------------------------
 # Submodule and Environment Setup
@@ -367,7 +351,15 @@ install: build
 	sudo cp $(CONF_FILE) "$(SDE_INSTALL)/share/p4/targets/$(CHIP_FAMILY)/$(PROGRAM_NAME).conf"; \
 	echo "Installation complete"
 
-model: install
+# Model testing requires three terminals:
+#   Terminal 1: make model ARCH=...       (starts tofino-model simulator)
+#   Terminal 2: make model-switch ARCH=...  (starts bf_switchd in model mode)
+#   Terminal 3: make test-dataplane ARCH=... (runs PTF tests)
+#
+# The model conf file omits "agent0" (libpltfm_mgr.so) so that bf_switchd
+# defaults to MODEL mode and talks to tofino-model via TCP, instead of
+# detecting and using the real ASIC over PCIe.
+model: install-model
 	@echo "=== Running Tofino model (ARCH=$(ARCH)) ==="
 	@if [ -z "$(SDE_INSTALL)" ]; then \
 		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
@@ -375,7 +367,33 @@ model: install
 	fi
 	@cd open-p4studio && sudo -E ./run_tofino_model.sh --arch $(ARCH) -p $(PROGRAM_NAME)
 
-switch:
+# Install with model conf file (no agent0 → switchd defaults to MODEL mode)
+install-model: build
+	@echo "=== Installing $(PROGRAM_NAME) (ARCH=$(ARCH)) to SDE [MODEL mode] ==="
+	@if [ -z "$(SDE_INSTALL)" ]; then \
+		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
+		exit 1; \
+	fi
+	@INSTALL_DIR="$(SDE_INSTALL)/share/p4/targets/$(CHIP_FAMILY)/$(PROGRAM_NAME)"; \
+	echo "Installing to $$INSTALL_DIR"; \
+	sudo rm -rf "$$INSTALL_DIR"; \
+	sudo mkdir -p "$$INSTALL_DIR"; \
+	sudo cp -r $(BUILD_DIR)/* "$$INSTALL_DIR/"; \
+	sudo cp $(MODEL_CONF_FILE) "$(SDE_INSTALL)/share/p4/targets/$(CHIP_FAMILY)/$(PROGRAM_NAME).conf"; \
+	echo "Installation complete (model conf — no agent0)"
+
+# Start switchd for model testing (connects to tofino-model via TCP)
+model-switch:
+	@echo "=== Running switchd in MODEL mode (ARCH=$(ARCH)) ==="
+	@echo "NOTE: tofino-model must be running first (make model)"
+	@if [ -z "$(SDE_INSTALL)" ]; then \
+		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
+		exit 1; \
+	fi
+	@cd open-p4studio && sudo -E ./run_switchd.sh --arch $(ARCH) -p $(PROGRAM_NAME)
+
+# Start switchd for real hardware (detects ASIC via PCIe)
+switch: install
 	@echo "=== Running switchd on hardware (ARCH=$(ARCH)) ==="
 	@if [ -z "$(SDE_INSTALL)" ]; then \
 		echo "ERROR: SDE_INSTALL not set. Source ~/setup-open-p4studio.bash first"; \
@@ -405,16 +423,21 @@ load-kmods:
 # Test Targets
 # -----------------------------------------------------------------------------
 
-# Model tests (PTF-based, run on tofino-model)
-test-dataplane: install
+# Model tests (PTF-based). Require both model and model-switch running:
+#   Terminal 1: make model ARCH=...
+#   Terminal 2: make model-switch ARCH=...
+#   Terminal 3: make test-dataplane ARCH=...
+test-dataplane: install-model
 	@echo "=== Running model dataplane tests ==="
+	@echo "NOTE: Requires tofino-model (make model) AND switchd (make model-switch) running"
 	@cd open-p4studio && sudo -E ./run_p4_tests.sh --arch $(ARCH) \
 		-t ../test/model \
 		-s test_dataplane \
 		-p $(PROGRAM_NAME)
 
-test-controller: install
+test-controller: install-model
 	@echo "=== Running model controller tests ==="
+	@echo "NOTE: Requires tofino-model (make model) AND switchd (make model-switch) running"
 	@cd open-p4studio && sudo -E ./run_p4_tests.sh --arch $(ARCH) \
 		-t ../test/model \
 		-s test_controller \
