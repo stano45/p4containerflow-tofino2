@@ -100,6 +100,16 @@ class TestPortSetupConfig:
 
 class TestMigrateNodeValid:
 
+    @pytest.fixture(autouse=True)
+    def _reinit(self, api_client):
+        """Reinitialize controller before each test so every migration
+        starts from a known-good state.  This makes the suite idempotent
+        and order-independent."""
+        resp = api_client.reinitialize()
+        assert resp is not None and resp.status_code == 200, (
+            f"Reinitialize failed: {resp.status_code if resp else 'no response'}"
+        )
+
     def test_migrate_to_new_ip(self, api_client, lb_nodes):
         assert lb_nodes, "FATAL: No LB nodes in controller config - check controller_config.json"
 
@@ -226,6 +236,11 @@ class TestResponseTimes:
 
     MAX_RESPONSE_TIME = 2.0
 
+    @pytest.fixture(autouse=True)
+    def _reinit(self, api_client):
+        """Ensure clean state before each timing test."""
+        api_client.reinitialize()
+
     def test_migrate_response_time(self, api_client, lb_nodes):
         assert lb_nodes, "FATAL: No LB nodes in controller config - check controller_config.json"
 
@@ -240,8 +255,6 @@ class TestResponseTimes:
         assert resp.status_code == 200, f"Migration failed: {resp.status_code} - {resp.text}"
         assert elapsed < self.MAX_RESPONSE_TIME, f"Response took {elapsed:.3f}s (max {self.MAX_RESPONSE_TIME}s)"
 
-        api_client.migrate_node(temp_ip, original_ip)
-
     def test_error_response_time(self, api_client):
         start = time.time()
         resp = api_client.post("migrateNode", data={})
@@ -251,12 +264,12 @@ class TestResponseTimes:
         assert elapsed < self.MAX_RESPONSE_TIME, f"Error response took {elapsed:.3f}s"
 
 
-@pytest.mark.cleanup
-class TestCleanup:
-    """
-    WARNING: These tests clear controller state. Run last or separately:
-        pytest test_hardware_controller.py -v -k "not cleanup"
-        pytest test_hardware_controller.py -v -k "cleanup"
+class TestCleanupAndReinitialize:
+    """Tests for cleanup and reinitialize endpoints.
+
+    These tests verify that cleanup removes state and reinitialize restores it.
+    The suite is safe to run at any point -- it always leaves the controller in
+    a known-good state via reinitialize at the end.
     """
 
     def test_cleanup_returns_200(self, api_client):
@@ -282,6 +295,64 @@ class TestCleanup:
         resp = api_client.get("cleanup")
         assert resp is not None, "No response"
         assert resp.status_code in [404, 405], f"Expected 404/405, got {resp.status_code}"
+
+    def test_migration_fails_after_cleanup(self, api_client, lb_nodes):
+        """After cleanup, migration should fail because nodes are gone."""
+        if not lb_nodes:
+            pytest.skip("No LB nodes in config")
+
+        api_client.cleanup()
+        resp = api_client.migrate_node(lb_nodes[0]["ipv4"], "10.0.0.99")
+        assert resp is not None
+        assert resp.status_code == 500, "Migration should fail after cleanup"
+
+    def test_reinitialize_returns_200(self, api_client):
+        resp = api_client.reinitialize()
+        assert resp is not None, "No response"
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
+
+        data = resp.json()
+        assert data.get("status") == "success"
+
+    def test_reinitialize_restores_state(self, api_client, lb_nodes):
+        """After reinitialize, migration should work again."""
+        if not lb_nodes:
+            pytest.skip("No LB nodes in config")
+
+        # Clean, then reinitialize
+        api_client.cleanup()
+        resp = api_client.reinitialize()
+        assert resp is not None and resp.status_code == 200
+
+        # Migration should now succeed
+        original_ip = lb_nodes[0]["ipv4"]
+        resp = api_client.migrate_node(original_ip, "10.0.0.98")
+        assert resp is not None, "No response"
+        assert resp.status_code == 200, f"Migration should work after reinitialize: {resp.text}"
+
+    def test_reinitialize_idempotent(self, api_client, lb_nodes):
+        """Calling reinitialize multiple times should always succeed."""
+        if not lb_nodes:
+            pytest.skip("No LB nodes in config")
+
+        for i in range(3):
+            resp = api_client.reinitialize()
+            assert resp is not None, f"No response on reinitialize call {i+1}"
+            assert resp.status_code == 200, f"Reinitialize {i+1} failed: {resp.status_code}"
+
+        # Verify state is functional
+        original_ip = lb_nodes[0]["ipv4"]
+        resp = api_client.migrate_node(original_ip, "10.0.0.95")
+        assert resp is not None and resp.status_code == 200, (
+            f"Migration should work after repeated reinitialize: "
+            f"{resp.status_code if resp else 'no response'}"
+        )
+
+    def test_reinitialize_final(self, api_client):
+        """Always run last -- leave the controller in a clean, initialized state."""
+        resp = api_client.reinitialize()
+        assert resp is not None, "No response"
+        assert resp.status_code == 200, f"Final reinitialize failed: {resp.status_code}"
 
 
 if __name__ == "__main__":

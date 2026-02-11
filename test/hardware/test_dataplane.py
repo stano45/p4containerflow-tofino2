@@ -62,6 +62,13 @@ def switch_connection(grpc_addr, program_name):
         "program_name": program_name,
     }
 
+    # Release the gRPC connection so the controller (or another test suite)
+    # can bind to the program afterward.
+    try:
+        interface.tear_down_stream()
+    except Exception:
+        pass
+
 
 @pytest.fixture(scope="module")
 def port_table(switch_connection):

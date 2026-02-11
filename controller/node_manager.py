@@ -14,15 +14,22 @@ class NodeManager(object):
         self.switch_controller = switch_controller
         self.logger = logger
 
+        # Store the original config so we can reinitialize later
+        self._initial_nodes_config = initial_nodes
+
         # ipv4 -> Node map
         self.nodes = {}
         # ipv4 -> idx
         self.lb_nodes = {}
 
+        self._setup_tables(initial_nodes)
+
+    def _setup_tables(self, initial_nodes):
+        """Insert all table entries from the given node configuration."""
         try:
             self.switch_controller.insertClientSnatEntry(
-                src_port=switch_controller.service_port,
-                new_src=switch_controller.load_balancer_ip,
+                src_port=self.switch_controller.service_port,
+                new_src=self.switch_controller.load_balancer_ip,
             )
             self.logger.info(
                 f"Inserted client SNAT entry for "
@@ -133,6 +140,17 @@ class NodeManager(object):
                 raise Exception(
                     f"Error inserting node selector entry with dst_addr={self.switch_controller.load_balancer_ip}, group_id={1} : {e}"
                 )
+
+    def reinitialize(self):
+        """Clean up all table entries and re-insert from the original config.
+
+        This makes the controller state identical to a fresh startup, without
+        needing to restart the process.
+        """
+        self.logger.info("Reinitializing controller state from original config...")
+        self.cleanup()
+        self._setup_tables(self._initial_nodes_config)
+        self.logger.info("Reinitialization complete")
 
     def migrateNode(self, old_ipv4, new_ipv4):
         # No-op if migrating to same IP

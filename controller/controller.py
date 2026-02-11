@@ -158,6 +158,25 @@ def cleanup():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/reinitialize", methods=["POST"])
+def reinitialize():
+    """Clean up all table entries and re-insert from original config.
+
+    Restores the controller to the same state as a fresh startup without
+    needing to restart the process. Useful for test idempotency.
+    """
+    global nodeManager
+    if nodeManager is None:
+        return jsonify({"error": "NodeManager not initialized"}), 500
+
+    try:
+        nodeManager.reinitialize()
+        return jsonify({"status": "success", "message": "Reinitialization complete"}), 200
+    except Exception as e:
+        logger.error(f"Reinitialize failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 def shutdown_handler(signum, frame):
     """Handle shutdown signals by cleaning up table entries."""
     global nodeManager

@@ -155,6 +155,20 @@ class TestController(AbstractTest):
     def setUp(self):
         super().setUp()
 
+        # Reinitialize controller to ensure clean state regardless of
+        # previous test runs or manual cleanup calls.
+        try:
+            resp = requests.post("http://127.0.0.1:5000/reinitialize")
+            if resp and resp.status_code == 200:
+                logger.info("Controller reinitialized for clean test state")
+            else:
+                logger.warning(
+                    "Controller reinitialize returned %s",
+                    resp.status_code if resp else "no response",
+                )
+        except Exception as e:
+            logger.warning("Could not reinitialize controller: %s", e)
+
         nodes = MASTER_CONFIG["nodes"]
         self.loadBalancerIp = MASTER_CONFIG["load_balancer_ip"]
 
@@ -187,18 +201,18 @@ class TestController(AbstractTest):
         )
 
     def tearDown(self):
-        logger.info("Cleaning up: calling controller cleanup endpoint...")
+        logger.info("Reinitializing controller state for idempotent test runs...")
         try:
-            url = "http://127.0.0.1:5000/cleanup"
+            url = "http://127.0.0.1:5000/reinitialize"
             resp = requests.post(url)
             if resp and resp.status_code == 200:
-                logger.info("Controller cleanup successful")
+                logger.info("Controller reinitialize successful")
             else:
                 logger.warning(
-                    f"Controller cleanup failed: {resp.status_code if resp else 'no response'}"
+                    f"Controller reinitialize failed: {resp.status_code if resp else 'no response'}"
                 )
         except Exception as e:
-            logger.warning(f"Error calling cleanup endpoint: {e}")
+            logger.warning(f"Error calling reinitialize endpoint: {e}")
         super().tearDown()
 
     def setupCtrlPlane(self):

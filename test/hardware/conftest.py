@@ -37,17 +37,12 @@ def pytest_addoption(parser):
     )
 
 
-@pytest.fixture(scope="module")
-def controller_url(request):
-    return request.config.getoption("--controller-url")
-
-
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def config_path(request):
     return request.config.getoption("--config")
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def controller_config(config_path):
     with open(config_path, "r") as f:
         configs = json.load(f)
@@ -55,19 +50,19 @@ def controller_config(config_path):
     return master_config
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def lb_nodes(controller_config):
     nodes = controller_config.get("nodes", [])
     return [n for n in nodes if n.get("is_lb_node", False)]
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def non_lb_nodes(controller_config):
     nodes = controller_config.get("nodes", [])
     return [n for n in nodes if not n.get("is_lb_node", False)]
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def port_setup(controller_config):
     """Return port_setup from controller config, or empty list if not present."""
     return controller_config.get("port_setup", [])
@@ -105,22 +100,34 @@ class APIClient:
     def cleanup(self):
         return self.post("cleanup")
 
-
-@pytest.fixture(scope="module")
-def api_client(controller_url):
-    return APIClient(controller_url)
+    def reinitialize(self):
+        return self.post("reinitialize")
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
+def api_client(request):
+    url = request.config.getoption("--controller-url")
+    client = APIClient(url)
+    # Reinitialize controller state before the test session to guarantee
+    # a fresh, known-good state regardless of previous test runs.
+    resp = client.reinitialize()
+    if resp is None:
+        pytest.skip("Controller not reachable; cannot reinitialize")
+    if resp.status_code != 200:
+        pytest.skip(f"Controller reinitialize failed: {resp.status_code} {resp.text}")
+    return client
+
+
+@pytest.fixture(scope="session")
 def arch(request):
     return request.config.getoption("--arch")
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def grpc_addr(request):
     return request.config.getoption("--grpc-addr")
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def program_name(arch):
     return "tna_load_balancer" if arch == "tf1" else "t2na_load_balancer"

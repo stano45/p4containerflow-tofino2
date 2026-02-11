@@ -81,6 +81,8 @@ cd test/hardware && ./run.sh dataplane -k "TestTableAccess"
 - `TestTableAccess` - Verify P4 tables exist and are accessible
 - `TestTableWriteRead` - Table entry write/read/delete operations
 - `TestLoadBalancerSetup` - Full load balancer configuration
+- `TestPortTableAccess` - Verify $PORT BF-RT table is accessible
+- `TestPortConfiguration` - Port add/read/modify/delete via $PORT table
 - `TestCleanup` - Remove all table entries
 
 ### `test/hardware/test_controller.py`
@@ -101,11 +103,12 @@ cd test/hardware && ./run.sh controller -k "TestMigrateNodeValid"
 
 **Test Classes:**
 - `TestControllerHealth` - Reachability and basic endpoint checks
-- `TestMigrateNodeValid` - Valid migration requests
+- `TestPortSetupConfig` - Validate port_setup config structure
+- `TestMigrateNodeValid` - Valid migration requests (auto-reinitializes)
 - `TestMigrateNodeInvalid` - Invalid requests and edge cases
 - `TestInvalidEndpoints` - 404 handling
-- `TestResponseTimes` - Performance verification
-- `TestCleanup` - Cleanup functionality (runs last)
+- `TestResponseTimes` - Performance verification (auto-reinitializes)
+- `TestCleanupAndReinitialize` - Cleanup, reinitialize, and state verification
 
 ## Test Matrix
 
@@ -115,6 +118,22 @@ cd test/hardware && ./run.sh controller -k "TestMigrateNodeValid"
 | Model controller | `test/model/test_controller.py` | Model | ✅ | ✅ PTF |
 | Hardware dataplane | `test/hardware/test_dataplane.py` | Hardware | ❌ | ❌ |
 | Hardware controller | `test/hardware/test_controller.py` | Any | ✅ | ❌ |
+
+## Idempotency
+
+All test suites are idempotent -- they can be run repeatedly without restarting
+the controller or switch. This is achieved via the `/reinitialize` endpoint,
+which restores the controller to its initial state (cleanup + re-insert all
+table entries from the original config).
+
+- **Hardware controller tests** call `/reinitialize` at session start and
+  before each migration test via an `autouse` fixture.
+- **Model controller tests** call `/reinitialize` in `setUp()` and `tearDown()`.
+- **Hardware dataplane tests** release the gRPC connection on teardown so the
+  controller can bind afterward.
+
+You can safely run `make test-hardware && make test-hardware-controller` or
+repeat any test suite multiple times.
 
 ## Typical Workflow
 
