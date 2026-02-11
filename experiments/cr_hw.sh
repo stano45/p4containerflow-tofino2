@@ -111,9 +111,7 @@ on_loveland "
         --tcp-established \
         --ignore-static-ip \
         --ignore-static-mac \
-        --name h3 \
-        --network $HW_NET \
-        --ip $TARGET_IP
+        --name h3
 "
 
 RESTORE_DONE=$(date +%s%N)
