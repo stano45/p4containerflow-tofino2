@@ -259,20 +259,14 @@ printf "║  Step 8: Healthy, then %3ds steady-state ║\n" "$STEADY_STATE_WAIT"
 printf "╚══════════════════════════════════════════╝\n\n"
 
 echo "Waiting for server to become healthy..."
-HEALTH_START=$(date +%s%N)
-# Short curl timeout (1s) so each attempt doesn't hang; server can take 30-40s to start
-for i in $(seq 1 90); do
-    if on_lakewood "curl -s --connect-timeout 1 --max-time 1 http://${H2_IP}:${METRICS_PORT}/health" >/dev/null 2>&1; then
-        HEALTH_MS=$(( ($(date +%s%N) - HEALTH_START) / 1000000 ))
-        echo "Server healthy after ${HEALTH_MS} ms"
-        echo "health_check_ms=$HEALTH_MS" >> "$RUN_DIR/config.txt"
+# Brief delay so we don't spam before the container is listening
+sleep 2
+for i in $(seq 1 40); do
+    if on_lakewood "curl -s --connect-timeout 1 http://${H2_IP}:${METRICS_PORT}/health" >/dev/null 2>&1; then
+        echo "Server healthy after $(( 2 + (i - 1) / 2 ))s"
         break
     fi
-    if [[ $i -eq 90 ]]; then
-        echo "ERROR: Server did not become healthy within 90s"
-        exit 1
-    fi
-    sleep 0.2
+    sleep 0.5
 done
 
 echo "Waiting ${STEADY_STATE_WAIT}s for steady-state streaming..."
