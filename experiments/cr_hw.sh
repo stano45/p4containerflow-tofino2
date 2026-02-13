@@ -106,6 +106,12 @@ printf "IP edit completed in %d ms\n" "$EDIT_MS"
 # =============================================================================
 printf "\n----- Step 4: Restore on loveland -----\n"
 
+if ! on_loveland "sudo podman image exists $SERVER_IMAGE 2>/dev/null"; then
+    echo "ERROR: Image $SERVER_IMAGE not found on loveland."
+    echo "       Run ./build_hw.sh or ./run_experiment.sh first so the image exists on the target."
+    exit 1
+fi
+
 RESTORE_START=$(date +%s%N)
 if ! on_loveland "
     sudo podman container rm -f h3 $CONTAINER_NAME 2>/dev/null || true
