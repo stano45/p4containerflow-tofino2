@@ -88,8 +88,9 @@ printf "\n----- Step 3: Edit checkpoint IPs on loveland (%s -> %s) -----\n" \
     "$SOURCE_IP" "$TARGET_IP"
 
 # Pass image name so the script can replace image ID with name in checkpoint.
-# Podman stores local builds as localhost/NAME:latest; use that so restore finds the image.
-CHECKPOINT_IMAGE_NAME="localhost/${SERVER_IMAGE}:latest"
+# Must be CNI-safe (no slashes/colons) because the same value is used as containerID for the network plugin.
+# Use short name so image lookup and CNI both work; ensure image is tagged as $SERVER_IMAGE on loveland.
+CHECKPOINT_IMAGE_NAME="$SERVER_IMAGE"
 on_loveland "
     export PATH=\"\$HOME/.local/bin:\$PATH\"
     python3 $REMOTE_EDIT_SCRIPT \
@@ -107,13 +108,14 @@ printf "IP edit completed in %d ms\n" "$EDIT_MS"
 # =============================================================================
 printf "\n----- Step 4: Restore on loveland -----\n"
 
-# Check that the image we patch into the checkpoint exists on loveland
+# Ensure the image exists on loveland under the short name (for restore + CNI containerID)
 if ! on_loveland "sudo podman image exists $CHECKPOINT_IMAGE_NAME 2>/dev/null"; then
-    if ! on_loveland "sudo podman image exists $SERVER_IMAGE 2>/dev/null"; then
-        echo "ERROR: Image $CHECKPOINT_IMAGE_NAME not found on loveland."
-        echo "       Run ./build_hw.sh or ./run_experiment.sh first so the image exists on the target."
-        exit 1
-    fi
+    on_loveland "sudo podman tag localhost/${SERVER_IMAGE}:latest $CHECKPOINT_IMAGE_NAME 2>/dev/null" || true
+fi
+if ! on_loveland "sudo podman image exists $CHECKPOINT_IMAGE_NAME 2>/dev/null"; then
+    echo "ERROR: Image $CHECKPOINT_IMAGE_NAME not found on loveland."
+    echo "       Run ./build_hw.sh or ./run_experiment.sh first so the image exists on the target."
+    exit 1
 fi
 
 RESTORE_START=$(date +%s%N)
