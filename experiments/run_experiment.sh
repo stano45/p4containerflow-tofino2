@@ -26,7 +26,7 @@ source "$SCRIPT_DIR/config_hw.env"
 # -----------------------------------------------------------------------------
 # Options
 # -----------------------------------------------------------------------------
-STEADY_STATE_WAIT=${STEADY_STATE_WAIT:-30}
+STEADY_STATE_WAIT=${STEADY_STATE_WAIT:-15}
 POST_MIGRATION_WAIT=${POST_MIGRATION_WAIT:-30}
 
 while [[ $# -gt 0 ]]; do
@@ -224,12 +224,14 @@ printf "║  Step 8: Healthy, then %3ds steady-state ║\n" "$STEADY_STATE_WAIT"
 printf "╚══════════════════════════════════════════╝\n\n"
 
 echo "Waiting for server to become healthy..."
-for i in $(seq 1 30); do
-    if on_lakewood "curl -s --connect-timeout 2 http://${H2_IP}:${METRICS_PORT}/health" >/dev/null 2>&1; then
-        echo "Server healthy after ${i}s"
+# Brief delay so we don't spam before the container is listening
+sleep 2
+for i in $(seq 1 40); do
+    if on_lakewood "curl -s --connect-timeout 1 http://${H2_IP}:${METRICS_PORT}/health" >/dev/null 2>&1; then
+        echo "Server healthy after $(( 2 + (i - 1) / 2 ))s"
         break
     fi
-    sleep 1
+    sleep 0.5
 done
 
 echo "Waiting ${STEADY_STATE_WAIT}s for steady-state streaming..."

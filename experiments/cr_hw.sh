@@ -103,7 +103,8 @@ printf "IP edit completed in %d ms\n" "$EDIT_MS"
 # =============================================================================
 printf "\n----- Step 4: Restore on loveland -----\n"
 
-on_loveland "
+RESTORE_START=$(date +%s%N)
+if ! on_loveland "
     sudo podman container rm -f h3 $CONTAINER_NAME 2>/dev/null || true
     sudo podman container restore \
         --import $CHECKPOINT_DIR/checkpoint.tar \
@@ -111,11 +112,13 @@ on_loveland "
         --tcp-established \
         --ignore-static-ip \
         --ignore-static-mac
-    sudo podman rename $CONTAINER_NAME h3 2>/dev/null || true
-"
-
+"; then
+    echo "ERROR: Restore failed (see above)."
+    exit 1
+fi
+on_loveland "sudo podman rename $CONTAINER_NAME h3 2>/dev/null || true"
 RESTORE_DONE=$(date +%s%N)
-RESTORE_MS=$(( (RESTORE_DONE - EDIT_DONE) / 1000000 ))
+RESTORE_MS=$(( (RESTORE_DONE - RESTORE_START) / 1000000 ))
 printf "Restore completed in %d ms\n" "$RESTORE_MS"
 
 # =============================================================================
