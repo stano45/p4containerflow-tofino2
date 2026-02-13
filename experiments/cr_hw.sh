@@ -103,8 +103,13 @@ IMAGE_SIZE=0
 # Ensure source's direct-link interface is up (lakewood's enp179s0f0np0 is often DOWN after reboot).
 on_source "sudo ip link set $SOURCE_DIRECT_IF up 2>/dev/null || true"
 
-TRANSFER_PORT="${CR_TRANSFER_PORT:-19999}"
-printf "Transferring checkpoint only to %s (%.1f MB) via direct link...\n" "$TARGET_NODE" "$(echo "scale=1; ${CHECKPOINT_SIZE:-0} / 1048576" | bc)"
+# Use random port (32000–33999) to avoid "Address already in use" from stale ncat; override with CR_TRANSFER_PORT if set
+if [[ -n "${CR_TRANSFER_PORT:-}" ]]; then
+  TRANSFER_PORT=$CR_TRANSFER_PORT
+else
+  TRANSFER_PORT=$(( 32000 + (RANDOM % 2000) ))
+fi
+printf "Transferring checkpoint only to %s (%.1f MB) via direct link (port %s)...\n" "$TARGET_NODE" "$(echo "scale=1; ${CHECKPOINT_SIZE:-0} / 1048576" | bc)" "$TRANSFER_PORT"
 
 on_target "ncat -l -p $TRANSFER_PORT > $CHECKPOINT_DIR/checkpoint.tar" &
 NC_PID=$!
@@ -116,6 +121,13 @@ on_source "sudo cat $CHECKPOINT_DIR/checkpoint.tar | ncat -w 30 $TARGET_DIRECT_I
   exit 1
 }
 wait $NC_PID 2>/dev/null || true
+
+# Verify checkpoint arrived (non-empty and correct size); avoid empty-file in edit step
+RECV_SIZE=$(on_target "stat -c%s $CHECKPOINT_DIR/checkpoint.tar 2>/dev/null" || echo 0)
+if [[ -z "$RECV_SIZE" || "$RECV_SIZE" -eq 0 || "$RECV_SIZE" -ne "$CHECKPOINT_SIZE" ]]; then
+  echo "ERROR: Transfer verification failed: got ${RECV_SIZE:-0} bytes, expected $CHECKPOINT_SIZE. Listener may have failed (e.g. port in use)."
+  exit 1
+fi
 
 TRANSFER_DONE=$(date +%s%N)
 TRANSFER_MS=$(( (TRANSFER_DONE - CHECKPOINT_DONE) / 1000000 ))
