@@ -2,7 +2,7 @@
 # =============================================================================
 # clean.sh — Teardown the WebRTC migration experiment
 # =============================================================================
-# Removes all containers, pods, and networks created by build.sh.
+# Removes all containers and networks created by build.sh.
 # Idempotent — safe to run multiple times.
 # =============================================================================
 
@@ -13,16 +13,15 @@ source "$SCRIPT_DIR/config.env"
 printf "===== Cleaning up experiment =====\n"
 
 # Kill and remove named containers
-for name in webrtc-server webrtc-loadgen webrtc-collector h3-pause h2 h3; do
+for name in webrtc-server webrtc-loadgen webrtc-collector h2 h3; do
     printf "Removing container: %s\n" "$name"
     sudo podman kill "$name" 2>/dev/null || true
     sudo podman rm -f "$name" 2>/dev/null || true
 done
 
-# Remove pods and networks
+# Remove networks
 for i in $(seq 1 "$NUM_HOSTS"); do
     printf "\n----- Removing host %d -----\n" "$i"
-    sudo podman pod rm -f "h${i}-pod" 2>/dev/null || true
     sudo podman network rm -f "h${i}-net" 2>/dev/null || true
 done
 

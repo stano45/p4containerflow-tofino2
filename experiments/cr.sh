@@ -5,7 +5,7 @@
 # Follows the same pattern as p4containerflow/examples/redis/cr.sh:
 #   1. Checkpoint the source container with --tcp-established
 #   2. Edit checkpoint IP addresses with edit_files_img.py
-#   3. Restore on the target pod
+#   3. Restore on the target (no pod)
 #   4. Update switch tables via controller /migrateNode API
 #   5. Signal the metrics collector
 #
@@ -90,18 +90,17 @@ printf "IP edit completed in %d ms\n" $(( (EDIT_DONE - CHECKPOINT_DONE) / 100000
 # -----------------------------------------------------------------------------
 # Step 3: Remove any existing container on target, then restore
 # -----------------------------------------------------------------------------
-printf "\n----- Step 3: Restore on %s-pod -----\n" "$TARGET_HOST"
+printf "\n----- Step 3: Restore on %s -----\n" "$TARGET_HOST"
 
 # Remove existing container on target if present
-sudo podman container rm -f "${TARGET_HOST}" 2>/dev/null || true
+sudo podman container rm -f "${TARGET_HOST}" "$CONTAINER_NAME" 2>/dev/null || true
 
 sudo podman container restore \
     --import "$CHECKPOINT_PATH" \
     --keep \
     --tcp-established \
     --ignore-static-ip \
-    --ignore-static-mac \
-    --pod "${TARGET_HOST}-pod"
+    --ignore-static-mac
 
 RESTORE_DONE=$(date +%s%N)
 printf "Restore completed in %d ms\n" $(( (RESTORE_DONE - EDIT_DONE) / 1000000 ))

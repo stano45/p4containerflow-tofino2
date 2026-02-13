@@ -8,7 +8,7 @@
 #   3. Start switchd on tofino (if not running)
 #   4. Start controller on tofino (if not running)
 #   5. Clean previous run
-#   6. Create networks, pods, containers on lakewood + loveland
+#   6. Create networks and containers on lakewood + loveland
 #   7. Start metrics collector
 #   8. Wait for steady-state streaming
 #   9. CRIU migration lakewood → loveland
@@ -180,7 +180,7 @@ printf "╚═══════════════════════
 "$SCRIPT_DIR/clean_hw.sh" || true
 
 # =============================================================================
-# Step 6: Build networks, pods, containers
+# Step 6: Build networks and containers
 # =============================================================================
 printf "\n╔══════════════════════════════════════════╗\n"
 printf "║  Step 6: Build experiment infrastructure ║\n"

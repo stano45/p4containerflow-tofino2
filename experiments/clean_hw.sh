@@ -20,8 +20,6 @@ if on_lakewood true 2>/dev/null; then
             sudo podman kill \$name 2>/dev/null || true
             sudo podman rm -f \$name 2>/dev/null || true
         done
-        sudo podman pod rm -f h1-pod 2>/dev/null || true
-        sudo podman pod rm -f h2-pod 2>/dev/null || true
         sudo podman network rm -f $HW_NET 2>/dev/null || true
         sudo iptables -D OUTPUT -p tcp --tcp-flags RST RST -o $LAKEWOOD_NIC -j DROP 2>/dev/null || true
         sudo rm -rf $CHECKPOINT_DIR 2>/dev/null || true
@@ -35,11 +33,10 @@ fi
 printf "\n----- [loveland] -----\n"
 if on_loveland true 2>/dev/null; then
     on_loveland "
-        for name in webrtc-server h3-pause h3; do
+        for name in webrtc-server h3; do
             sudo podman kill \$name 2>/dev/null || true
             sudo podman rm -f \$name 2>/dev/null || true
         done
-        sudo podman pod rm -f h3-pod 2>/dev/null || true
         sudo podman network rm -f $HW_NET 2>/dev/null || true
         sudo iptables -D OUTPUT -p tcp --tcp-flags RST RST -o $LOVELAND_NIC -j DROP 2>/dev/null || true
         sudo rm -rf $CHECKPOINT_DIR 2>/dev/null || true

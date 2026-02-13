@@ -2,8 +2,7 @@
 # =============================================================================
 # build.sh — Set up the WebRTC migration experiment
 # =============================================================================
-# Creates isolated Podman networks, pods, and containers following the same
-# pattern as p4containerflow/examples/redis/build.sh.
+# Creates isolated Podman networks and containers (no pods).
 #
 # Usage:
 #   ./build.sh            # Uses defaults from config.env
@@ -15,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/config.env"
 
 # -----------------------------------------------------------------------------
-# Host 1: client pod (load generator + collector)
+# Host 1: client (load generator)
 # -----------------------------------------------------------------------------
 printf "\n===== Creating Host 1 (client) =====\n"
 sudo podman network create \
@@ -27,17 +26,12 @@ sudo podman network create \
     --subnet "$H1_SUBNET" \
     "$H1_NET"
 
-sudo podman pod create \
-    --name h1-pod \
-    --network "$H1_NET" \
-    --mac-address "$H1_MAC" \
-    --ip "$H1_IP"
-
-# Run load generator (connects to server via VIP)
 sudo podman run \
     --replace --detach --privileged \
     --name webrtc-loadgen \
-    --pod h1-pod \
+    --network "$H1_NET" \
+    --mac-address "$H1_MAC" \
+    --ip "$H1_IP" \
     --cap-add NET_ADMIN \
     "$LOADGEN_IMAGE" \
     ./loadgen -server "http://${VIP}:${SIGNALING_PORT}" -peers "$LOADGEN_PEERS"
@@ -56,22 +50,18 @@ sudo podman network create \
     --subnet "$H2_SUBNET" \
     "$H2_NET"
 
-sudo podman pod create \
-    --name h2-pod \
-    --network "$H2_NET" \
-    --mac-address "$H2_MAC" \
-    --ip "$H2_IP"
-
 sudo podman run \
     --replace --detach --privileged \
     --name webrtc-server \
-    --pod h2-pod \
+    --network "$H2_NET" \
+    --mac-address "$H2_MAC" \
+    --ip "$H2_IP" \
     --cap-add NET_ADMIN \
     "$SERVER_IMAGE" \
     ./server -signaling-addr ":${SIGNALING_PORT}" -metrics-addr ":${METRICS_PORT}"
 
 # -----------------------------------------------------------------------------
-# Host 3: migration target (initially just a pause container)
+# Host 3: migration target (network only; container created on restore)
 # -----------------------------------------------------------------------------
 printf "\n===== Creating Host 3 (migration target) =====\n"
 sudo podman network create \
@@ -83,19 +73,6 @@ sudo podman network create \
     --route "${H1_SUBNET},${H3_GATEWAY}" \
     --subnet "$H3_SUBNET" \
     "$H3_NET"
-
-sudo podman pod create \
-    --name h3-pod \
-    --network "$H3_NET" \
-    --mac-address "$H3_MAC" \
-    --ip "$H3_IP"
-
-# Start a pause container so the pod's network namespace stays alive
-sudo podman run \
-    --replace --detach \
-    --name h3-pause \
-    --pod h3-pod \
-    docker.io/hello-world:latest
 
 # -----------------------------------------------------------------------------
 # Drop RST packets on bridges (prevents kernel from resetting migrated
@@ -128,8 +105,8 @@ mkdir -p "$SCRIPT_DIR/$RESULTS_DIR"
 rm -f "$MIGRATION_FLAG_FILE"
 
 printf "\n===== Build complete =====\n"
-printf "Host 1 (client):   %s  pod=h1-pod\n" "$H1_IP"
-printf "Host 2 (server):   %s  pod=h2-pod  container=webrtc-server\n" "$H2_IP"
-printf "Host 3 (target):   %s  pod=h3-pod  (empty, ready for migration)\n" "$H3_IP"
+printf "Host 1 (client):   %s  container=webrtc-loadgen\n" "$H1_IP"
+printf "Host 2 (server):   %s  container=webrtc-server\n" "$H2_IP"
+printf "Host 3 (target):   %s  network only (restore target)\n" "$H3_IP"
 printf "VIP:               %s\n" "$VIP"
 printf "\nTo migrate server from h2 to h3:  ./cr.sh 2 3\n"

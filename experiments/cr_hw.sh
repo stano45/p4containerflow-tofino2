@@ -101,17 +101,16 @@ printf "IP edit completed in %d ms\n" "$EDIT_MS"
 # =============================================================================
 # Step 4: Restore on loveland
 # =============================================================================
-printf "\n----- Step 4: Restore on h3-pod (loveland) -----\n"
+printf "\n----- Step 4: Restore on loveland -----\n"
 
 on_loveland "
-    sudo podman container rm -f h3 2>/dev/null || true
+    sudo podman container rm -f h3 $CONTAINER_NAME 2>/dev/null || true
     sudo podman container restore \
         --import $CHECKPOINT_DIR/checkpoint.tar \
         --keep \
         --tcp-established \
         --ignore-static-ip \
-        --ignore-static-mac \
-        --pod h3-pod
+        --ignore-static-mac
     sudo podman rename $CONTAINER_NAME h3 2>/dev/null || true
 "
 

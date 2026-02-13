@@ -65,22 +65,16 @@ on_lakewood "
     sudo iptables -D OUTPUT -p tcp --tcp-flags RST RST -o $LAKEWOOD_NIC -j DROP 2>/dev/null || true
     sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -o $LAKEWOOD_NIC -j DROP 2>/dev/null || true
 
-    # Server pod (h2)
-    sudo podman pod rm -f h2-pod 2>/dev/null || true
-    sudo podman pod create --name h2-pod --network $HW_NET --ip $H2_IP
-
+    # Server (h2)
     sudo podman run --replace --detach --privileged \
-        --name webrtc-server --pod h2-pod \
+        --name webrtc-server --network $HW_NET --ip $H2_IP \
         -e GODEBUG=multipathtcp=0 \
         $SERVER_IMAGE \
         ./server -signaling-addr :${SIGNALING_PORT} -metrics-addr :${METRICS_PORT}
 
-    # Client pod (h1)
-    sudo podman pod rm -f h1-pod 2>/dev/null || true
-    sudo podman pod create --name h1-pod --network $HW_NET --ip $H1_IP
-
+    # Client (h1)
     sudo podman run --replace --detach --privileged \
-        --name webrtc-loadgen --pod h1-pod \
+        --name webrtc-loadgen --network $HW_NET --ip $H1_IP \
         -e GODEBUG=multipathtcp=0 \
         $LOADGEN_IMAGE \
         ./loadgen -server http://${VIP}:${SIGNALING_PORT} -peers $LOADGEN_PEERS
@@ -89,9 +83,9 @@ on_lakewood "
 "
 
 # -----------------------------------------------------------------------------
-# Loveland: macvlan network + empty target pod
+# Loveland: macvlan network only (target for migration restore)
 # -----------------------------------------------------------------------------
-printf "\n===== [loveland] Creating macvlan network + target pod =====\n"
+printf "\n===== [loveland] Creating macvlan network =====\n"
 
 on_loveland "
     set -euo pipefail
@@ -114,13 +108,6 @@ on_loveland "
     sudo iptables -D OUTPUT -p tcp --tcp-flags RST RST -o $LOVELAND_NIC -j DROP 2>/dev/null || true
     sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -o $LOVELAND_NIC -j DROP 2>/dev/null || true
 
-    # Target pod (h3) — empty, ready for migration
-    sudo podman pod rm -f h3-pod 2>/dev/null || true
-    sudo podman pod create --name h3-pod --network $HW_NET --ip $H3_IP
-
-    sudo podman run --replace --detach --name h3-pause --pod h3-pod \
-        docker.io/hello-world:latest
-
     echo 'loveland setup complete'
 "
 
@@ -129,8 +116,8 @@ on_loveland "
 # -----------------------------------------------------------------------------
 printf "\n===== Build complete =====\n"
 printf "Lakewood:\n"
-printf "  Host 1 (client):  %s  pod=h1-pod\n" "$H1_IP"
-printf "  Host 2 (server):  %s  pod=h2-pod\n" "$H2_IP"
+printf "  Host 1 (client):  %s  container=webrtc-loadgen\n" "$H1_IP"
+printf "  Host 2 (server):  %s  container=webrtc-server\n" "$H2_IP"
 printf "Loveland:\n"
-printf "  Host 3 (target):  %s  pod=h3-pod (empty)\n" "$H3_IP"
+printf "  Host 3 (target):  %s  network only (restore target)\n" "$H3_IP"
 printf "VIP:                %s\n" "$VIP"
