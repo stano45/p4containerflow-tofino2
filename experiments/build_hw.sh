@@ -87,13 +87,15 @@ on_lakewood "
 # -----------------------------------------------------------------------------
 printf "\n===== [loveland] Building server image + creating macvlan network =====\n"
 
-# Restore needs the same image on loveland (checkpoint stores image reference)
+# Restore needs the same image on loveland (checkpoint uses short name for CNI)
 if on_loveland "sudo podman image exists $SERVER_IMAGE 2>/dev/null"; then
     echo "Image $SERVER_IMAGE already exists on loveland"
 else
     echo "Building $SERVER_IMAGE on loveland (required for restore)..."
-    on_loveland "cd $REMOTE_PROJECT_DIR/experiments && sudo podman build -t $SERVER_IMAGE -f cmd/server/Containerfile ."
+    on_loveland "cd $REMOTE_PROJECT_DIR/experiments && sudo podman build -t $SERVER_IMAGE -t localhost/${SERVER_IMAGE}:latest -f cmd/server/Containerfile ."
 fi
+# Ensure short name exists (Podman may store only localhost/NAME:latest)
+on_loveland "sudo podman tag localhost/${SERVER_IMAGE}:latest $SERVER_IMAGE 2>/dev/null" || true
 
 on_loveland "
     set -euo pipefail
