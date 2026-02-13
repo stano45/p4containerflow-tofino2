@@ -45,11 +45,20 @@ def update_src_addr(file_path, old_addr, new_addr):
             if entry.get("type") == "INETSK":
                 src_addrs = entry.get("isk", {}).get("src_addr")
                 addrs.append(src_addrs)
-                if old_addr in src_addrs:
+                if old_addr in (src_addrs or []):
                     entry["isk"]["src_addr"] = [new_addr]
                     print(
                         f"Updated src_addr from {old_addr} to "
                         f"{new_addr} in {file_path}"
+                    )
+                    updated = True
+                elif src_addrs and any(
+                    a in ("::", "0.0.0.0") for a in (src_addrs or [])
+                ):
+                    # Container listens on 0.0.0.0 / :: (all interfaces); CRIU stores as :: or 0.0.0.0
+                    entry["isk"]["src_addr"] = [new_addr]
+                    print(
+                        f"Updated src_addr (was {src_addrs}) to {new_addr} in {file_path}"
                     )
                     updated = True
 

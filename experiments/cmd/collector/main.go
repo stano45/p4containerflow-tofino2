@@ -87,9 +87,9 @@ func main() {
 	w := csv.NewWriter(f)
 	defer w.Flush()
 
-	// CSV header
+	// CSV header (timestamp_unix_milli for plot_metrics.py migration line)
 	header := []string{
-		"timestamp", "elapsed_s",
+		"timestamp", "timestamp_unix_milli", "elapsed_s",
 		// Server metrics
 		"active_peers", "total_peers", "bytes_sent", "bytes_received",
 		"frames_sent", "keyframes_sent", "uptime_s", "avg_bitrate_bps",
@@ -143,6 +143,7 @@ func main() {
 			elapsed := t.Sub(startTime).Seconds()
 			row := []string{
 				t.Format(time.RFC3339Nano),
+				fmt.Sprintf("%d", t.UnixMilli()),
 				fmt.Sprintf("%.3f", elapsed),
 			}
 

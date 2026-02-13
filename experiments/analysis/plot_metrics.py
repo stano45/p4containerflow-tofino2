@@ -79,25 +79,28 @@ def plot_server_metrics(df: pd.DataFrame, migration_ms: int | None, output_dir: 
     fig.suptitle("WebRTC Server Metrics Over Time", fontsize=14)
 
     t = df["t_sec"]
+    peers_col = "server_connected_peers" if "server_connected_peers" in df.columns else "active_peers"
+    bytes_col = "server_bytes_sent" if "server_bytes_sent" in df.columns else "bytes_sent"
+    uptime_col = "server_uptime_s" if "server_uptime_s" in df.columns else "uptime_s"
 
     # Connected peers
     ax = axes[0]
-    if "server_connected_peers" in df.columns:
-        ax.plot(t, pd.to_numeric(df["server_connected_peers"], errors="coerce"), "b-", linewidth=1)
+    if peers_col in df.columns:
+        ax.plot(t, pd.to_numeric(df[peers_col], errors="coerce"), "b-", linewidth=1)
     ax.set_ylabel("Connected Peers")
     ax.grid(True, alpha=0.3)
 
     # Bytes sent
     ax = axes[1]
-    if "server_bytes_sent" in df.columns:
-        ax.plot(t, pd.to_numeric(df["server_bytes_sent"], errors="coerce"), "g-", linewidth=1)
+    if bytes_col in df.columns:
+        ax.plot(t, pd.to_numeric(df[bytes_col], errors="coerce"), "g-", linewidth=1)
     ax.set_ylabel("Total Bytes Sent")
     ax.grid(True, alpha=0.3)
 
     # Server uptime
     ax = axes[2]
-    if "server_uptime_s" in df.columns:
-        ax.plot(t, pd.to_numeric(df["server_uptime_s"], errors="coerce"), "r-", linewidth=1)
+    if uptime_col in df.columns:
+        ax.plot(t, pd.to_numeric(df[uptime_col], errors="coerce"), "r-", linewidth=1)
     ax.set_ylabel("Server Uptime (s)")
     ax.set_xlabel("Experiment Time (s)")
     ax.grid(True, alpha=0.3)
@@ -122,7 +125,7 @@ def plot_server_metrics(df: pd.DataFrame, migration_ms: int | None, output_dir: 
 
 def plot_ping_rtt(df: pd.DataFrame, migration_ms: int | None, output_dir: str, show: bool):
     """Plot ping RTT to each host."""
-    rtt_cols = [c for c in df.columns if c.startswith("ping_rtt_ms_")]
+    rtt_cols = [c for c in df.columns if c.startswith("ping_rtt_ms_") or c.startswith("ping_ms_")]
     if not rtt_cols:
         return
 
@@ -131,7 +134,7 @@ def plot_ping_rtt(df: pd.DataFrame, migration_ms: int | None, output_dir: str, s
 
     t = df["t_sec"]
     for col in rtt_cols:
-        host = col.replace("ping_rtt_ms_", "").replace("_", ".")
+        host = col.replace("ping_rtt_ms_", "").replace("ping_ms_", "").replace("_", ".")
         vals = pd.to_numeric(df[col], errors="coerce")
         ax.plot(t, vals, linewidth=1, label=host)
 
@@ -157,7 +160,7 @@ def plot_ping_rtt(df: pd.DataFrame, migration_ms: int | None, output_dir: str, s
 
 def plot_container_stats(df: pd.DataFrame, migration_ms: int | None, output_dir: str, show: bool):
     """Plot container CPU and memory usage."""
-    cpu_cols = [c for c in df.columns if c.endswith("_cpu")]
+    cpu_cols = [c for c in df.columns if c.endswith("_cpu") or (c.startswith("cpu_") and len(c) > 4)]
     if not cpu_cols:
         return
 
@@ -169,7 +172,7 @@ def plot_container_stats(df: pd.DataFrame, migration_ms: int | None, output_dir:
     t = df["t_sec"]
 
     for i, col in enumerate(cpu_cols):
-        name = col.replace("container_", "").replace("_cpu", "")
+        name = col.replace("container_", "").replace("_cpu", "").replace("cpu_", "")
         ax = axes[i]
 
         # CPU — strip the '%' sign if present
@@ -265,14 +268,22 @@ def main():
         print("CSV is empty, nothing to plot.")
         sys.exit(1)
 
-    # Convert timestamp to relative seconds
-    df["timestamp_unix_milli"] = pd.to_numeric(df["timestamp_unix_milli"], errors="coerce")
-    t0 = df["timestamp_unix_milli"].iloc[0]
-    df["t_sec"] = (df["timestamp_unix_milli"] - t0) / 1000.0
+    # Convert to relative seconds (support both timestamp_unix_milli and elapsed_s)
+    t0 = None
+    if "timestamp_unix_milli" in df.columns:
+        df["timestamp_unix_milli"] = pd.to_numeric(df["timestamp_unix_milli"], errors="coerce")
+        t0 = float(df["timestamp_unix_milli"].iloc[0])
+        df["t_sec"] = (df["timestamp_unix_milli"] - t0) / 1000.0
+    elif "elapsed_s" in df.columns:
+        df["t_sec"] = pd.to_numeric(df["elapsed_s"], errors="coerce")
+        # No timestamp_unix_milli in CSV; migration line will be skipped
+    else:
+        print("CSV needs 'timestamp_unix_milli' or 'elapsed_s'")
+        sys.exit(1)
 
     print(f"Loaded {len(df)} rows from {args.csv}")
     print(f"Duration: {df['t_sec'].iloc[-1]:.1f}s")
-    if m_ms:
+    if m_ms is not None and t0 is not None:
         print(f"Migration event at t={((m_ms - t0) / 1000.0):.1f}s")
 
     plot_server_metrics(df, m_ms, args.output_dir, args.show)

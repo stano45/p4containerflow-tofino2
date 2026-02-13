@@ -317,11 +317,16 @@ COLLECTOR_PID=""
 if [[ -f "$SCRIPT_DIR/analysis/plot_metrics.py" ]] && [[ -f "$COLLECTOR_OUTPUT" ]]; then
     cd "$SCRIPT_DIR/analysis"
     pip install -q -r requirements.txt 2>/dev/null || true
-    python3 plot_metrics.py \
+    # Pillow may be needed for matplotlib; upgrade if plot fails with _imaging error
+    (pip install -q --upgrade Pillow 2>/dev/null || true)
+    if python3 plot_metrics.py \
         --csv "$COLLECTOR_OUTPUT" \
         --migration-flag "$MIGRATION_FLAG" \
-        --output-dir "$RUN_DIR" \
-        2>/dev/null && echo "Plots generated." || echo "Plot generation failed (non-fatal)."
+        --output-dir "$RUN_DIR"; then
+        echo "Plots generated."
+    else
+        echo "Plot generation failed (non-fatal). See above for errors."
+    fi
     cd "$SCRIPT_DIR"
 fi
 

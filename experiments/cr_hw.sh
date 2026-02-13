@@ -28,6 +28,7 @@ if [[ "$MIGRATION_DIRECTION" = "loveland_lakewood" ]]; then
   SOURCE_SSH="$LOVELAND_SSH"
   TARGET_SSH="$LAKEWOOD_SSH"
   TARGET_DIRECT_IP="$LAKEWOOD_DIRECT_IP"
+  SOURCE_DIRECT_IP="$LOVELAND_DIRECT_IP"
   SOURCE_DIRECT_IF="$LOVELAND_DIRECT_IF"
   SOURCE_NODE="loveland"
   TARGET_NODE="lakewood"
@@ -39,6 +40,7 @@ else
   SOURCE_SSH="$LAKEWOOD_SSH"
   TARGET_SSH="$LOVELAND_SSH"
   TARGET_DIRECT_IP="$LOVELAND_DIRECT_IP"
+  SOURCE_DIRECT_IP="$LAKEWOOD_DIRECT_IP"
   SOURCE_DIRECT_IF="$LAKEWOOD_DIRECT_IF"
   SOURCE_NODE="lakewood"
   TARGET_NODE="loveland"
@@ -48,6 +50,7 @@ fi
 
 on_source() { ssh $SSH_OPTS "$SOURCE_SSH" "$@"; }
 on_target() { ssh $SSH_OPTS "$TARGET_SSH" "$@"; }
+on_tofino() { ssh $SSH_OPTS "$TOFINO_SSH" "$@"; }
 
 printf "===== Cross-node migration: %s (%s) -> %s (%s) =====\n" \
     "$SOURCE_NODE" "$SOURCE_IP" "$TARGET_NODE" "$TARGET_IP"
@@ -114,7 +117,8 @@ printf "Transferring checkpoint only to %s (%.1f MB) via direct link (port %s)..
 on_target "ncat -l -p $TRANSFER_PORT > $CHECKPOINT_DIR/checkpoint.tar" &
 NC_PID=$!
 sleep 0.5
-on_source "sudo cat $CHECKPOINT_DIR/checkpoint.tar | ncat -w 30 $TARGET_DIRECT_IP $TRANSFER_PORT" || {
+# Bind sender to direct-link IP so traffic uses 25G DAC, not management path
+on_source "sudo cat $CHECKPOINT_DIR/checkpoint.tar | ncat -w 30 -s $SOURCE_DIRECT_IP $TARGET_DIRECT_IP $TRANSFER_PORT" || {
   kill $NC_PID 2>/dev/null || true
   wait $NC_PID 2>/dev/null || true
   echo "ERROR: Direct-link transfer failed. Check $SOURCE_DIRECT_IF up on $SOURCE_NODE and ncat on both nodes."
@@ -187,11 +191,11 @@ printf "\n----- Step 5: Update switch tables -----\n"
 
 SWITCH_UPDATE_START=$(date +%s%N)
 
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-    --connect-timeout 5 --max-time 10 \
-    -X POST "${CONTROLLER_URL}/migrateNode" \
-    -H "Content-Type: application/json" \
-    -d "{\"old_ipv4\":\"${SOURCE_IP}\", \"new_ipv4\":\"${TARGET_IP}\"}" || true)
+# Call controller from tofino (localhost:5000) so it works even when control machine can't reach CONTROLLER_URL
+HTTP_CODE=$(on_tofino "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 \
+    -X POST 'http://127.0.0.1:5000/migrateNode' \
+    -H 'Content-Type: application/json' \
+    -d '{\"old_ipv4\":\"${SOURCE_IP}\", \"new_ipv4\":\"${TARGET_IP}\"}'" 2>/dev/null || true)
 if [[ -z "$HTTP_CODE" ]]; then HTTP_CODE=000; fi
 
 SWITCH_UPDATE_DONE=$(date +%s%N)
