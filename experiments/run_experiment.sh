@@ -84,6 +84,13 @@ else
     echo "Building $SERVER_IMAGE on lakewood..."
     on_lakewood "cd $REMOTE_PROJECT_DIR/experiments && sudo podman build -t $SERVER_IMAGE -f cmd/server/Containerfile ."
 fi
+# Restore on loveland needs the same image locally (checkpoint stores image reference)
+if on_loveland "sudo podman image exists $SERVER_IMAGE 2>/dev/null"; then
+    echo "Image $SERVER_IMAGE already exists on loveland"
+else
+    echo "Building $SERVER_IMAGE on loveland (required for restore)..."
+    on_loveland "cd $REMOTE_PROJECT_DIR/experiments && sudo podman build -t $SERVER_IMAGE -f cmd/server/Containerfile ."
+fi
 
 if on_lakewood "sudo podman image exists $LOADGEN_IMAGE 2>/dev/null"; then
     echo "Image $LOADGEN_IMAGE already exists on lakewood"

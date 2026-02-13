@@ -83,9 +83,17 @@ on_lakewood "
 "
 
 # -----------------------------------------------------------------------------
-# Loveland: macvlan network only (target for migration restore)
+# Loveland: server image + macvlan network (target for migration restore)
 # -----------------------------------------------------------------------------
-printf "\n===== [loveland] Creating macvlan network =====\n"
+printf "\n===== [loveland] Building server image + creating macvlan network =====\n"
+
+# Restore needs the same image on loveland (checkpoint stores image reference)
+if on_loveland "sudo podman image exists $SERVER_IMAGE 2>/dev/null"; then
+    echo "Image $SERVER_IMAGE already exists on loveland"
+else
+    echo "Building $SERVER_IMAGE on loveland (required for restore)..."
+    on_loveland "cd $REMOTE_PROJECT_DIR/experiments && sudo podman build -t $SERVER_IMAGE -f cmd/server/Containerfile ."
+fi
 
 on_loveland "
     set -euo pipefail
