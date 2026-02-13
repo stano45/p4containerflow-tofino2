@@ -317,7 +317,7 @@ func main() {
 
 	s := newServer()
 
-	// WebRTC track init (can take 30–40s on first use), then start servers
+	// Create shared video track
 	track, err := webrtc.NewTrackLocalStaticSample(
 		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8},
 		"video", "webrtc-server",
@@ -326,19 +326,25 @@ func main() {
 		log.Fatalf("Failed to create track: %v", err)
 	}
 	s.videoTrack = track
+
 	go s.startVideoProducer()
 
+	// Signaling server
 	sigMux := http.NewServeMux()
 	sigMux.HandleFunc("/offer", s.handleOffer)
 	sigMux.HandleFunc("/health", s.handleHealth)
+
+	// Metrics server (separate port)
 	metMux := http.NewServeMux()
 	metMux.HandleFunc("/metrics", s.handleMetrics)
 	metMux.HandleFunc("/health", s.handleHealth)
 
 	log.Printf("WebRTC server starting — signaling=%s  metrics=%s  fps=%d",
 		*signalingAddr, *metricsAddr, *frameFPS)
+
 	go func() {
 		log.Fatal(http.ListenAndServe(*metricsAddr, metMux))
 	}()
+
 	log.Fatal(http.ListenAndServe(*signalingAddr, sigMux))
 }
