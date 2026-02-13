@@ -198,14 +198,14 @@ printf "╚═══════════════════════
 COLLECTOR_OUTPUT="$SCRIPT_DIR/$RESULTS_DIR/metrics.csv"
 mkdir -p "$(dirname "$COLLECTOR_OUTPUT")"
 
-go run "$SCRIPT_DIR/cmd/collector/" \
+(cd "$SCRIPT_DIR" && go run "./cmd/collector/" \
     -server-metrics "http://${VIP}:${METRICS_PORT}/metrics" \
     -ping-hosts "${H2_IP},${H3_IP}" \
     -containers "webrtc-server" \
     -ssh-host "$LOVELAND_SSH" \
     -migration-flag "$SCRIPT_DIR/$RESULTS_DIR/migration_timing.txt" \
     -output "$COLLECTOR_OUTPUT" \
-    -interval "$METRICS_INTERVAL" &
+    -interval "$METRICS_INTERVAL") &
 COLLECTOR_PID=$!
 printf "Collector started (PID %s)\n" "$COLLECTOR_PID"
 
