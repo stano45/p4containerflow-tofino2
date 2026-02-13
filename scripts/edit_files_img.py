@@ -160,11 +160,9 @@ def patch_image_ref_in_dir(input_dir, image_name):
             path = os.path.join(root, f)
             if path.endswith("files.img") or path.endswith(".img"):
                 continue
-            # Try JSON first (handles nested structures)
             if f.endswith(".json") or f in ("container", "config", "manifest"):
                 if _try_patch_json_file(path, image_name):
                     continue
-            # Fallback: plain text file that contains "image" and a 64-char hex
             _patch_image_id_in_text_file(path, image_name)
 
 

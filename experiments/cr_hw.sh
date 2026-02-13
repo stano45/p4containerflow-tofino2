@@ -87,9 +87,7 @@ rm -rf "$LOCAL_TMP"
 printf "\n----- Step 3: Edit checkpoint IPs on loveland (%s -> %s) -----\n" \
     "$SOURCE_IP" "$TARGET_IP"
 
-# Pass image name so the script can replace image ID with name in checkpoint.
-# Must be CNI-safe (no slashes/colons) because the same value is used as containerID for the network plugin.
-# Use short name so image lookup and CNI both work; ensure image is tagged as $SERVER_IMAGE on loveland.
+# Patch checkpoint: replace source image ID with short name so restore can resolve image on loveland (and CNI gets valid containerID)
 CHECKPOINT_IMAGE_NAME="$SERVER_IMAGE"
 on_loveland "
     export PATH=\"\$HOME/.local/bin:\$PATH\"
@@ -113,15 +111,21 @@ if ! on_loveland "sudo podman image exists $CHECKPOINT_IMAGE_NAME 2>/dev/null"; 
     echo "Tagging localhost/${SERVER_IMAGE}:latest as $CHECKPOINT_IMAGE_NAME on loveland..."
     if ! on_loveland "sudo podman tag localhost/${SERVER_IMAGE}:latest $CHECKPOINT_IMAGE_NAME"; then
         echo "ERROR: Image $CHECKPOINT_IMAGE_NAME not found on loveland (could not tag from localhost/${SERVER_IMAGE}:latest)."
+        echo "       Images on loveland:"
+        on_loveland "sudo podman images --format '{{.Repository}}:{{.Tag}}'" 2>/dev/null || true
         echo "       Run ./build_hw.sh or ./run_experiment.sh first so the image exists on the target."
         exit 1
     fi
 fi
 if ! on_loveland "sudo podman image exists $CHECKPOINT_IMAGE_NAME 2>/dev/null"; then
     echo "ERROR: Image $CHECKPOINT_IMAGE_NAME not found on loveland."
+    echo "       Images on loveland:"
+    on_loveland "sudo podman images --format '{{.Repository}}:{{.Tag}}'" 2>/dev/null || true
     echo "       Run ./build_hw.sh or ./run_experiment.sh first so the image exists on the target."
     exit 1
 fi
+echo "Image $CHECKPOINT_IMAGE_NAME found on loveland (listing below)."
+on_loveland "sudo podman images --filter reference='*webrtc*' --format '  {{.Repository}}:{{.Tag}} ({{.ID}})'" 2>/dev/null || true
 
 RESTORE_START=$(date +%s%N)
 if ! on_loveland "
