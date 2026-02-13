@@ -177,6 +177,7 @@ if ! on_target "
         --ignore-static-mac
 "; then
     echo "ERROR: Restore failed (see above)."
+    echo "On $TARGET_NODE check: sudo cat /var/lib/containers/storage/overlay-containers/<container-id>/userdata/restore.log"
     exit 1
 fi
 on_target "sudo podman rename $CONTAINER_NAME $RENAME_AFTER_RESTORE 2>/dev/null || true"
