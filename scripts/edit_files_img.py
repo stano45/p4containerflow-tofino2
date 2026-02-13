@@ -47,10 +47,16 @@ def update_src_addr(file_path, old_addr, new_addr):
             isk = entry.get("isk", {})
             src_addrs = isk.get("src_addr")
             addrs.append(src_addrs)
-            # Only patch IPv4 sockets (family 2). Patching IPv6 (family 10) with IPv4 causes CRIU restore -52.
+            # Only patch IPv4 sockets (family 2 / INET). Patching IPv6 (10 / INET6) with IPv4 causes CRIU restore -52.
             family = isk.get("family")
-            if family is not None and int(family) != 2:
-                continue
+            if family is not None:
+                try:
+                    fam = int(family)
+                except (TypeError, ValueError):
+                    s = str(family).upper()
+                    fam = 2 if s == "INET" else (10 if s == "INET6" else None)
+                if fam != 2:  # skip IPv6 (10), unknown (None), or any other
+                    continue
             if old_addr in (src_addrs or []):
                 entry["isk"]["src_addr"] = [new_addr]
                 print(
@@ -65,7 +71,7 @@ def update_src_addr(file_path, old_addr, new_addr):
                     f"Updated src_addr (was {src_addrs}) to {new_addr} in {file_path}"
                 )
                 updated = True
-            elif src_addrs and any(a == "::" for a in (src_addrs or [])) and (family is None or int(family) == 2):
+            elif src_addrs and any(a == "::" for a in (src_addrs or [])):
                 # :: with family 2 or unset: treat as IPv4 listen-all (0.0.0.0)
                 entry["isk"]["src_addr"] = [new_addr]
                 print(
