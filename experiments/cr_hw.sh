@@ -87,14 +87,15 @@ rm -rf "$LOCAL_TMP"
 printf "\n----- Step 3: Edit checkpoint IPs on loveland (%s -> %s) -----\n" \
     "$SOURCE_IP" "$TARGET_IP"
 
-# Pass SERVER_IMAGE so the script can replace image ID with name in checkpoint
-# (avoids "64-byte hexadecimal" error on restore when target has the image by name)
+# Pass image name so the script can replace image ID with name in checkpoint.
+# Podman stores local builds as localhost/NAME:latest; use that so restore finds the image.
+CHECKPOINT_IMAGE_NAME="localhost/${SERVER_IMAGE}:latest"
 on_loveland "
     export PATH=\"\$HOME/.local/bin:\$PATH\"
     python3 $REMOTE_EDIT_SCRIPT \
         $CHECKPOINT_DIR/checkpoint.tar \
         $SOURCE_IP $TARGET_IP \
-        $SERVER_IMAGE
+        $CHECKPOINT_IMAGE_NAME
 "
 
 EDIT_DONE=$(date +%s%N)
@@ -106,10 +107,13 @@ printf "IP edit completed in %d ms\n" "$EDIT_MS"
 # =============================================================================
 printf "\n----- Step 4: Restore on loveland -----\n"
 
-if ! on_loveland "sudo podman image exists $SERVER_IMAGE 2>/dev/null"; then
-    echo "ERROR: Image $SERVER_IMAGE not found on loveland."
-    echo "       Run ./build_hw.sh or ./run_experiment.sh first so the image exists on the target."
-    exit 1
+# Check that the image we patch into the checkpoint exists on loveland
+if ! on_loveland "sudo podman image exists $CHECKPOINT_IMAGE_NAME 2>/dev/null"; then
+    if ! on_loveland "sudo podman image exists $SERVER_IMAGE 2>/dev/null"; then
+        echo "ERROR: Image $CHECKPOINT_IMAGE_NAME not found on loveland."
+        echo "       Run ./build_hw.sh or ./run_experiment.sh first so the image exists on the target."
+        exit 1
+    fi
 fi
 
 RESTORE_START=$(date +%s%N)
