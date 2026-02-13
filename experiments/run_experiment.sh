@@ -255,7 +255,7 @@ scp $SSH_OPTS /tmp/webrtc-collector-build "$LAKEWOOD_SSH:$REMOTE_COLLECTOR_BIN"
 rm -f /tmp/webrtc-collector-build
 
 # Clean stale state on lakewood
-on_lakewood "rm -f $REMOTE_COLLECTOR_CSV $REMOTE_MIGRATION_FLAG"
+on_lakewood "sudo rm -f $REMOTE_COLLECTOR_CSV $REMOTE_MIGRATION_FLAG"
 
 # Start collector on lakewood (runs locally there — no SSH overhead per tick)
 on_lakewood "sudo nohup $REMOTE_COLLECTOR_BIN \
@@ -343,9 +343,9 @@ fi
 COLLECTOR_PID=""
 COLLECTOR_REMOTE_PID=""
 
-# Copy CSV from lakewood
+# Copy CSV from lakewood (chown first — collector ran as root)
+on_lakewood "sudo chown \$(whoami) $REMOTE_COLLECTOR_CSV /tmp/collector.log 2>/dev/null; true"
 scp $SSH_OPTS "$LAKEWOOD_SSH:$REMOTE_COLLECTOR_CSV" "$COLLECTOR_OUTPUT" 2>/dev/null || true
-# Copy collector log for debugging
 scp $SSH_OPTS "$LAKEWOOD_SSH:/tmp/collector.log" "$RUN_DIR/collector.log" 2>/dev/null || true
 
 if [[ -f "$SCRIPT_DIR/analysis/plot_metrics.py" ]] && [[ -f "$COLLECTOR_OUTPUT" ]]; then

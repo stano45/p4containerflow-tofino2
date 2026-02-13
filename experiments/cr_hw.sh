@@ -124,8 +124,15 @@ NC_PID=$!
 sleep 0.3
 # Sender: -N shuts write-half on EOF (signals listener to exit); -s binds to direct-link IP
 # sudo bash -c wraps the redirect so root can read the root-owned checkpoint.tar
-TRANSFER_START=$(date +%s%N)
-on_source "sudo bash -c 'nc -s $SOURCE_DIRECT_IP -N $TARGET_DIRECT_IP $TRANSFER_PORT < $CHECKPOINT_DIR/checkpoint.tar'" || {
+# Timing is measured INSIDE the source server to exclude SSH overhead from the control machine.
+TRANSFER_INNER_MS=$(on_source "
+  T0=\$(date +%s%N)
+  sudo bash -c 'nc -s $SOURCE_DIRECT_IP -N $TARGET_DIRECT_IP $TRANSFER_PORT < $CHECKPOINT_DIR/checkpoint.tar'
+  EX=\$?
+  T1=\$(date +%s%N)
+  echo \$(( (T1 - T0) / 1000000 ))
+  exit \$EX
+") || {
   kill $NC_PID 2>/dev/null || true
   wait $NC_PID 2>/dev/null || true
   echo "ERROR: Direct-link transfer failed. Check $SOURCE_DIRECT_IF up on $SOURCE_NODE and nc on both nodes."
@@ -141,8 +148,8 @@ if [[ -z "$RECV_SIZE" || "$RECV_SIZE" -eq 0 || "$RECV_SIZE" -ne "$CHECKPOINT_SIZ
   exit 1
 fi
 
-TRANSFER_MS=$(( (TRANSFER_DONE - TRANSFER_START) / 1000000 ))
-printf "Transfer completed in %d ms (checkpoint only, no image)\n" "$TRANSFER_MS"
+TRANSFER_MS=${TRANSFER_INNER_MS:-0}
+printf "Transfer completed in %d ms (checkpoint only, no image, measured on %s)\n" "$TRANSFER_MS" "$SOURCE_NODE"
 
 # =============================================================================
 # Step 3: Edit checkpoint IPs on target (IP only; no image patching)

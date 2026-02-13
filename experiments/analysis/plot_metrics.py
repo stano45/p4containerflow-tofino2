@@ -208,30 +208,25 @@ def plot_migration_timing(event: dict | None, output_dir: str, show: bool):
     if event is None:
         return
 
+    # Use the tightly-measured _ms values from the timing file (not the ns
+    # timestamps, which have SSH-overhead gaps between phases).
     try:
-        start = int(event["migration_start_ns"])
-        checkpoint = int(event["checkpoint_done_ns"])
-        transfer = int(event["transfer_done_ns"])
-        edit = int(event["edit_done_ns"])
-        restore = int(event["restore_done_ns"])
-        switch_update = int(event["switch_update_done_ns"])
-        end = int(event["migration_end_ns"])
+        total = int(event["total_ms"])
+        checkpoint = int(event["checkpoint_ms"])
+        transfer = int(event["transfer_ms"])
+        edit = int(event["edit_ms"])
+        restore = int(event["restore_ms"])
+        switch = int(event["switch_ms"])
     except (KeyError, ValueError):
         return
 
     phases = ["Checkpoint", "Transfer", "IP Edit", "Restore", "Switch Update"]
-    durations_ms = [
-        (checkpoint - start) / 1e6,
-        (transfer - checkpoint) / 1e6,
-        (edit - transfer) / 1e6,
-        (restore - edit) / 1e6,
-        (switch_update - restore) / 1e6,
-    ]
+    durations_ms = [checkpoint, transfer, edit, restore, switch]
 
     fig, ax = plt.subplots(figsize=(8, 5))
     bars = ax.barh(phases, durations_ms, color=["#4CAF50", "#03A9F4", "#2196F3", "#FF9800", "#9C27B0"])
     ax.set_xlabel("Duration (ms)")
-    ax.set_title(f"Migration Phase Breakdown (total: {(end - start) / 1e6:.0f} ms)")
+    ax.set_title(f"Migration Phase Breakdown (total: {total} ms)")
     ax.grid(True, axis="x", alpha=0.3)
 
     for bar, val in zip(bars, durations_ms):
