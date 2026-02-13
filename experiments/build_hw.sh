@@ -83,8 +83,32 @@ on_lakewood "
 "
 
 # -----------------------------------------------------------------------------
-# Loveland: server image + macvlan network (target for migration restore)
+# Loveland: CRIU+crun (for restore), server image + macvlan network
 # -----------------------------------------------------------------------------
+printf "\n===== [loveland] Ensuring CRIU and crun (for restore) =====\n"
+# Restore fails with \"could not find symbol criu_set_lsm_mount_context\" if libcriu is older than crun expects. Install CRIU from source (full install) then crun.
+# Run install scripts via stdin so they work even if repo on loveland is not synced.
+NEED_CRIU=false
+if ! on_loveland "nm -D /usr/local/lib/x86_64-linux-gnu/libcriu.so 2>/dev/null | grep -q criu_set_lsm_mount_context" 2>/dev/null; then
+  if ! on_loveland "nm -D /usr/local/lib64/libcriu.so 2>/dev/null | grep -q criu_set_lsm_mount_context" 2>/dev/null; then
+    NEED_CRIU=true
+  fi
+fi
+NEED_CRUN=false
+if [ "$NEED_CRIU" = true ]; then
+  NEED_CRUN=true
+elif ! on_loveland "crun features 2>/dev/null | grep -q 'checkpoint.enabled.*true'" 2>/dev/null; then
+  NEED_CRUN=true
+fi
+if [ "$NEED_CRIU" = true ]; then
+  echo "Installing CRIU (full) on loveland..."
+  ssh $SSH_OPTS "$LOVELAND_SSH" "bash -s" < "$SCRIPT_DIR/../scripts/install_criu.sh"
+fi
+if [ "$NEED_CRUN" = true ]; then
+  echo "Installing crun on loveland..."
+  ssh $SSH_OPTS "$LOVELAND_SSH" "bash -s" < "$SCRIPT_DIR/../scripts/install_crun.sh"
+fi
+
 printf "\n===== [loveland] Building server image + creating macvlan network =====\n"
 
 # Restore needs the same image on loveland (checkpoint uses short name for CNI)

@@ -36,9 +36,16 @@ printf "===== Cross-node migration: lakewood (%s) -> loveland (%s) =====\n" \
 MIGRATION_START=$(date +%s%N)
 
 # =============================================================================
-# Step 1: Checkpoint on lakewood
+# Step 1: Checkpoint on lakewood (and capture image ID before rm)
 # =============================================================================
 printf "\n----- Step 1: Checkpoint %s on lakewood -----\n" "$CONTAINER_NAME"
+
+# Get container's image ID before we remove it (checkpoint stores this; we transfer the image so no patching)
+SOURCE_IMAGE_ID=$(on_lakewood "sudo podman inspect $CONTAINER_NAME --format '{{.Image}}'" 2>/dev/null || true)
+if [[ -z "$SOURCE_IMAGE_ID" || ${#SOURCE_IMAGE_ID} -ne 64 ]]; then
+    echo "ERROR: Could not get image ID from container $CONTAINER_NAME on lakewood."
+    exit 1
+fi
 
 on_lakewood "
     sudo mkdir -p $CHECKPOINT_DIR
@@ -73,28 +80,36 @@ printf "Downloaded %.1f MB from lakewood\n" "$(echo "scale=1; $CHECKPOINT_SIZE /
 on_loveland "sudo mkdir -p $CHECKPOINT_DIR && sudo chmod 777 $CHECKPOINT_DIR"
 cat "$LOCAL_TMP/checkpoint.tar" | ssh $SSH_OPTS "$LOVELAND_SSH" "cat > $CHECKPOINT_DIR/checkpoint.tar"
 
+# Transfer the container's image from lakewood to loveland so the checkpoint's image ID exists on target (no checkpoint patching)
+printf "Transferring image %s from lakewood to loveland...\n" "${SOURCE_IMAGE_ID:0:12}"
+on_lakewood "sudo podman save -o $CHECKPOINT_DIR/server.img $SOURCE_IMAGE_ID"
+ssh $SSH_OPTS "$LAKEWOOD_SSH" "sudo cat $CHECKPOINT_DIR/server.img" > "$LOCAL_TMP/server.img"
+IMAGE_SIZE=$(stat -c%s "$LOCAL_TMP/server.img" 2>/dev/null || stat -f%z "$LOCAL_TMP/server.img" 2>/dev/null || echo 0)
+cat "$LOCAL_TMP/server.img" | ssh $SSH_OPTS "$LOVELAND_SSH" "sudo tee $CHECKPOINT_DIR/server.img > /dev/null"
+on_loveland "sudo podman load -i $CHECKPOINT_DIR/server.img"
+on_lakewood "sudo rm -f $CHECKPOINT_DIR/server.img"
+on_loveland "sudo rm -f $CHECKPOINT_DIR/server.img"
+
 TRANSFER_DONE=$(date +%s%N)
 TRANSFER_MS=$(( (TRANSFER_DONE - CHECKPOINT_DONE) / 1000000 ))
-printf "Transfer completed in %d ms (%.1f MB)\n" "$TRANSFER_MS" \
-    "$(echo "scale=1; $CHECKPOINT_SIZE / 1048576" | bc)"
+printf "Transfer completed in %d ms (%.1f MB checkpoint, %.1f MB image)\n" "$TRANSFER_MS" \
+    "$(echo "scale=1; $CHECKPOINT_SIZE / 1048576" | bc)" \
+    "$(echo "scale=1; $IMAGE_SIZE / 1048576" | bc)"
 
 # Clean local temp
 rm -rf "$LOCAL_TMP"
 
 # =============================================================================
-# Step 3: Edit checkpoint IPs on loveland
+# Step 3: Edit checkpoint IPs on loveland (IP only; no image patching)
 # =============================================================================
 printf "\n----- Step 3: Edit checkpoint IPs on loveland (%s -> %s) -----\n" \
     "$SOURCE_IP" "$TARGET_IP"
 
-# Patch checkpoint: replace source image ID with short name so restore can resolve image on loveland (and CNI gets valid containerID)
-CHECKPOINT_IMAGE_NAME="$SERVER_IMAGE"
 on_loveland "
     export PATH=\"\$HOME/.local/bin:\$PATH\"
     python3 $REMOTE_EDIT_SCRIPT \
         $CHECKPOINT_DIR/checkpoint.tar \
-        $SOURCE_IP $TARGET_IP \
-        $CHECKPOINT_IMAGE_NAME
+        $SOURCE_IP $TARGET_IP
 "
 
 EDIT_DONE=$(date +%s%N)
@@ -106,26 +121,12 @@ printf "IP edit completed in %d ms\n" "$EDIT_MS"
 # =============================================================================
 printf "\n----- Step 4: Restore on loveland -----\n"
 
-# Ensure the image exists on loveland under the short name (restore + CNI need it)
-if ! on_loveland "sudo podman image exists $CHECKPOINT_IMAGE_NAME 2>/dev/null"; then
-    echo "Tagging localhost/${SERVER_IMAGE}:latest as $CHECKPOINT_IMAGE_NAME on loveland..."
-    if ! on_loveland "sudo podman tag localhost/${SERVER_IMAGE}:latest $CHECKPOINT_IMAGE_NAME"; then
-        echo "ERROR: Image $CHECKPOINT_IMAGE_NAME not found on loveland (could not tag from localhost/${SERVER_IMAGE}:latest)."
-        echo "       Images on loveland:"
-        on_loveland "sudo podman images --format '{{.Repository}}:{{.Tag}}'" 2>/dev/null || true
-        echo "       Run ./build_hw.sh or ./run_experiment.sh first so the image exists on the target."
-        exit 1
-    fi
-fi
-if ! on_loveland "sudo podman image exists $CHECKPOINT_IMAGE_NAME 2>/dev/null"; then
-    echo "ERROR: Image $CHECKPOINT_IMAGE_NAME not found on loveland."
-    echo "       Images on loveland:"
-    on_loveland "sudo podman images --format '{{.Repository}}:{{.Tag}}'" 2>/dev/null || true
-    echo "       Run ./build_hw.sh or ./run_experiment.sh first so the image exists on the target."
+# Checkpoint still has source image ID; we transferred that image so it exists on loveland
+if ! on_loveland "sudo podman image exists $SOURCE_IMAGE_ID 2>/dev/null"; then
+    echo "ERROR: Image $SOURCE_IMAGE_ID not found on loveland after transfer."
     exit 1
 fi
-echo "Image $CHECKPOINT_IMAGE_NAME found on loveland (listing below)."
-on_loveland "sudo podman images --filter reference='*webrtc*' --format '  {{.Repository}}:{{.Tag}} ({{.ID}})'" 2>/dev/null || true
+echo "Image ${SOURCE_IMAGE_ID:0:12}... found on loveland."
 
 RESTORE_START=$(date +%s%N)
 if ! on_loveland "
@@ -156,7 +157,8 @@ HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
     --connect-timeout 5 --max-time 10 \
     -X POST "${CONTROLLER_URL}/migrateNode" \
     -H "Content-Type: application/json" \
-    -d "{\"old_ipv4\":\"${SOURCE_IP}\", \"new_ipv4\":\"${TARGET_IP}\"}")
+    -d "{\"old_ipv4\":\"${SOURCE_IP}\", \"new_ipv4\":\"${TARGET_IP}\"}" || true)
+if [[ -z "$HTTP_CODE" ]]; then HTTP_CODE=000; fi
 
 SWITCH_UPDATE_DONE=$(date +%s%N)
 SWITCH_MS=$(( (SWITCH_UPDATE_DONE - SWITCH_UPDATE_START) / 1000000 ))

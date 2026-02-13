@@ -204,14 +204,17 @@ printf "║  Step 7: Start metrics collector         ║\n"
 printf "╚══════════════════════════════════════════╝\n\n"
 
 COLLECTOR_OUTPUT="$SCRIPT_DIR/$RESULTS_DIR/metrics.csv"
+MIGRATION_FLAG="$SCRIPT_DIR/$RESULTS_DIR/migration_timing.txt"
 mkdir -p "$(dirname "$COLLECTOR_OUTPUT")"
+# Remove stale migration flag from previous run so collector only detects migration when cr_hw.sh writes it
+rm -f "$MIGRATION_FLAG"
 
 (cd "$SCRIPT_DIR" && go run "./cmd/collector/" \
     -server-metrics "http://${VIP}:${METRICS_PORT}/metrics" \
     -ping-hosts "${H2_IP},${H3_IP}" \
     -containers "webrtc-server" \
     -ssh-host "$LOVELAND_SSH" \
-    -migration-flag "$SCRIPT_DIR/$RESULTS_DIR/migration_timing.txt" \
+    -migration-flag "$MIGRATION_FLAG" \
     -output "$COLLECTOR_OUTPUT" \
     -interval "$METRICS_INTERVAL") &
 COLLECTOR_PID=$!

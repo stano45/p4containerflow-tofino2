@@ -12,11 +12,13 @@ if ! grep -qi ubuntu /etc/os-release; then
 fi
 
 sudo apt update
-sudo apt install -y \
-  git build-essential autoconf automake libtool pkg-config \
-  libyajl-dev libseccomp-dev libcap-dev libsystemd-dev \
-  libprotobuf-c-dev libselinux1-dev libcriu-dev \
-  criu go-md2man
+# libcriu-dev/criu optional if CRIU already installed from source (e.g. install_criu.sh)
+export PKG_CONFIG_PATH="/usr/local/lib/x86_64-linux-gnu/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+DEPS="git build-essential autoconf automake libtool pkg-config libyajl-dev libseccomp-dev libcap-dev libsystemd-dev libprotobuf-c-dev libselinux1-dev go-md2man"
+if ! pkg-config --exists criu 2>/dev/null; then
+  DEPS="$DEPS libcriu-dev criu"
+fi
+sudo apt install -y $DEPS
 
 mkdir -p "$HOME/src"
 cd "$HOME/src"
@@ -31,7 +33,8 @@ git pull --rebase || true
 ./autogen.sh
 
 export PKG_CONFIG=/usr/bin/pkg-config
-export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH-}"
+# Prefer CRIU from /usr/local (e.g. from install_criu.sh) so crun gets criu_set_lsm_mount_context
+export PKG_CONFIG_PATH="/usr/local/lib/x86_64-linux-gnu/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH-}"
 
 ./configure --with-criu
 make -j"$(nproc)"
