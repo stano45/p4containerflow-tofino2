@@ -114,6 +114,13 @@ on_lakewood "ip link show $LAKEWOOD_NIC >/dev/null 2>&1" || { echo "FAIL: $LAKEW
 on_loveland "ip link show $LOVELAND_NIC >/dev/null 2>&1" || { echo "FAIL: $LOVELAND_NIC on loveland"; exit 1; }
 echo "NICs OK"
 
+echo "--- Syncing experiment scripts to lab nodes ---"
+rsync -az --exclude='results/' --exclude='cmd/' --exclude='analysis/' \
+  "$SCRIPT_DIR/" "$LAKEWOOD_SSH:$REMOTE_PROJECT_DIR/experiments/"
+rsync -az --exclude='results/' --exclude='cmd/' --exclude='analysis/' \
+  "$SCRIPT_DIR/" "$LOVELAND_SSH:$REMOTE_PROJECT_DIR/experiments/"
+echo "Scripts synced."
+
 # =============================================================================
 # Step 2: Build container images on lakewood (always — ensures latest code)
 # =============================================================================
@@ -298,17 +305,27 @@ sleep "$STEADY_STATE_WAIT"
 # =============================================================================
 # Step 9: CRIU migration(s) — N chained migrations without cleaning state
 # =============================================================================
-export CR_HW_RESULTS_PATH="$RUN_DIR"
+REMOTE_RESULTS_DIR="/tmp/migration_results"
 for (( i=1; i <= MIGRATION_COUNT; i++ )); do
   if [[ $(( i % 2 )) -eq 1 ]]; then
     direction="lakewood_loveland"
+    migration_ssh="$LAKEWOOD_SSH"
   else
     direction="loveland_lakewood"
+    migration_ssh="$LOVELAND_SSH"
   fi
   printf "\n╔══════════════════════════════════════════╗\n"
   printf "║  Step 9.%d: CRIU migration %s (%d/%d)   ║\n" "$i" "$direction" "$i" "$MIGRATION_COUNT"
   printf "╚══════════════════════════════════════════╝\n\n"
-  "$SCRIPT_DIR/cr_hw.sh" "$direction"
+
+  # Run cr_hw.sh ON the source node — local commands, direct-link to target
+  # ForwardAgent so the source node can SSH to tofino for the switch update
+  ssh $SSH_OPTS -o ForwardAgent=yes "$migration_ssh" \
+    "cd $REMOTE_PROJECT_DIR/experiments && CR_RUN_LOCAL=1 CR_HW_RESULTS_PATH=$REMOTE_RESULTS_DIR bash cr_hw.sh $direction"
+
+  # Copy migration_timing.txt back
+  scp $SSH_OPTS "$migration_ssh:$REMOTE_RESULTS_DIR/migration_timing.txt" "$RUN_DIR/migration_timing.txt"
+
   if [[ $i -lt $MIGRATION_COUNT ]]; then
     printf "\nWaiting %3ds before next migration...\n" "$POST_MIGRATION_WAIT"
     sleep "$POST_MIGRATION_WAIT"

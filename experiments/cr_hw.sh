@@ -2,18 +2,18 @@
 # =============================================================================
 # cr_hw.sh — Cross-node CRIU migration (configurable direction)
 # =============================================================================
-# Run from your control machine. Orchestrates via SSH:
-#   1. Checkpoint on source node
-#   2. Transfer checkpoint + image directly source → target (SSH agent forwarding)
-#   3. Edit checkpoint IPs on target
-#   4. Restore on target
-#   5. Update switch tables via controller API
-#   6. Write migration timing to RESULTS_PATH (or CR_HW_RESULTS_PATH)
+# Best run ON the source node (CR_RUN_LOCAL=1, set by run_experiment.sh).
+# Source commands run locally (zero overhead), target commands go over the
+# direct 25G link (~0.2ms). Only the tofino call uses the university network.
+#
+# Can also run from a control machine (CR_RUN_LOCAL unset) — all commands
+# go over SSH, adding ~700ms overhead per call.
 #
 # Usage:
 #   ./cr_hw.sh [direction]
 #   direction: lakewood_loveland (default) or loveland_lakewood
-#   CR_HW_RESULTS_PATH: optional dir for migration_timing.txt (default: $SCRIPT_DIR/$RESULTS_DIR)
+#   CR_RUN_LOCAL=1: run on the source node (source=local, target=direct link)
+#   CR_HW_RESULTS_PATH: dir for migration_timing.txt
 # =============================================================================
 
 set -euo pipefail
@@ -48,8 +48,15 @@ else
   RENAME_AFTER_RESTORE="h3"
 fi
 
-on_source() { ssh $SSH_OPTS "$SOURCE_SSH" "$@"; }
-on_target() { ssh $SSH_OPTS "$TARGET_SSH" "$@"; }
+if [[ "${CR_RUN_LOCAL:-}" = "1" ]]; then
+  # Running ON the source node: source=local, target=direct link SSH
+  on_source() { bash -c "$*"; }
+  on_target() { ssh $SSH_OPTS "$TARGET_DIRECT_IP" "$@"; }
+else
+  # Running from control machine: everything over university-network SSH
+  on_source() { ssh $SSH_OPTS "$SOURCE_SSH" "$@"; }
+  on_target() { ssh $SSH_OPTS "$TARGET_SSH" "$@"; }
+fi
 on_tofino() { ssh $SSH_OPTS "$TOFINO_SSH" "$@"; }
 
 printf "===== Cross-node migration: %s (%s) -> %s (%s) =====\n" \
@@ -112,27 +119,18 @@ if [[ -n "${CR_TRANSFER_PORT:-}" ]]; then
 else
   TRANSFER_PORT=$(( 32000 + (RANDOM % 2000) ))
 fi
-printf "Transferring checkpoint only to %s (%.1f MB) via direct link (port %s)...\n" "$TARGET_NODE" "$(echo "scale=1; ${CHECKPOINT_SIZE:-0} / 1048576" | bc)" "$TRANSFER_PORT"
+printf "Transferring %.1f MB to %s via direct link (port %s)...\n" "$(echo "scale=1; ${CHECKPOINT_SIZE:-0} / 1048576" | bc)" "$TARGET_NODE" "$TRANSFER_PORT"
 
 # Kill any stale nc on the transfer port; remove old checkpoint so redirect works (may be root-owned)
 on_target "sudo fuser -k ${TRANSFER_PORT}/tcp 2>/dev/null; sudo rm -f $CHECKPOINT_DIR/checkpoint.tar; true"
 sleep 0.1
 
-# Listener: nc -l exits after sender closes connection
+# Listener on target; sender on source. -N shuts write-half on EOF.
 on_target "nc -l -p $TRANSFER_PORT > $CHECKPOINT_DIR/checkpoint.tar" &
 NC_PID=$!
 sleep 0.3
-# Sender: -N shuts write-half on EOF (signals listener to exit); -s binds to direct-link IP
-# sudo bash -c wraps the redirect so root can read the root-owned checkpoint.tar
-# Timing is measured INSIDE the source server to exclude SSH overhead from the control machine.
-TRANSFER_INNER_MS=$(on_source "
-  T0=\$(date +%s%N)
-  sudo bash -c 'nc -s $SOURCE_DIRECT_IP -N $TARGET_DIRECT_IP $TRANSFER_PORT < $CHECKPOINT_DIR/checkpoint.tar'
-  EX=\$?
-  T1=\$(date +%s%N)
-  echo \$(( (T1 - T0) / 1000000 ))
-  exit \$EX
-") || {
+TRANSFER_START=$(date +%s%N)
+on_source "sudo bash -c 'nc -s $SOURCE_DIRECT_IP -N $TARGET_DIRECT_IP $TRANSFER_PORT < $CHECKPOINT_DIR/checkpoint.tar'" || {
   kill $NC_PID 2>/dev/null || true
   wait $NC_PID 2>/dev/null || true
   echo "ERROR: Direct-link transfer failed. Check $SOURCE_DIRECT_IF up on $SOURCE_NODE and nc on both nodes."
@@ -148,15 +146,16 @@ if [[ -z "$RECV_SIZE" || "$RECV_SIZE" -eq 0 || "$RECV_SIZE" -ne "$CHECKPOINT_SIZ
   exit 1
 fi
 
-TRANSFER_MS=${TRANSFER_INNER_MS:-0}
-printf "Transfer completed in %d ms (checkpoint only, no image, measured on %s)\n" "$TRANSFER_MS" "$SOURCE_NODE"
+TRANSFER_MS=$(( (TRANSFER_DONE - TRANSFER_START) / 1000000 ))
+printf "Transfer completed in %d ms\n" "$TRANSFER_MS"
 
 # =============================================================================
-# Step 3: Edit checkpoint IPs on target (IP only; no image patching)
+# Step 3: Edit checkpoint IPs on target
 # =============================================================================
 printf "\n----- Step 3: Edit checkpoint IPs on %s (%s -> %s) -----\n" \
     "$TARGET_NODE" "$SOURCE_IP" "$TARGET_IP"
 
+EDIT_START=$(date +%s%N)
 on_target "
     export PATH=\"\$HOME/.local/bin:\$PATH\"
     python3 $REMOTE_EDIT_SCRIPT \
@@ -165,7 +164,7 @@ on_target "
 "
 
 EDIT_DONE=$(date +%s%N)
-EDIT_MS=$(( (EDIT_DONE - TRANSFER_DONE) / 1000000 ))
+EDIT_MS=$(( (EDIT_DONE - EDIT_START) / 1000000 ))
 printf "IP edit completed in %d ms\n" "$EDIT_MS"
 
 # =============================================================================
@@ -260,8 +259,8 @@ EOF
 
 printf "\n===== Migration complete: %s -> %s in %d ms =====\n" "$SOURCE_NODE" "$TARGET_NODE" "$TOTAL_MS"
 printf "  Checkpoint:    %4d ms\n" "$CHECKPOINT_MS"
-printf "  Transfer:      %4d ms  (checkpoint only %.1f MB, direct %s→%s)\n" "$TRANSFER_MS" \
-    "$(echo "scale=1; ${CHECKPOINT_SIZE:-0} / 1048576" | bc)" "$SOURCE_NODE" "$TARGET_NODE"
+printf "  Transfer:      %4d ms  (%.1f MB)\n" "$TRANSFER_MS" \
+    "$(echo "scale=1; ${CHECKPOINT_SIZE:-0} / 1048576" | bc)"
 printf "  IP edit:       %4d ms\n" "$EDIT_MS"
 printf "  Restore:       %4d ms\n" "$RESTORE_MS"
 printf "  Switch update: %4d ms\n" "$SWITCH_MS"
