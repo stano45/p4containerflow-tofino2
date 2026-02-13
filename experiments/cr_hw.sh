@@ -87,11 +87,14 @@ rm -rf "$LOCAL_TMP"
 printf "\n----- Step 3: Edit checkpoint IPs on loveland (%s -> %s) -----\n" \
     "$SOURCE_IP" "$TARGET_IP"
 
+# Pass SERVER_IMAGE so the script can replace image ID with name in checkpoint
+# (avoids "64-byte hexadecimal" error on restore when target has the image by name)
 on_loveland "
     export PATH=\"\$HOME/.local/bin:\$PATH\"
     python3 $REMOTE_EDIT_SCRIPT \
         $CHECKPOINT_DIR/checkpoint.tar \
-        $SOURCE_IP $TARGET_IP
+        $SOURCE_IP $TARGET_IP \
+        $SERVER_IMAGE
 "
 
 EDIT_DONE=$(date +%s%N)
