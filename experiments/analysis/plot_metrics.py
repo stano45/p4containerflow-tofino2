@@ -136,6 +136,8 @@ def plot_ping_rtt(df: pd.DataFrame, migration_ms: int | None, output_dir: str, s
     for col in rtt_cols:
         host = col.replace("ping_rtt_ms_", "").replace("ping_ms_", "").replace("_", ".")
         vals = pd.to_numeric(df[col], errors="coerce")
+        # Replace -1 (unreachable) with NaN so they show as gaps, not negative lines
+        vals = vals.where(vals >= 0)
         ax.plot(t, vals, linewidth=1, label=host)
 
     if migration_ms is not None and "timestamp_unix_milli" in df.columns:
@@ -209,6 +211,7 @@ def plot_migration_timing(event: dict | None, output_dir: str, show: bool):
     try:
         start = int(event["migration_start_ns"])
         checkpoint = int(event["checkpoint_done_ns"])
+        transfer = int(event["transfer_done_ns"])
         edit = int(event["edit_done_ns"])
         restore = int(event["restore_done_ns"])
         switch_update = int(event["switch_update_done_ns"])
@@ -216,16 +219,17 @@ def plot_migration_timing(event: dict | None, output_dir: str, show: bool):
     except (KeyError, ValueError):
         return
 
-    phases = ["Checkpoint", "IP Edit", "Restore", "Switch Update"]
+    phases = ["Checkpoint", "Transfer", "IP Edit", "Restore", "Switch Update"]
     durations_ms = [
         (checkpoint - start) / 1e6,
-        (edit - checkpoint) / 1e6,
+        (transfer - checkpoint) / 1e6,
+        (edit - transfer) / 1e6,
         (restore - edit) / 1e6,
         (switch_update - restore) / 1e6,
     ]
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    bars = ax.barh(phases, durations_ms, color=["#4CAF50", "#2196F3", "#FF9800", "#9C27B0"])
+    bars = ax.barh(phases, durations_ms, color=["#4CAF50", "#03A9F4", "#2196F3", "#FF9800", "#9C27B0"])
     ax.set_xlabel("Duration (ms)")
     ax.set_title(f"Migration Phase Breakdown (total: {(end - start) / 1e6:.0f} ms)")
     ax.grid(True, axis="x", alpha=0.3)

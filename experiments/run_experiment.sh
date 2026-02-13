@@ -71,10 +71,17 @@ on_lakewood() { ssh $SSH_OPTS "$LAKEWOOD_SSH" "$@"; }
 on_loveland() { ssh $SSH_OPTS "$LOVELAND_SSH" "$@"; }
 on_tofino()   { ssh $SSH_OPTS "$TOFINO_SSH" "$@"; }
 
-COLLECTOR_PID=""
+COLLECTOR_PID=""          # local SSH wrapper PID
+COLLECTOR_REMOTE_PID=""   # PID on lakewood
 CONTROLLER_STARTED=false
+REMOTE_COLLECTOR_CSV="/tmp/collector_metrics.csv"
+REMOTE_COLLECTOR_BIN="/tmp/webrtc-collector"
 
 cleanup_on_exit() {
+    # Stop collector on lakewood
+    if [[ -n "$COLLECTOR_REMOTE_PID" ]]; then
+        on_lakewood "sudo kill $COLLECTOR_REMOTE_PID 2>/dev/null; true" 2>/dev/null || true
+    fi
     if [[ -n "$COLLECTOR_PID" ]] && kill -0 "$COLLECTOR_PID" 2>/dev/null; then
         kill "$COLLECTOR_PID" 2>/dev/null || true
         wait "$COLLECTOR_PID" 2>/dev/null || true
@@ -238,18 +245,34 @@ printf "╚═══════════════════════
 
 COLLECTOR_OUTPUT="$RUN_DIR/metrics.csv"
 MIGRATION_FLAG="$RUN_DIR/migration_timing.txt"
+REMOTE_MIGRATION_FLAG="/tmp/collector_migration_flag"
 # No stale flag: RUN_DIR is fresh; cr_hw.sh will write migration_timing.txt on each migration
 
-(cd "$SCRIPT_DIR" && go run "./cmd/collector/" \
-    -server-metrics "http://${VIP}:${METRICS_PORT}/metrics" \
-    -ping-hosts "${H2_IP},${H3_IP}" \
-    -containers "webrtc-server" \
-    -ssh-host "$LOVELAND_SSH" \
-    -migration-flag "$MIGRATION_FLAG" \
-    -output "$COLLECTOR_OUTPUT" \
-    -interval "$METRICS_INTERVAL") &
+# Build collector binary for linux/amd64 and deploy to lakewood
+printf "Building collector binary...\n"
+(cd "$SCRIPT_DIR" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/webrtc-collector-build ./cmd/collector/)
+scp $SSH_OPTS /tmp/webrtc-collector-build "$LAKEWOOD_SSH:$REMOTE_COLLECTOR_BIN"
+rm -f /tmp/webrtc-collector-build
+
+# Clean stale state on lakewood
+on_lakewood "rm -f $REMOTE_COLLECTOR_CSV $REMOTE_MIGRATION_FLAG"
+
+# Start collector on lakewood (runs locally there — no SSH overhead per tick)
+on_lakewood "sudo nohup $REMOTE_COLLECTOR_BIN \
+    -remote-direct-ip '$LOVELAND_DIRECT_IP' \
+    -metrics-port $METRICS_PORT \
+    -ping-hosts '${H2_IP},${H3_IP}' \
+    -server-names 'webrtc-server,h3' \
+    -loadgen-container 'webrtc-loadgen' \
+    -migration-flag '$REMOTE_MIGRATION_FLAG' \
+    -output '$REMOTE_COLLECTOR_CSV' \
+    -interval '$METRICS_INTERVAL' \
+    > /tmp/collector.log 2>&1 &
+    echo \$!" &
 COLLECTOR_PID=$!
-printf "Collector started (PID %s)\n" "$COLLECTOR_PID"
+sleep 2
+COLLECTOR_REMOTE_PID=$(on_lakewood "pgrep -f webrtc-collector | head -1" 2>/dev/null || true)
+printf "Collector started on lakewood (remote PID %s)\n" "$COLLECTOR_REMOTE_PID"
 
 # =============================================================================
 # Step 8: Wait for steady-state
@@ -308,11 +331,22 @@ printf "\n╔══════════════════════�
 printf "║  Step 11: Results & plots                ║\n"
 printf "╚══════════════════════════════════════════╝\n\n"
 
+# Stop collector on lakewood and copy CSV back
+if [[ -n "$COLLECTOR_REMOTE_PID" ]]; then
+    on_lakewood "sudo kill $COLLECTOR_REMOTE_PID 2>/dev/null; true" || true
+    sleep 1
+fi
 if [[ -n "$COLLECTOR_PID" ]] && kill -0 "$COLLECTOR_PID" 2>/dev/null; then
-    kill -TERM "$COLLECTOR_PID"
+    kill -TERM "$COLLECTOR_PID" 2>/dev/null || true
     wait "$COLLECTOR_PID" 2>/dev/null || true
 fi
 COLLECTOR_PID=""
+COLLECTOR_REMOTE_PID=""
+
+# Copy CSV from lakewood
+scp $SSH_OPTS "$LAKEWOOD_SSH:$REMOTE_COLLECTOR_CSV" "$COLLECTOR_OUTPUT" 2>/dev/null || true
+# Copy collector log for debugging
+scp $SSH_OPTS "$LAKEWOOD_SSH:/tmp/collector.log" "$RUN_DIR/collector.log" 2>/dev/null || true
 
 if [[ -f "$SCRIPT_DIR/analysis/plot_metrics.py" ]] && [[ -f "$COLLECTOR_OUTPUT" ]]; then
     cd "$SCRIPT_DIR/analysis"

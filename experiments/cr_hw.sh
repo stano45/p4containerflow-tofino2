@@ -102,11 +102,11 @@ fi
 CHECKPOINT_SIZE=$(on_source "stat -c%s $CHECKPOINT_DIR/checkpoint.tar 2>/dev/null" || echo 0)
 IMAGE_SIZE=0
 
-# Direct link (Mellanox 25G DAC, topology.md): ncat over $TARGET_DIRECT_IP. No SSH in data path.
-# Ensure source's direct-link interface is up (lakewood's enp179s0f0np0 is often DOWN after reboot).
+# Direct link (Mellanox 25G DAC, topology.md): nc over $TARGET_DIRECT_IP. No SSH in data path.
+# Ensure source's direct-link interface is up (may be DOWN after reboot).
 on_source "sudo ip link set $SOURCE_DIRECT_IF up 2>/dev/null || true"
 
-# Use random port (32000–33999) to avoid "Address already in use" from stale ncat; override with CR_TRANSFER_PORT if set
+# Use random port (32000–33999) to avoid "Address already in use"; override with CR_TRANSFER_PORT if set
 if [[ -n "${CR_TRANSFER_PORT:-}" ]]; then
   TRANSFER_PORT=$CR_TRANSFER_PORT
 else
@@ -114,16 +114,24 @@ else
 fi
 printf "Transferring checkpoint only to %s (%.1f MB) via direct link (port %s)...\n" "$TARGET_NODE" "$(echo "scale=1; ${CHECKPOINT_SIZE:-0} / 1048576" | bc)" "$TRANSFER_PORT"
 
-on_target "ncat -l -p $TRANSFER_PORT > $CHECKPOINT_DIR/checkpoint.tar" &
+# Kill any stale nc on the transfer port; remove old checkpoint so redirect works (may be root-owned)
+on_target "sudo fuser -k ${TRANSFER_PORT}/tcp 2>/dev/null; sudo rm -f $CHECKPOINT_DIR/checkpoint.tar; true"
+sleep 0.1
+
+# Listener: nc -l exits after sender closes connection
+on_target "nc -l -p $TRANSFER_PORT > $CHECKPOINT_DIR/checkpoint.tar" &
 NC_PID=$!
-sleep 0.5
-# Bind sender to direct-link IP so traffic uses 25G DAC, not management path
-on_source "sudo cat $CHECKPOINT_DIR/checkpoint.tar | ncat -w 30 -s $SOURCE_DIRECT_IP $TARGET_DIRECT_IP $TRANSFER_PORT" || {
+sleep 0.3
+# Sender: -N shuts write-half on EOF (signals listener to exit); -s binds to direct-link IP
+# sudo bash -c wraps the redirect so root can read the root-owned checkpoint.tar
+TRANSFER_START=$(date +%s%N)
+on_source "sudo bash -c 'nc -s $SOURCE_DIRECT_IP -N $TARGET_DIRECT_IP $TRANSFER_PORT < $CHECKPOINT_DIR/checkpoint.tar'" || {
   kill $NC_PID 2>/dev/null || true
   wait $NC_PID 2>/dev/null || true
-  echo "ERROR: Direct-link transfer failed. Check $SOURCE_DIRECT_IF up on $SOURCE_NODE and ncat on both nodes."
+  echo "ERROR: Direct-link transfer failed. Check $SOURCE_DIRECT_IF up on $SOURCE_NODE and nc on both nodes."
   exit 1
 }
+TRANSFER_DONE=$(date +%s%N)
 wait $NC_PID 2>/dev/null || true
 
 # Verify checkpoint arrived (non-empty and correct size); avoid empty-file in edit step
@@ -133,8 +141,7 @@ if [[ -z "$RECV_SIZE" || "$RECV_SIZE" -eq 0 || "$RECV_SIZE" -ne "$CHECKPOINT_SIZ
   exit 1
 fi
 
-TRANSFER_DONE=$(date +%s%N)
-TRANSFER_MS=$(( (TRANSFER_DONE - CHECKPOINT_DONE) / 1000000 ))
+TRANSFER_MS=$(( (TRANSFER_DONE - TRANSFER_START) / 1000000 ))
 printf "Transfer completed in %d ms (checkpoint only, no image)\n" "$TRANSFER_MS"
 
 # =============================================================================
@@ -217,6 +224,10 @@ TOTAL_MS=$(( (MIGRATION_END - MIGRATION_START) / 1000000 ))
 RESULTS_PATH="${CR_HW_RESULTS_PATH:-$SCRIPT_DIR/$RESULTS_DIR}"
 mkdir -p "$RESULTS_PATH"
 
+# Signal the collector (running on lakewood) that migration happened
+on_source "touch /tmp/collector_migration_flag 2>/dev/null" || true
+on_target "touch /tmp/collector_migration_flag 2>/dev/null" || true
+
 cat > "$RESULTS_PATH/migration_timing.txt" <<EOF
 migration_start_ns=$MIGRATION_START
 checkpoint_done_ns=$CHECKPOINT_DONE
@@ -237,7 +248,7 @@ source_ip=$SOURCE_IP
 target_ip=$TARGET_IP
 source_node=$SOURCE_NODE
 target_node=$TARGET_NODE
-transfer_method=ncat
+transfer_method=nc
 EOF
 
 printf "\n===== Migration complete: %s -> %s in %d ms =====\n" "$SOURCE_NODE" "$TARGET_NODE" "$TOTAL_MS"
