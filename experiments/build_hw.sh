@@ -109,17 +109,25 @@ if [ "$NEED_CRUN" = true ]; then
   ssh $SSH_OPTS "$LOVELAND_SSH" "bash -s" < "$SCRIPT_DIR/../scripts/install_crun.sh"
 fi
 
-printf "\n===== [loveland] Building server image + creating macvlan network =====\n"
+printf "\n===== [loveland] Server image (same ID as lakewood) + macvlan network =====\n"
 
-# Restore needs the same image on loveland (checkpoint uses short name for CNI)
-if on_loveland "sudo podman image exists $SERVER_IMAGE 2>/dev/null"; then
-    echo "Image $SERVER_IMAGE already exists on loveland"
-else
-    echo "Building $SERVER_IMAGE on loveland (required for restore)..."
-    on_loveland "cd $REMOTE_PROJECT_DIR/experiments && sudo podman build -t $SERVER_IMAGE -t localhost/${SERVER_IMAGE}:latest -f cmd/server/Containerfile ."
+# Restore needs the *same* image ID on loveland as on lakewood. Sync from lakewood (no per-migration transfer).
+SERVER_IMAGE_ID=$(on_lakewood "sudo podman image inspect $SERVER_IMAGE --format '{{.Id}}' 2>/dev/null" | sed 's/^sha256://' || true)
+if [[ -z "$SERVER_IMAGE_ID" || ${#SERVER_IMAGE_ID} -ne 64 ]]; then
+    echo "ERROR: Server image $SERVER_IMAGE not found on lakewood. Build it there first (e.g. run_experiment.sh or: podman build -t $SERVER_IMAGE -f experiments/cmd/server/Containerfile .)."
+    exit 1
 fi
-# Ensure short name exists (Podman may store only localhost/NAME:latest)
-on_loveland "sudo podman tag localhost/${SERVER_IMAGE}:latest $SERVER_IMAGE 2>/dev/null" || true
+if on_loveland "sudo podman image exists $SERVER_IMAGE_ID 2>/dev/null"; then
+    echo "Image $SERVER_IMAGE_ID already present on loveland"
+else
+    echo "Syncing server image lakewood→loveland..."
+    SYNC_TMP=/tmp/cr_image_sync_$$
+    on_lakewood "sudo podman save -o $SYNC_TMP.img $SERVER_IMAGE_ID && sudo chown \$(whoami) $SYNC_TMP.img"
+    ssh $SSH_OPTS -o ForwardAgent=yes "$LAKEWOOD_SSH" "scp -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=60 $SYNC_TMP.img $LOVELAND_SSH:$SYNC_TMP.img"
+    on_lakewood "rm -f $SYNC_TMP.img"
+    on_loveland "sudo podman load -i $SYNC_TMP.img && rm -f $SYNC_TMP.img"
+    echo "Server image synced."
+fi
 
 on_loveland "
     set -euo pipefail

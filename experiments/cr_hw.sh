@@ -1,53 +1,72 @@
 #!/bin/bash
 # =============================================================================
-# cr_hw.sh — Cross-node CRIU migration (lakewood → loveland)
+# cr_hw.sh — Cross-node CRIU migration (configurable direction)
 # =============================================================================
 # Run from your control machine. Orchestrates via SSH:
-#   1. Checkpoint on lakewood
-#   2. Pull checkpoint to control machine, push to loveland (proxy transfer)
-#   3. Edit checkpoint IPs on loveland
-#   4. Restore on loveland
+#   1. Checkpoint on source node
+#   2. Transfer checkpoint + image directly source → target (SSH agent forwarding)
+#   3. Edit checkpoint IPs on target
+#   4. Restore on target
 #   5. Update switch tables via controller API
-#   6. Write migration timing to flag file
+#   6. Write migration timing to RESULTS_PATH (or CR_HW_RESULTS_PATH)
 #
 # Usage:
-#   ./cr_hw.sh
+#   ./cr_hw.sh [direction]
+#   direction: lakewood_loveland (default) or loveland_lakewood
+#   CR_HW_RESULTS_PATH: optional dir for migration_timing.txt (default: $SCRIPT_DIR/$RESULTS_DIR)
 # =============================================================================
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/config_hw.env"
 
-SOURCE_IP="$H2_IP"       # server on lakewood
-TARGET_IP="$H3_IP"       # target on loveland
+# Direction: lakewood_loveland (default) or loveland_lakewood
+MIGRATION_DIRECTION="${1:-lakewood_loveland}"
+if [[ "$MIGRATION_DIRECTION" = "loveland_lakewood" ]]; then
+  SOURCE_IP="$H3_IP"
+  TARGET_IP="$H2_IP"
+  SOURCE_SSH="$LOVELAND_SSH"
+  TARGET_SSH="$LAKEWOOD_SSH"
+  TARGET_DIRECT_IP="$LAKEWOOD_DIRECT_IP"
+  SOURCE_DIRECT_IF="$LOVELAND_DIRECT_IF"
+  SOURCE_NODE="loveland"
+  TARGET_NODE="lakewood"
+  CONTAINER_NAME="h3"
+  RENAME_AFTER_RESTORE="webrtc-server"
+else
+  SOURCE_IP="$H2_IP"
+  TARGET_IP="$H3_IP"
+  SOURCE_SSH="$LAKEWOOD_SSH"
+  TARGET_SSH="$LOVELAND_SSH"
+  TARGET_DIRECT_IP="$LOVELAND_DIRECT_IP"
+  SOURCE_DIRECT_IF="$LAKEWOOD_DIRECT_IF"
+  SOURCE_NODE="lakewood"
+  TARGET_NODE="loveland"
+  CONTAINER_NAME="webrtc-server"
+  RENAME_AFTER_RESTORE="h3"
+fi
 
-CONTAINER_NAME=webrtc-server
-LOCAL_TMP="/tmp/cr_hw_transfer"
+on_source() { ssh $SSH_OPTS "$SOURCE_SSH" "$@"; }
+on_target() { ssh $SSH_OPTS "$TARGET_SSH" "$@"; }
 
-on_lakewood() { ssh $SSH_OPTS "$LAKEWOOD_SSH" "$@"; }
-on_loveland() { ssh $SSH_OPTS "$LOVELAND_SSH" "$@"; }
-
-cleanup_tmp() { rm -rf "$LOCAL_TMP" 2>/dev/null || true; }
-trap cleanup_tmp EXIT
-
-printf "===== Cross-node migration: lakewood (%s) -> loveland (%s) =====\n" \
-    "$SOURCE_IP" "$TARGET_IP"
+printf "===== Cross-node migration: %s (%s) -> %s (%s) =====\n" \
+    "$SOURCE_NODE" "$SOURCE_IP" "$TARGET_NODE" "$TARGET_IP"
 
 MIGRATION_START=$(date +%s%N)
 
 # =============================================================================
-# Step 1: Checkpoint on lakewood (and capture image ID before rm)
+# Step 1: Checkpoint on source (and capture image ID before rm)
 # =============================================================================
-printf "\n----- Step 1: Checkpoint %s on lakewood -----\n" "$CONTAINER_NAME"
+printf "\n----- Step 1: Checkpoint %s on %s -----\n" "$CONTAINER_NAME" "$SOURCE_NODE"
 
 # Get container's image ID before we remove it (checkpoint stores this; we transfer the image so no patching)
-SOURCE_IMAGE_ID=$(on_lakewood "sudo podman inspect $CONTAINER_NAME --format '{{.Image}}'" 2>/dev/null || true)
+SOURCE_IMAGE_ID=$(on_source "sudo podman inspect $CONTAINER_NAME --format '{{.Image}}'" 2>/dev/null || true)
 if [[ -z "$SOURCE_IMAGE_ID" || ${#SOURCE_IMAGE_ID} -ne 64 ]]; then
-    echo "ERROR: Could not get image ID from container $CONTAINER_NAME on lakewood."
+    echo "ERROR: Could not get image ID from container $CONTAINER_NAME on $SOURCE_NODE."
     exit 1
 fi
 
-on_lakewood "
+on_source "
     sudo mkdir -p $CHECKPOINT_DIR
     sudo podman container checkpoint \
         --export $CHECKPOINT_DIR/checkpoint.tar \
@@ -63,49 +82,52 @@ CHECKPOINT_MS=$(( (CHECKPOINT_DONE - MIGRATION_START) / 1000000 ))
 printf "Checkpoint completed in %d ms\n" "$CHECKPOINT_MS"
 
 # =============================================================================
-# Step 2: Transfer checkpoint (lakewood → control → loveland)
+# Step 2: Transfer checkpoint + image (source → target, direct)
 # =============================================================================
-printf "\n----- Step 2: Proxy transfer via control machine -----\n"
+printf "\n----- Step 2: Direct transfer %s → %s -----\n" "$SOURCE_NODE" "$TARGET_NODE"
 
-mkdir -p "$LOCAL_TMP"
+# Ensure target has the directory
+on_target "sudo mkdir -p $CHECKPOINT_DIR && sudo chmod 777 $CHECKPOINT_DIR"
 
-# Pull from lakewood
-ssh $SSH_OPTS "$LAKEWOOD_SSH" "sudo cat $CHECKPOINT_DIR/checkpoint.tar" \
-    > "$LOCAL_TMP/checkpoint.tar"
+# Image must already exist on target (synced at experiment setup). Transfer only the checkpoint.
+if ! on_target "sudo podman image exists $SOURCE_IMAGE_ID 2>/dev/null"; then
+    echo "ERROR: Image $SOURCE_IMAGE_ID not found on $TARGET_NODE."
+    echo "  Run full experiment setup (run_experiment.sh) so the server image is synced to both nodes."
+    exit 1
+fi
 
-CHECKPOINT_SIZE=$(stat -c%s "$LOCAL_TMP/checkpoint.tar" 2>/dev/null || stat -f%z "$LOCAL_TMP/checkpoint.tar" 2>/dev/null || echo 0)
-printf "Downloaded %.1f MB from lakewood\n" "$(echo "scale=1; $CHECKPOINT_SIZE / 1048576" | bc)"
+CHECKPOINT_SIZE=$(on_source "stat -c%s $CHECKPOINT_DIR/checkpoint.tar 2>/dev/null" || echo 0)
+IMAGE_SIZE=0
 
-# Push to loveland
-on_loveland "sudo mkdir -p $CHECKPOINT_DIR && sudo chmod 777 $CHECKPOINT_DIR"
-cat "$LOCAL_TMP/checkpoint.tar" | ssh $SSH_OPTS "$LOVELAND_SSH" "cat > $CHECKPOINT_DIR/checkpoint.tar"
+# Direct link (Mellanox 25G DAC, topology.md): ncat over $TARGET_DIRECT_IP. No SSH in data path.
+# Ensure source's direct-link interface is up (lakewood's enp179s0f0np0 is often DOWN after reboot).
+on_source "sudo ip link set $SOURCE_DIRECT_IF up 2>/dev/null || true"
 
-# Transfer the container's image from lakewood to loveland so the checkpoint's image ID exists on target (no checkpoint patching)
-printf "Transferring image %s from lakewood to loveland...\n" "${SOURCE_IMAGE_ID:0:12}"
-on_lakewood "sudo podman save -o $CHECKPOINT_DIR/server.img $SOURCE_IMAGE_ID"
-ssh $SSH_OPTS "$LAKEWOOD_SSH" "sudo cat $CHECKPOINT_DIR/server.img" > "$LOCAL_TMP/server.img"
-IMAGE_SIZE=$(stat -c%s "$LOCAL_TMP/server.img" 2>/dev/null || stat -f%z "$LOCAL_TMP/server.img" 2>/dev/null || echo 0)
-cat "$LOCAL_TMP/server.img" | ssh $SSH_OPTS "$LOVELAND_SSH" "sudo tee $CHECKPOINT_DIR/server.img > /dev/null"
-on_loveland "sudo podman load -i $CHECKPOINT_DIR/server.img"
-on_lakewood "sudo rm -f $CHECKPOINT_DIR/server.img"
-on_loveland "sudo rm -f $CHECKPOINT_DIR/server.img"
+TRANSFER_PORT="${CR_TRANSFER_PORT:-19999}"
+printf "Transferring checkpoint only to %s (%.1f MB) via direct link...\n" "$TARGET_NODE" "$(echo "scale=1; ${CHECKPOINT_SIZE:-0} / 1048576" | bc)"
+
+on_target "ncat -l -p $TRANSFER_PORT > $CHECKPOINT_DIR/checkpoint.tar" &
+NC_PID=$!
+sleep 0.5
+on_source "sudo cat $CHECKPOINT_DIR/checkpoint.tar | ncat -w 30 $TARGET_DIRECT_IP $TRANSFER_PORT" || {
+  kill $NC_PID 2>/dev/null || true
+  wait $NC_PID 2>/dev/null || true
+  echo "ERROR: Direct-link transfer failed. Check $SOURCE_DIRECT_IF up on $SOURCE_NODE and ncat on both nodes."
+  exit 1
+}
+wait $NC_PID 2>/dev/null || true
 
 TRANSFER_DONE=$(date +%s%N)
 TRANSFER_MS=$(( (TRANSFER_DONE - CHECKPOINT_DONE) / 1000000 ))
-printf "Transfer completed in %d ms (%.1f MB checkpoint, %.1f MB image)\n" "$TRANSFER_MS" \
-    "$(echo "scale=1; $CHECKPOINT_SIZE / 1048576" | bc)" \
-    "$(echo "scale=1; $IMAGE_SIZE / 1048576" | bc)"
-
-# Clean local temp
-rm -rf "$LOCAL_TMP"
+printf "Transfer completed in %d ms (checkpoint only, no image)\n" "$TRANSFER_MS"
 
 # =============================================================================
-# Step 3: Edit checkpoint IPs on loveland (IP only; no image patching)
+# Step 3: Edit checkpoint IPs on target (IP only; no image patching)
 # =============================================================================
-printf "\n----- Step 3: Edit checkpoint IPs on loveland (%s -> %s) -----\n" \
-    "$SOURCE_IP" "$TARGET_IP"
+printf "\n----- Step 3: Edit checkpoint IPs on %s (%s -> %s) -----\n" \
+    "$TARGET_NODE" "$SOURCE_IP" "$TARGET_IP"
 
-on_loveland "
+on_target "
     export PATH=\"\$HOME/.local/bin:\$PATH\"
     python3 $REMOTE_EDIT_SCRIPT \
         $CHECKPOINT_DIR/checkpoint.tar \
@@ -117,20 +139,20 @@ EDIT_MS=$(( (EDIT_DONE - TRANSFER_DONE) / 1000000 ))
 printf "IP edit completed in %d ms\n" "$EDIT_MS"
 
 # =============================================================================
-# Step 4: Restore on loveland
+# Step 4: Restore on target
 # =============================================================================
-printf "\n----- Step 4: Restore on loveland -----\n"
+printf "\n----- Step 4: Restore on %s -----\n" "$TARGET_NODE"
 
-# Checkpoint still has source image ID; we transferred that image so it exists on loveland
-if ! on_loveland "sudo podman image exists $SOURCE_IMAGE_ID 2>/dev/null"; then
-    echo "ERROR: Image $SOURCE_IMAGE_ID not found on loveland after transfer."
+# Checkpoint references source image ID; we require it on target (synced at setup)
+if ! on_target "sudo podman image exists $SOURCE_IMAGE_ID 2>/dev/null"; then
+    echo "ERROR: Image $SOURCE_IMAGE_ID not found on $TARGET_NODE."
     exit 1
 fi
-echo "Image ${SOURCE_IMAGE_ID:0:12}... found on loveland."
+echo "Image ${SOURCE_IMAGE_ID:0:12}... found on $TARGET_NODE."
 
 RESTORE_START=$(date +%s%N)
-if ! on_loveland "
-    sudo podman container rm -f h3 $CONTAINER_NAME 2>/dev/null || true
+if ! on_target "
+    sudo podman container rm -f $RENAME_AFTER_RESTORE $CONTAINER_NAME 2>/dev/null || true
     sudo podman container restore \
         --import $CHECKPOINT_DIR/checkpoint.tar \
         --keep \
@@ -141,7 +163,7 @@ if ! on_loveland "
     echo "ERROR: Restore failed (see above)."
     exit 1
 fi
-on_loveland "sudo podman rename $CONTAINER_NAME h3 2>/dev/null || true"
+on_target "sudo podman rename $CONTAINER_NAME $RENAME_AFTER_RESTORE 2>/dev/null || true"
 RESTORE_DONE=$(date +%s%N)
 RESTORE_MS=$(( (RESTORE_DONE - RESTORE_START) / 1000000 ))
 printf "Restore completed in %d ms\n" "$RESTORE_MS"
@@ -175,7 +197,7 @@ fi
 MIGRATION_END=$(date +%s%N)
 TOTAL_MS=$(( (MIGRATION_END - MIGRATION_START) / 1000000 ))
 
-RESULTS_PATH="$SCRIPT_DIR/$RESULTS_DIR"
+RESULTS_PATH="${CR_HW_RESULTS_PATH:-$SCRIPT_DIR/$RESULTS_DIR}"
 mkdir -p "$RESULTS_PATH"
 
 cat > "$RESULTS_PATH/migration_timing.txt" <<EOF
@@ -193,24 +215,18 @@ edit_ms=$EDIT_MS
 restore_ms=$RESTORE_MS
 switch_ms=$SWITCH_MS
 checkpoint_size_bytes=$CHECKPOINT_SIZE
+image_size_bytes=${IMAGE_SIZE:-0}
 source_ip=$SOURCE_IP
 target_ip=$TARGET_IP
-source_node=lakewood
-target_node=loveland
+source_node=$SOURCE_NODE
+target_node=$TARGET_NODE
+transfer_method=ncat
 EOF
 
-# Also write flag file on lakewood (collector may watch it)
-on_lakewood "cat > /tmp/migration_event" <<EOF
-migration_end_ns=$MIGRATION_END
-total_ms=$TOTAL_MS
-source_ip=$SOURCE_IP
-target_ip=$TARGET_IP
-EOF
-
-printf "\n===== Migration complete: lakewood -> loveland in %d ms =====\n" "$TOTAL_MS"
+printf "\n===== Migration complete: %s -> %s in %d ms =====\n" "$SOURCE_NODE" "$TARGET_NODE" "$TOTAL_MS"
 printf "  Checkpoint:    %4d ms\n" "$CHECKPOINT_MS"
-printf "  Transfer:      %4d ms  (%.1f MB, via control machine)\n" "$TRANSFER_MS" \
-    "$(echo "scale=1; $CHECKPOINT_SIZE / 1048576" | bc)"
+printf "  Transfer:      %4d ms  (checkpoint only %.1f MB, direct %s→%s)\n" "$TRANSFER_MS" \
+    "$(echo "scale=1; ${CHECKPOINT_SIZE:-0} / 1048576" | bc)" "$SOURCE_NODE" "$TARGET_NODE"
 printf "  IP edit:       %4d ms\n" "$EDIT_MS"
 printf "  Restore:       %4d ms\n" "$RESTORE_MS"
 printf "  Switch update: %4d ms\n" "$SWITCH_MS"

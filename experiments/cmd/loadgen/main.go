@@ -150,12 +150,26 @@ func connectPeer(id int, serverURL string) (*peer, error) {
 	}
 	<-gatherComplete
 
-	// Send offer to server
+	// Send offer to server; retry on 503 (server still initializing WebRTC)
 	offerJSON, _ := json.Marshal(pc.LocalDescription())
-	resp, err := http.Post(serverURL+"/offer", "application/json", bytes.NewReader(offerJSON))
-	if err != nil {
+	var resp *http.Response
+	for attempt := 0; attempt < 60; attempt++ {
+		resp, err = http.Post(serverURL+"/offer", "application/json", bytes.NewReader(offerJSON))
+		if err != nil {
+			pc.Close()
+			return nil, fmt.Errorf("POST /offer: %w", err)
+		}
+		if resp.StatusCode == http.StatusOK {
+			break
+		}
+		if resp.StatusCode == http.StatusServiceUnavailable {
+			resp.Body.Close()
+			time.Sleep(time.Second)
+			continue
+		}
 		pc.Close()
-		return nil, fmt.Errorf("POST /offer: %w", err)
+		resp.Body.Close()
+		return nil, fmt.Errorf("POST /offer returned %d", resp.StatusCode)
 	}
 	defer resp.Body.Close()
 

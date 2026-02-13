@@ -205,6 +205,13 @@ func (s *server) handleOffer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
+	s.mu.Lock()
+	track := s.videoTrack
+	s.mu.Unlock()
+	if track == nil {
+		http.Error(w, "server initializing", http.StatusServiceUnavailable)
+		return
+	}
 
 	var offer webrtc.SessionDescription
 	if err := json.NewDecoder(r.Body).Decode(&offer); err != nil {
@@ -221,7 +228,7 @@ func (s *server) handleOffer(w http.ResponseWriter, r *http.Request) {
 	peerID := fmt.Sprintf("peer-%d", s.totalPeers.Add(1))
 
 	// Add the shared video track to this peer connection
-	rtpSender, err := pc.AddTrack(s.videoTrack)
+	rtpSender, err := pc.AddTrack(track)
 	if err != nil {
 		pc.Close()
 		http.Error(w, fmt.Sprintf("add track error: %v", err), http.StatusInternalServerError)
@@ -317,34 +324,33 @@ func main() {
 
 	s := newServer()
 
-	// Create shared video track
-	track, err := webrtc.NewTrackLocalStaticSample(
-		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8},
-		"video", "webrtc-server",
-	)
-	if err != nil {
-		log.Fatalf("Failed to create track: %v", err)
-	}
-	s.videoTrack = track
-
-	go s.startVideoProducer()
-
-	// Signaling server
-	sigMux := http.NewServeMux()
-	sigMux.HandleFunc("/offer", s.handleOffer)
-	sigMux.HandleFunc("/health", s.handleHealth)
-
-	// Metrics server (separate port)
+	// Serve /health and /metrics immediately so we're "healthy" within ~100ms.
+	// WebRTC/track init can take 30+ s (Pion crypto); run in background. /offer returns 503 until ready.
 	metMux := http.NewServeMux()
 	metMux.HandleFunc("/metrics", s.handleMetrics)
 	metMux.HandleFunc("/health", s.handleHealth)
-
-	log.Printf("WebRTC server starting — signaling=%s  metrics=%s  fps=%d",
-		*signalingAddr, *metricsAddr, *frameFPS)
-
 	go func() {
 		log.Fatal(http.ListenAndServe(*metricsAddr, metMux))
 	}()
 
+	go func() {
+		track, err := webrtc.NewTrackLocalStaticSample(
+			webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8},
+			"video", "webrtc-server",
+		)
+		if err != nil {
+			log.Fatalf("Failed to create track: %v", err)
+		}
+		s.mu.Lock()
+		s.videoTrack = track
+		s.mu.Unlock()
+		s.startVideoProducer()
+	}()
+
+	sigMux := http.NewServeMux()
+	sigMux.HandleFunc("/offer", s.handleOffer)
+	sigMux.HandleFunc("/health", s.handleHealth)
+	log.Printf("WebRTC server starting — signaling=%s  metrics=%s  fps=%d",
+		*signalingAddr, *metricsAddr, *frameFPS)
 	log.Fatal(http.ListenAndServe(*signalingAddr, sigMux))
 }

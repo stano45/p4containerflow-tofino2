@@ -15,8 +15,15 @@ import argparse
 import os
 import sys
 
-import matplotlib.pyplot as plt
-import pandas as pd
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import pandas as pd
+except Exception as e:
+    print("Plot dependencies unavailable:", e, file=sys.stderr)
+    print("Install with: pip install matplotlib pandas (and Pillow if needed)", file=sys.stderr)
+    sys.exit(1)
 
 # ---------------------------------------------------------------------------
 # CLI

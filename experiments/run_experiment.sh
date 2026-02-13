@@ -16,7 +16,7 @@
 #  11. Collect results + generate plots
 #
 # Usage:
-#   ./run_experiment.sh [--steady-state SECS] [--post-migration SECS]
+#   ./run_experiment.sh [--steady-state SECS] [--post-migration SECS] [--migrations N]
 # =============================================================================
 
 set -euo pipefail
@@ -28,14 +28,41 @@ source "$SCRIPT_DIR/config_hw.env"
 # -----------------------------------------------------------------------------
 STEADY_STATE_WAIT=${STEADY_STATE_WAIT:-15}
 POST_MIGRATION_WAIT=${POST_MIGRATION_WAIT:-30}
+MIGRATION_COUNT=${MIGRATION_COUNT:-1}
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --steady-state)    STEADY_STATE_WAIT="$2"; shift 2 ;;
-        --post-migration)  POST_MIGRATION_WAIT="$2"; shift 2 ;;
-        *)                 echo "Unknown option: $1"; exit 1 ;;
+        --post-migration) POST_MIGRATION_WAIT="$2"; shift 2 ;;
+        --migrations)     MIGRATION_COUNT="$2"; shift 2 ;;
+        *)                echo "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+# -----------------------------------------------------------------------------
+# Run directory (timestamped); config + logs + results go here
+# -----------------------------------------------------------------------------
+RUN_DIR="$SCRIPT_DIR/$RESULTS_DIR/run_$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$RUN_DIR"
+
+# Log configuration
+{
+  echo "run_dir=$RUN_DIR"
+  echo "steady_state_wait=$STEADY_STATE_WAIT"
+  echo "post_migration_wait=$POST_MIGRATION_WAIT"
+  echo "migration_count=$MIGRATION_COUNT"
+  echo "h2_ip=$H2_IP"
+  echo "h3_ip=$H3_IP"
+  echo "vip=$VIP"
+  echo "lakewood_ssh=$LAKEWOOD_SSH"
+  echo "loveland_ssh=$LOVELAND_SSH"
+  echo "checkpoint_dir=$CHECKPOINT_DIR"
+  echo "server_image=$SERVER_IMAGE"
+  echo "controller_url=$CONTROLLER_URL"
+} > "$RUN_DIR/config.txt"
+
+# Tee all output to experiment log
+exec > >(tee "$RUN_DIR/experiment.log") 2>&1
 
 # -----------------------------------------------------------------------------
 # Helpers
@@ -53,7 +80,16 @@ cleanup_on_exit() {
         wait "$COLLECTOR_PID" 2>/dev/null || true
     fi
 }
-trap cleanup_on_exit EXIT
+exit_trap() {
+    local ex=$?
+    if [[ $ex -ne 0 ]] && [[ -n "${RUN_DIR-}" ]] && [[ -f "${RUN_DIR}/experiment.log" ]]; then
+        echo "=== Experiment failed (exit $ex) ===" > "$RUN_DIR/error.log"
+        tail -n 300 "$RUN_DIR/experiment.log" >> "$RUN_DIR/error.log" 2>/dev/null || true
+    fi
+    cleanup_on_exit
+    exit $ex
+}
+trap exit_trap EXIT
 
 # =============================================================================
 # Step 1: SSH connectivity
@@ -84,14 +120,23 @@ else
     echo "Building $SERVER_IMAGE on lakewood..."
     on_lakewood "cd $REMOTE_PROJECT_DIR/experiments && sudo podman build -t $SERVER_IMAGE -f cmd/server/Containerfile ."
 fi
-# Restore on loveland needs the same image (checkpoint uses short name for CNI)
-if on_loveland "sudo podman image exists $SERVER_IMAGE 2>/dev/null"; then
-    echo "Image $SERVER_IMAGE already exists on loveland"
-else
-    echo "Building $SERVER_IMAGE on loveland (required for restore)..."
-    on_loveland "cd $REMOTE_PROJECT_DIR/experiments && sudo podman build -t $SERVER_IMAGE -t localhost/${SERVER_IMAGE}:latest -f cmd/server/Containerfile ."
+# Restore on loveland needs the *same* image ID as lakewood (checkpoint references it). Sync once instead of transferring on every migration.
+SERVER_IMAGE_ID=$(on_lakewood "sudo podman image inspect $SERVER_IMAGE --format '{{.Id}}' 2>/dev/null" | sed 's/^sha256://' || true)
+if [[ -z "$SERVER_IMAGE_ID" || ${#SERVER_IMAGE_ID} -ne 64 ]]; then
+    echo "ERROR: Could not get image ID for $SERVER_IMAGE on lakewood."
+    exit 1
 fi
-on_loveland "sudo podman tag localhost/${SERVER_IMAGE}:latest $SERVER_IMAGE 2>/dev/null" || true
+if on_loveland "sudo podman image exists $SERVER_IMAGE_ID 2>/dev/null"; then
+    echo "Image $SERVER_IMAGE_ID already present on loveland (skip sync)"
+else
+    echo "Syncing server image lakewood→loveland (one-time)..."
+    SYNC_TMP=/tmp/cr_image_sync_$$
+    on_lakewood "sudo podman save -o $SYNC_TMP.img $SERVER_IMAGE_ID && sudo chown \$(whoami) $SYNC_TMP.img"
+    ssh $SSH_OPTS -o ForwardAgent=yes "$LAKEWOOD_SSH" "scp -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=60 $SYNC_TMP.img $LOVELAND_SSH:$SYNC_TMP.img"
+    on_lakewood "rm -f $SYNC_TMP.img"
+    on_loveland "sudo podman load -i $SYNC_TMP.img && rm -f $SYNC_TMP.img"
+    echo "Server image synced."
+fi
 
 if on_lakewood "sudo podman image exists $LOADGEN_IMAGE 2>/dev/null"; then
     echo "Image $LOADGEN_IMAGE already exists on lakewood"
@@ -203,11 +248,9 @@ printf "\n╔══════════════════════�
 printf "║  Step 7: Start metrics collector         ║\n"
 printf "╚══════════════════════════════════════════╝\n\n"
 
-COLLECTOR_OUTPUT="$SCRIPT_DIR/$RESULTS_DIR/metrics.csv"
-MIGRATION_FLAG="$SCRIPT_DIR/$RESULTS_DIR/migration_timing.txt"
-mkdir -p "$(dirname "$COLLECTOR_OUTPUT")"
-# Remove stale migration flag from previous run so collector only detects migration when cr_hw.sh writes it
-rm -f "$MIGRATION_FLAG"
+COLLECTOR_OUTPUT="$RUN_DIR/metrics.csv"
+MIGRATION_FLAG="$RUN_DIR/migration_timing.txt"
+# No stale flag: RUN_DIR is fresh; cr_hw.sh will write migration_timing.txt on each migration
 
 (cd "$SCRIPT_DIR" && go run "./cmd/collector/" \
     -server-metrics "http://${VIP}:${METRICS_PORT}/metrics" \
@@ -228,30 +271,46 @@ printf "║  Step 8: Healthy, then %3ds steady-state ║\n" "$STEADY_STATE_WAIT"
 printf "╚══════════════════════════════════════════╝\n\n"
 
 echo "Waiting for server to become healthy..."
-# Brief delay so we don't spam before the container is listening
-sleep 2
-for i in $(seq 1 40); do
-    if on_lakewood "curl -s --connect-timeout 1 http://${H2_IP}:${METRICS_PORT}/health" >/dev/null 2>&1; then
-        echo "Server healthy after $(( 2 + (i - 1) / 2 ))s"
+HEALTH_START=$(date +%s%N)
+for i in $(seq 1 80); do
+    if on_lakewood "curl -s --connect-timeout 2 --max-time 3 http://${H2_IP}:${METRICS_PORT}/health" >/dev/null 2>&1; then
+        HEALTH_MS=$(( ($(date +%s%N) - HEALTH_START) / 1000000 ))
+        echo "Server healthy after ${HEALTH_MS} ms"
+        echo "health_check_ms=$HEALTH_MS" >> "$RUN_DIR/config.txt"
         break
     fi
-    sleep 0.5
+    if [[ $i -eq 80 ]]; then
+        echo "ERROR: Server did not become healthy within 12s"
+        exit 1
+    fi
+    sleep 0.15
 done
 
 echo "Waiting ${STEADY_STATE_WAIT}s for steady-state streaming..."
 sleep "$STEADY_STATE_WAIT"
 
 # =============================================================================
-# Step 9: Migrate
+# Step 9: CRIU migration(s) — N chained migrations without cleaning state
 # =============================================================================
-printf "\n╔══════════════════════════════════════════╗\n"
-printf "║  Step 9: CRIU migration lakewood→loveland║\n"
-printf "╚══════════════════════════════════════════╝\n\n"
-
-"$SCRIPT_DIR/cr_hw.sh"
+export CR_HW_RESULTS_PATH="$RUN_DIR"
+for (( i=1; i <= MIGRATION_COUNT; i++ )); do
+  if [[ $(( i % 2 )) -eq 1 ]]; then
+    direction="lakewood_loveland"
+  else
+    direction="loveland_lakewood"
+  fi
+  printf "\n╔══════════════════════════════════════════╗\n"
+  printf "║  Step 9.%d: CRIU migration %s (%d/%d)   ║\n" "$i" "$direction" "$i" "$MIGRATION_COUNT"
+  printf "╚══════════════════════════════════════════╝\n\n"
+  "$SCRIPT_DIR/cr_hw.sh" "$direction"
+  if [[ $i -lt $MIGRATION_COUNT ]]; then
+    printf "\nWaiting %3ds before next migration...\n" "$POST_MIGRATION_WAIT"
+    sleep "$POST_MIGRATION_WAIT"
+  fi
+done
 
 # =============================================================================
-# Step 10: Post-migration wait
+# Step 10: Post-migration wait (after last migration)
 # =============================================================================
 printf "\n╔══════════════════════════════════════════╗\n"
 printf "║  Step 10: Waiting %3ds post-migration    ║\n" "$POST_MIGRATION_WAIT"
@@ -277,16 +336,20 @@ if [[ -f "$SCRIPT_DIR/analysis/plot_metrics.py" ]] && [[ -f "$COLLECTOR_OUTPUT" 
     pip install -q -r requirements.txt 2>/dev/null || true
     python3 plot_metrics.py \
         --csv "$COLLECTOR_OUTPUT" \
-        --output-dir "$SCRIPT_DIR/$RESULTS_DIR/" \
+        --migration-flag "$MIGRATION_FLAG" \
+        --output-dir "$RUN_DIR" \
         2>/dev/null && echo "Plots generated." || echo "Plot generation failed (non-fatal)."
     cd "$SCRIPT_DIR"
 fi
 
 echo ""
-echo "Results saved to: $SCRIPT_DIR/$RESULTS_DIR/"
-ls -la "$SCRIPT_DIR/$RESULTS_DIR/" 2>/dev/null || true
+echo "Results in: $RUN_DIR"
+ls -la "$RUN_DIR" 2>/dev/null || true
 
 printf "\n╔══════════════════════════════════════════╗\n"
 printf "║  Experiment complete!                    ║\n"
 printf "╚══════════════════════════════════════════╝\n\n"
+printf "Run dir: %s\n" "$RUN_DIR"
+printf "  config.txt, experiment.log, metrics.csv, migration_timing.txt\n"
+printf "  *.png (plots), error.log (only if failed)\n"
 printf "To clean up: ./clean_hw.sh\n"
