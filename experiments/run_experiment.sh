@@ -108,42 +108,30 @@ on_loveland "ip link show $LOVELAND_NIC >/dev/null 2>&1" || { echo "FAIL: $LOVEL
 echo "NICs OK"
 
 # =============================================================================
-# Step 2: Build container images on lakewood (if missing)
+# Step 2: Build container images on lakewood (always — ensures latest code)
 # =============================================================================
 printf "\n╔══════════════════════════════════════════╗\n"
 printf "║  Step 2: Build container images          ║\n"
 printf "╚══════════════════════════════════════════╝\n\n"
 
-if on_lakewood "sudo podman image exists $SERVER_IMAGE 2>/dev/null"; then
-    echo "Image $SERVER_IMAGE already exists on lakewood"
-else
-    echo "Building $SERVER_IMAGE on lakewood..."
-    on_lakewood "cd $REMOTE_PROJECT_DIR/experiments && sudo podman build -t $SERVER_IMAGE -f cmd/server/Containerfile ."
-fi
-# Restore on loveland needs the *same* image ID as lakewood (checkpoint references it). Sync once instead of transferring on every migration.
+echo "Building $SERVER_IMAGE on lakewood..."
+on_lakewood "cd $REMOTE_PROJECT_DIR/experiments && sudo podman build -t $SERVER_IMAGE -f cmd/server/Containerfile ."
+
 SERVER_IMAGE_ID=$(on_lakewood "sudo podman image inspect $SERVER_IMAGE --format '{{.Id}}' 2>/dev/null" | sed 's/^sha256://' || true)
 if [[ -z "$SERVER_IMAGE_ID" || ${#SERVER_IMAGE_ID} -ne 64 ]]; then
     echo "ERROR: Could not get image ID for $SERVER_IMAGE on lakewood."
     exit 1
 fi
-if on_loveland "sudo podman image exists $SERVER_IMAGE_ID 2>/dev/null"; then
-    echo "Image $SERVER_IMAGE_ID already present on loveland (skip sync)"
-else
-    echo "Syncing server image lakewood→loveland (one-time)..."
-    SYNC_TMP=/tmp/cr_image_sync_$$
-    on_lakewood "sudo podman save -o $SYNC_TMP.img $SERVER_IMAGE_ID && sudo chown \$(whoami) $SYNC_TMP.img"
-    ssh $SSH_OPTS -o ForwardAgent=yes "$LAKEWOOD_SSH" "scp -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=60 $SYNC_TMP.img $LOVELAND_SSH:$SYNC_TMP.img"
-    on_lakewood "rm -f $SYNC_TMP.img"
-    on_loveland "sudo podman load -i $SYNC_TMP.img && rm -f $SYNC_TMP.img"
-    echo "Server image synced."
-fi
+echo "Syncing server image lakewood→loveland..."
+SYNC_TMP=/tmp/cr_image_sync_$$
+on_lakewood "sudo podman save -o $SYNC_TMP.img $SERVER_IMAGE_ID && sudo chown \$(whoami) $SYNC_TMP.img"
+ssh $SSH_OPTS -o ForwardAgent=yes "$LAKEWOOD_SSH" "scp -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=60 $SYNC_TMP.img $LOVELAND_SSH:$SYNC_TMP.img"
+on_lakewood "rm -f $SYNC_TMP.img"
+on_loveland "sudo podman load -i $SYNC_TMP.img && rm -f $SYNC_TMP.img"
+echo "Server image synced."
 
-if on_lakewood "sudo podman image exists $LOADGEN_IMAGE 2>/dev/null"; then
-    echo "Image $LOADGEN_IMAGE already exists on lakewood"
-else
-    echo "Building $LOADGEN_IMAGE on lakewood..."
-    on_lakewood "cd $REMOTE_PROJECT_DIR/experiments && sudo podman build -t $LOADGEN_IMAGE -f cmd/loadgen/Containerfile ."
-fi
+echo "Building $LOADGEN_IMAGE on lakewood..."
+on_lakewood "cd $REMOTE_PROJECT_DIR/experiments && sudo podman build -t $LOADGEN_IMAGE -f cmd/loadgen/Containerfile ."
 
 # =============================================================================
 # Step 3: Start switchd on tofino (if not running)
@@ -272,18 +260,19 @@ printf "╚═══════════════════════
 
 echo "Waiting for server to become healthy..."
 HEALTH_START=$(date +%s%N)
-for i in $(seq 1 80); do
-    if on_lakewood "curl -s --connect-timeout 2 --max-time 3 http://${H2_IP}:${METRICS_PORT}/health" >/dev/null 2>&1; then
+# Short curl timeout (1s) so each attempt doesn't hang; server can take 30-40s to start
+for i in $(seq 1 90); do
+    if on_lakewood "curl -s --connect-timeout 1 --max-time 1 http://${H2_IP}:${METRICS_PORT}/health" >/dev/null 2>&1; then
         HEALTH_MS=$(( ($(date +%s%N) - HEALTH_START) / 1000000 ))
         echo "Server healthy after ${HEALTH_MS} ms"
         echo "health_check_ms=$HEALTH_MS" >> "$RUN_DIR/config.txt"
         break
     fi
-    if [[ $i -eq 80 ]]; then
-        echo "ERROR: Server did not become healthy within 12s"
+    if [[ $i -eq 90 ]]; then
+        echo "ERROR: Server did not become healthy within 90s"
         exit 1
     fi
-    sleep 0.15
+    sleep 0.2
 done
 
 echo "Waiting ${STEADY_STATE_WAIT}s for steady-state streaming..."
