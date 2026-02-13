@@ -42,25 +42,36 @@ def update_src_addr(file_path, old_addr, new_addr):
         updated = False
         addrs = []
         for entry in data.get("entries", []):
-            if entry.get("type") == "INETSK":
-                src_addrs = entry.get("isk", {}).get("src_addr")
-                addrs.append(src_addrs)
-                if old_addr in (src_addrs or []):
-                    entry["isk"]["src_addr"] = [new_addr]
-                    print(
-                        f"Updated src_addr from {old_addr} to "
-                        f"{new_addr} in {file_path}"
-                    )
-                    updated = True
-                elif src_addrs and any(
-                    a in ("::", "0.0.0.0") for a in (src_addrs or [])
-                ):
-                    # Container listens on 0.0.0.0 / :: (all interfaces); CRIU stores as :: or 0.0.0.0
-                    entry["isk"]["src_addr"] = [new_addr]
-                    print(
-                        f"Updated src_addr (was {src_addrs}) to {new_addr} in {file_path}"
-                    )
-                    updated = True
+            if entry.get("type") != "INETSK":
+                continue
+            isk = entry.get("isk", {})
+            src_addrs = isk.get("src_addr")
+            addrs.append(src_addrs)
+            # Only patch IPv4 sockets (family 2). Patching IPv6 (family 10) with IPv4 causes CRIU restore -52.
+            family = isk.get("family")
+            if family is not None and int(family) != 2:
+                continue
+            if old_addr in (src_addrs or []):
+                entry["isk"]["src_addr"] = [new_addr]
+                print(
+                    f"Updated src_addr from {old_addr} to "
+                    f"{new_addr} in {file_path}"
+                )
+                updated = True
+            elif src_addrs and any(a == "0.0.0.0" for a in (src_addrs or [])):
+                # IPv4 listen on 0.0.0.0 (all interfaces)
+                entry["isk"]["src_addr"] = [new_addr]
+                print(
+                    f"Updated src_addr (was {src_addrs}) to {new_addr} in {file_path}"
+                )
+                updated = True
+            elif src_addrs and any(a == "::" for a in (src_addrs or [])) and (family is None or int(family) == 2):
+                # :: with family 2 or unset: treat as IPv4 listen-all (0.0.0.0)
+                entry["isk"]["src_addr"] = [new_addr]
+                print(
+                    f"Updated src_addr (was {src_addrs}) to {new_addr} in {file_path}"
+                )
+                updated = True
 
         if not updated:
             print(
