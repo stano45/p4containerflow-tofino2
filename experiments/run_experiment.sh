@@ -213,7 +213,7 @@ printf "Collector started (PID %s)\n" "$COLLECTOR_PID"
 # Step 8: Wait for steady-state
 # =============================================================================
 printf "\n╔══════════════════════════════════════════╗\n"
-printf "║  Step 8: Waiting %3ds for steady-state   ║\n" "$STEADY_STATE_WAIT"
+printf "║  Step 8: Healthy, then %3ds steady-state ║\n" "$STEADY_STATE_WAIT"
 printf "╚══════════════════════════════════════════╝\n\n"
 
 echo "Waiting for server to become healthy..."
