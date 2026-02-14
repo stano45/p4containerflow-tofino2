@@ -204,13 +204,13 @@ def plot_container_stats(df: pd.DataFrame, migration_ms: int | None, output_dir:
 
 
 def plot_migration_timing(event: dict | None, output_dir: str, show: bool):
-    """Bar chart of migration phase durations."""
+    """Bar chart of migration phase durations. Uses time_to_ready_ms (client-visible) when present."""
     if event is None:
         return
 
-    # Use the tightly-measured _ms values from the timing file (not the ns
-    # timestamps, which have SSH-overhead gaps between phases).
     try:
+        # Prefer client-visible total (downtime); fall back to full script total
+        time_to_ready = int(event.get("time_to_ready_ms", event["total_ms"]))
         total = int(event["total_ms"])
         checkpoint = int(event["checkpoint_ms"])
         transfer = int(event["transfer_ms"])
@@ -226,7 +226,10 @@ def plot_migration_timing(event: dict | None, output_dir: str, show: bool):
     fig, ax = plt.subplots(figsize=(8, 5))
     bars = ax.barh(phases, durations_ms, color=["#4CAF50", "#03A9F4", "#2196F3", "#FF9800", "#9C27B0"])
     ax.set_xlabel("Duration (ms)")
-    ax.set_title(f"Migration Phase Breakdown (total: {total} ms)")
+    title = f"Migration phases — client-visible (to ready): {time_to_ready} ms"
+    if total != time_to_ready:
+        title += f"  |  full script: {total} ms"
+    ax.set_title(title)
     ax.grid(True, axis="x", alpha=0.3)
 
     for bar, val in zip(bars, durations_ms):
@@ -284,6 +287,8 @@ def main():
     print(f"Duration: {df['t_sec'].iloc[-1]:.1f}s")
     if m_ms is not None and t0 is not None:
         print(f"Migration event at t={((m_ms - t0) / 1000.0):.1f}s")
+    if event is not None and "time_to_ready_ms" in event:
+        print(f"Client-visible (time to ready): {int(event['time_to_ready_ms'])} ms")
 
     plot_server_metrics(df, m_ms, args.output_dir, args.show)
     plot_ping_rtt(df, m_ms, args.output_dir, args.show)
