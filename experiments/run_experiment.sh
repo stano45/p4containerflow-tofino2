@@ -114,13 +114,6 @@ on_lakewood "ip link show $LAKEWOOD_NIC >/dev/null 2>&1" || { echo "FAIL: $LAKEW
 on_loveland "ip link show $LOVELAND_NIC >/dev/null 2>&1" || { echo "FAIL: $LOVELAND_NIC on loveland"; exit 1; }
 echo "NICs OK"
 
-echo "--- Syncing experiment scripts to lab nodes ---"
-rsync -az --exclude='results/' --exclude='cmd/' --exclude='analysis/' \
-  "$SCRIPT_DIR/" "$LAKEWOOD_SSH:$REMOTE_PROJECT_DIR/experiments/"
-rsync -az --exclude='results/' --exclude='cmd/' --exclude='analysis/' \
-  "$SCRIPT_DIR/" "$LOVELAND_SSH:$REMOTE_PROJECT_DIR/experiments/"
-echo "Scripts synced."
-
 echo "--- Building and deploying edit_checkpoint (Rust) to lab nodes ---"
 if [[ -d "$SCRIPT_DIR/../scripts/edit_checkpoint" ]] && command -v cargo >/dev/null 2>&1; then
   (cd "$SCRIPT_DIR/../scripts/edit_checkpoint" && cargo build --release 2>/dev/null) && \
