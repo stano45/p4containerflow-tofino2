@@ -121,6 +121,26 @@ rsync -az --exclude='results/' --exclude='cmd/' --exclude='analysis/' \
   "$SCRIPT_DIR/" "$LOVELAND_SSH:$REMOTE_PROJECT_DIR/experiments/"
 echo "Scripts synced."
 
+echo "--- Building and deploying edit_checkpoint (Rust) to lab nodes ---"
+if [[ -d "$SCRIPT_DIR/../scripts/edit_checkpoint" ]] && command -v cargo >/dev/null 2>&1; then
+  (cd "$SCRIPT_DIR/../scripts/edit_checkpoint" && cargo build --release 2>/dev/null) && \
+  REMOTE_EDIT_BIN="${REMOTE_EDIT_BIN:-/tmp/edit_checkpoint}" && \
+  on_lakewood "sudo rm -f $REMOTE_EDIT_BIN; rm -f $REMOTE_EDIT_BIN" 2>/dev/null || true && \
+  on_loveland "sudo rm -f $REMOTE_EDIT_BIN; rm -f $REMOTE_EDIT_BIN" 2>/dev/null || true && \
+  scp $SSH_OPTS "$SCRIPT_DIR/../scripts/edit_checkpoint/target/release/edit_checkpoint" "$LAKEWOOD_SSH:$REMOTE_EDIT_BIN" 2>/dev/null && \
+  scp $SSH_OPTS "$SCRIPT_DIR/../scripts/edit_checkpoint/target/release/edit_checkpoint" "$LOVELAND_SSH:$REMOTE_EDIT_BIN" 2>/dev/null && \
+  on_lakewood "chmod +x $REMOTE_EDIT_BIN" 2>/dev/null || true && \
+  on_loveland "chmod +x $REMOTE_EDIT_BIN" 2>/dev/null || true && \
+  echo "edit_checkpoint deployed to both nodes." || echo "edit_checkpoint build/deploy skipped (will use Python)."
+else
+  echo "edit_checkpoint skipped (no cargo or script dir); will use Python edit on target."
+fi
+
+echo "--- Ensuring socat on lakewood and loveland (for direct-link transfer) ---"
+on_lakewood "command -v socat >/dev/null 2>&1 || { sudo dnf install -y socat 2>/dev/null || sudo apt-get install -y socat; }"
+on_loveland "command -v socat >/dev/null 2>&1 || { sudo dnf install -y socat 2>/dev/null || sudo apt-get install -y socat; }"
+echo "socat OK"
+
 # =============================================================================
 # Step 2: Build container images on lakewood (always — ensures latest code)
 # =============================================================================
@@ -258,6 +278,7 @@ REMOTE_MIGRATION_FLAG="/tmp/collector_migration_flag"
 # Build collector binary for linux/amd64 and deploy to lakewood
 printf "Building collector binary...\n"
 (cd "$SCRIPT_DIR" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/webrtc-collector-build ./cmd/collector/)
+on_lakewood "sudo rm -f $REMOTE_COLLECTOR_BIN; rm -f $REMOTE_COLLECTOR_BIN"
 scp $SSH_OPTS /tmp/webrtc-collector-build "$LAKEWOOD_SSH:$REMOTE_COLLECTOR_BIN"
 rm -f /tmp/webrtc-collector-build
 
