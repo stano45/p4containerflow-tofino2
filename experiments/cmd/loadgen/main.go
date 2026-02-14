@@ -7,8 +7,9 @@
 //   - RTP sequence gaps (packet loss indicator)
 //   - Total packets received
 //
-// Metrics are printed as JSON lines to stdout, one line per measurement
-// interval per peer.  The collector (or a pipe to a file) can consume these.
+// The loadgen retries connections at startup until the server is reachable,
+// and automatically reconnects peers that disconnect (e.g. after migration).
+// Sending SIGUSR1 forces immediate reconnection of all peers.
 //
 // Usage:
 //
@@ -17,6 +18,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -55,7 +57,7 @@ type peerMetrics struct {
 	PacketsReceived    uint64  `json:"packets_received"`
 	SequenceGaps       uint64  `json:"sequence_gaps"`
 	Connected          bool    `json:"connected"`
-	FirstPacketMs      int64   `json:"first_packet_ms,omitempty"` // millis since peer created
+	FirstPacketMs      int64   `json:"first_packet_ms,omitempty"`
 	BytesPerSecond     float64 `json:"bytes_per_second"`
 }
 
@@ -94,7 +96,6 @@ func connectPeer(id int, serverURL string) (*peer, error) {
 		prevTime: time.Now(),
 	}
 
-	// We want to receive video
 	if _, err := pc.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo, webrtc.RTPTransceiverInit{
 		Direction: webrtc.RTPTransceiverDirectionRecvonly,
 	}); err != nil {
@@ -102,22 +103,16 @@ func connectPeer(id int, serverURL string) (*peer, error) {
 		return nil, fmt.Errorf("add transceiver: %w", err)
 	}
 
-	// Handle incoming track
 	pc.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 		log.Printf("[peer-%d] got track: %s (codec=%s)", id, track.ID(), track.Codec().MimeType)
-
 		buf := make([]byte, 1500)
 		for {
 			n, _, err := track.Read(buf)
 			if err != nil {
-				log.Printf("[peer-%d] track read error: %v", id, err)
 				return
 			}
-
 			p.bytesReceived.Add(uint64(n))
 			pktNum := p.packetsReceived.Add(1)
-
-			// Record time to first packet
 			if pktNum == 1 {
 				p.firstPacketMs.Store(time.Since(p.start).Milliseconds())
 			}
@@ -136,7 +131,6 @@ func connectPeer(id int, serverURL string) (*peer, error) {
 		}
 	})
 
-	// Create offer
 	offer, err := pc.CreateOffer(nil)
 	if err != nil {
 		pc.Close()
@@ -150,9 +144,9 @@ func connectPeer(id int, serverURL string) (*peer, error) {
 	}
 	<-gatherComplete
 
-	// Send offer to server
 	offerJSON, _ := json.Marshal(pc.LocalDescription())
-	resp, err := http.Post(serverURL+"/offer", "application/json", bytes.NewReader(offerJSON))
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(serverURL+"/offer", "application/json", bytes.NewReader(offerJSON))
 	if err != nil {
 		pc.Close()
 		return nil, fmt.Errorf("POST /offer: %w", err)
@@ -176,6 +170,33 @@ func connectPeer(id int, serverURL string) (*peer, error) {
 	}
 
 	return p, nil
+}
+
+// connectPeerWithRetry keeps retrying until success or context cancelled.
+func connectPeerWithRetry(ctx context.Context, id int, serverURL string) *peer {
+	backoff := 500 * time.Millisecond
+	maxBackoff := 3 * time.Second
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+		p, err := connectPeer(id, serverURL)
+		if err == nil {
+			return p
+		}
+		log.Printf("[peer-%d] connect failed: %v (retrying in %s)", id, err, backoff)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(backoff):
+		}
+		backoff = backoff * 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
 }
 
 // snapshot returns current metrics and resets the per-interval counters.
@@ -220,60 +241,173 @@ func main() {
 	log.Printf("Load generator: server=%s peers=%d interval=%s duration=%s",
 		*serverURL, *numPeers, *interval, *duration)
 
-	// JSON line encoder on stdout
 	enc := json.NewEncoder(os.Stdout)
 
-	var peers []*peer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Signal handling: SIGINT/SIGTERM to quit
+	quitCh := make(chan os.Signal, 1)
+	signal.Notify(quitCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-quitCh
+		log.Println("Shutting down...")
+		cancel()
+	}()
+
+	// SIGUSR1 forces immediate reconnection of all peers
+	forceReconnect := make(chan struct{}, 1)
+	usr1Ch := make(chan os.Signal, 1)
+	signal.Notify(usr1Ch, syscall.SIGUSR1)
+	go func() {
+		for range usr1Ch {
+			log.Println("SIGUSR1 received — forcing reconnection of all peers")
+			select {
+			case forceReconnect <- struct{}{}:
+			default:
+			}
+		}
+	}()
+
+	peers := make([]*peer, *numPeers)
 	var mu sync.Mutex
 
-	// Connect peers with ramp-up delay
+	// Connect peers with retry (blocks until server reachable or cancelled)
 	for i := 0; i < *numPeers; i++ {
-		p, err := connectPeer(i, *serverURL)
-		if err != nil {
-			log.Printf("[peer-%d] connect failed: %v", i, err)
-			continue
+		p := connectPeerWithRetry(ctx, i, *serverURL)
+		if p == nil {
+			break // cancelled
 		}
 		mu.Lock()
-		peers = append(peers, p)
+		peers[i] = p
 		mu.Unlock()
-
+		log.Printf("[peer-%d] connected", i)
 		if i < *numPeers-1 {
 			time.Sleep(*rampUp)
 		}
 	}
+	connectedCount := 0
+	for _, p := range peers {
+		if p != nil {
+			connectedCount++
+		}
+	}
+	log.Printf("Connected %d / %d peers", connectedCount, *numPeers)
 
-	log.Printf("Connected %d / %d peers", len(peers), *numPeers)
+	// reconnectAll closes all peers and reconnects them. Called from
+	// the reconnector goroutine when SIGUSR1 is received or health
+	// check detects the server moved.
+	reconnectAll := func() {
+		mu.Lock()
+		// Close all existing peer connections
+		for i, p := range peers {
+			if p != nil {
+				p.pc.Close()
+				peers[i] = nil
+			}
+		}
+		mu.Unlock()
+
+		// Reconnect each peer (not holding the lock)
+		for i := 0; i < *numPeers; i++ {
+			newP := connectPeerWithRetry(ctx, i, *serverURL)
+			if newP == nil {
+				break // context cancelled
+			}
+			mu.Lock()
+			peers[i] = newP
+			mu.Unlock()
+			log.Printf("[peer-%d] reconnected", i)
+			if i < *numPeers-1 {
+				time.Sleep(*rampUp)
+			}
+		}
+	}
+
+	// Reconnector goroutine: responds to SIGUSR1 or health-check failures
+	go func() {
+		healthClient := &http.Client{Timeout: 2 * time.Second}
+		healthTicker := time.NewTicker(2 * time.Second)
+		defer healthTicker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+
+			case <-forceReconnect:
+				log.Println("Reconnecting all peers (forced)")
+				reconnectAll()
+
+			case <-healthTicker.C:
+				// Check if any peer is connected
+				mu.Lock()
+				anyConnected := false
+				for _, p := range peers {
+					if p != nil && p.connected.Load() {
+						anyConnected = true
+						break
+					}
+				}
+				mu.Unlock()
+
+				if anyConnected {
+					// Also verify the server is still reachable
+					resp, err := healthClient.Get(*serverURL + "/health")
+					if err == nil {
+						resp.Body.Close()
+						if resp.StatusCode == http.StatusOK {
+							continue // healthy
+						}
+					}
+					// Server unreachable while peers think they're connected
+					log.Printf("Health check failed — server unreachable, reconnecting")
+					reconnectAll()
+				} else {
+					// No peers connected — check if any peer objects exist
+					mu.Lock()
+					hasPeers := false
+					for _, p := range peers {
+						if p != nil {
+							hasPeers = true
+							break
+						}
+					}
+					mu.Unlock()
+					if hasPeers {
+						// Peers exist but none connected — try reconnection
+						log.Printf("No peers connected — attempting reconnection")
+						reconnectAll()
+					}
+				}
+			}
+		}
+	}()
 
 	// Metrics reporting loop
 	ticker := time.NewTicker(*interval)
 	defer ticker.Stop()
 
-	// Duration timer
 	var durationCh <-chan time.Time
 	if *duration > 0 {
 		durationCh = time.After(*duration)
 	}
 
-	// Signal handling
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
 	for {
 		select {
+		case <-ctx.Done():
+			goto cleanup
 		case <-ticker.C:
 			mu.Lock()
 			for _, p := range peers {
-				m := p.snapshot()
-				enc.Encode(m)
+				if p != nil {
+					m := p.snapshot()
+					enc.Encode(m)
+				}
 			}
 			mu.Unlock()
-
 		case <-durationCh:
 			log.Printf("Duration reached, shutting down")
-			goto cleanup
-
-		case sig := <-sigCh:
-			log.Printf("Received %s, shutting down", sig)
 			goto cleanup
 		}
 	}
@@ -281,7 +415,9 @@ func main() {
 cleanup:
 	mu.Lock()
 	for _, p := range peers {
-		p.pc.Close()
+		if p != nil {
+			p.pc.Close()
+		}
 	}
 	mu.Unlock()
 	log.Printf("Load generator finished")

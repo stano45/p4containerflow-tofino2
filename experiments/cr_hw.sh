@@ -76,6 +76,14 @@ if [[ -z "$SOURCE_IMAGE_ID" || ${#SOURCE_IMAGE_ID} -ne 64 ]]; then
     exit 1
 fi
 
+# Start target prep in background (overlaps with checkpoint) so SSH to target runs in parallel with dump
+if [[ "${CR_SKIP_IMAGE_CHECK:-0}" = "1" ]]; then
+  on_target "sudo mkdir -p $CHECKPOINT_DIR && sudo chmod 777 $CHECKPOINT_DIR && sudo rm -f $CHECKPOINT_DIR/checkpoint.tar; echo OK" > /tmp/cr_target_prep_$$.out 2>&1 &
+else
+  on_target "sudo mkdir -p $CHECKPOINT_DIR && sudo chmod 777 $CHECKPOINT_DIR && sudo podman image exists $SOURCE_IMAGE_ID 2>/dev/null && sudo rm -f $CHECKPOINT_DIR/checkpoint.tar; echo IMG_OK" > /tmp/cr_target_prep_$$.out 2>&1 &
+fi
+TARGET_PREP_PID=$!
+
 on_source "
     sudo mkdir -p $CHECKPOINT_DIR
     sudo podman container checkpoint \
@@ -97,16 +105,14 @@ printf "Checkpoint completed in %d ms\n" "$CHECKPOINT_MS"
 # =============================================================================
 printf "\n----- Step 2: Direct transfer %s → %s -----\n" "$SOURCE_NODE" "$TARGET_NODE"
 
-# --- Pre-transfer: target dir, image check, size, port setup (measured separately)
+# --- Pre-transfer: wait for target prep (started before checkpoint), then local size/port/cleanup
 PRE_TRANSFER_START=$(date +%s%N)
-# Ensure target has the directory
-on_target "sudo mkdir -p $CHECKPOINT_DIR && sudo chmod 777 $CHECKPOINT_DIR"
-
-# Image must already exist on target (synced at experiment setup). Transfer only the checkpoint.
-if ! on_target "sudo podman image exists $SOURCE_IMAGE_ID 2>/dev/null"; then
-    echo "ERROR: Image $SOURCE_IMAGE_ID not found on $TARGET_NODE."
-    echo "  Run full experiment setup (run_experiment.sh) so the server image is synced to both nodes."
-    exit 1
+wait $TARGET_PREP_PID 2>/dev/null || true
+TARGET_PREP=$(cat /tmp/cr_target_prep_$$.out 2>/dev/null); rm -f /tmp/cr_target_prep_$$.out
+if [[ "${CR_SKIP_IMAGE_CHECK:-0}" = "1" ]]; then
+  [[ "$TARGET_PREP" = *"OK"* ]] || { echo "ERROR: Target pre-transfer prep failed."; exit 1; }
+else
+  [[ "$TARGET_PREP" = *"IMG_OK"* ]] || { echo "ERROR: Image $SOURCE_IMAGE_ID not found on $TARGET_NODE or target prep failed."; exit 1; }
 fi
 
 CHECKPOINT_SIZE=$(on_source "sudo stat -c%s $CHECKPOINT_DIR/checkpoint.tar 2>/dev/null" || echo 0)
@@ -114,7 +120,6 @@ IMAGE_SIZE=0
 
 # Direct link (Mellanox 25G DAC). Use socat with reverse connection: source listens, target
 # connects — no sleep needed; listener is up before connector runs.
-# Ensure source's direct-link interface is up (may be DOWN after reboot).
 on_source "sudo ip link set $SOURCE_DIRECT_IF up 2>/dev/null || true"
 
 # Use random port (32000–33999); override with CR_TRANSFER_PORT if set
@@ -125,16 +130,14 @@ else
 fi
 printf "Transferring %.1f MB to %s via direct link (port %s)...\n" "$(echo "scale=1; ${CHECKPOINT_SIZE:-0} / 1048576" | bc)" "$TARGET_NODE" "$TRANSFER_PORT"
 
-# Stale listener on source port; old file on target
+# Kill stale listener on source (local)
 on_source "sudo fuser -k ${TRANSFER_PORT}/tcp 2>/dev/null || true"
-on_target "sudo rm -f $CHECKPOINT_DIR/checkpoint.tar; true"
 
 PRE_TRANSFER_DONE=$(date +%s%N)
 PRE_TRANSFER_MS=$(( (PRE_TRANSFER_DONE - PRE_TRANSFER_START) / 1000000 ))
 
-# Reverse connection: target connects, source listens. Start connector with short delay so
-# listener is up first; run listener in foreground so we need no PID and no long sleep.
-( sleep 0.02; on_target "socat STDIO TCP:${SOURCE_DIRECT_IP}:${TRANSFER_PORT} > $CHECKPOINT_DIR/checkpoint.tar" ) &
+# Reverse connection: target connects, source listens. Short delay so listener is up first.
+( sleep 0.005; on_target "socat STDIO TCP:${SOURCE_DIRECT_IP}:${TRANSFER_PORT} > $CHECKPOINT_DIR/checkpoint.tar" ) &
 TARGET_PID=$!
 TRANSFER_START=$(date +%s%N)
 on_source "sudo bash -c \"socat TCP-LISTEN:${TRANSFER_PORT},bind=${SOURCE_DIRECT_IP},reuseaddr STDIN < ${CHECKPOINT_DIR}/checkpoint.tar\"" || {
@@ -177,7 +180,7 @@ EDIT_START=$(date +%s%N)
 on_target "
     export PATH=\"\$HOME/.local/bin:\$PATH\"
     if test -x ${REMOTE_EDIT_BIN} 2>/dev/null; then
-      ${REMOTE_EDIT_BIN} $CHECKPOINT_DIR/checkpoint.tar $SOURCE_IP $TARGET_IP
+      EDIT_CHECKPOINT_TIMING=1 ${REMOTE_EDIT_BIN} $CHECKPOINT_DIR/checkpoint.tar $SOURCE_IP $TARGET_IP
     else
       python3 $REMOTE_EDIT_SCRIPT $CHECKPOINT_DIR/checkpoint.tar $SOURCE_IP $TARGET_IP
     fi
@@ -211,6 +214,19 @@ if ! on_target "
     exit 1
 fi
 on_target "sudo podman rename $CONTAINER_NAME $RENAME_AFTER_RESTORE 2>/dev/null || true"
+
+# Ensure the container's macvlan interface has the correct target IP and the VIP.
+# Run everything in a single SSH call to avoid set -e issues with command substitution.
+# Also send gratuitous ARP so neighbors learn the new MAC for the VIP immediately.
+on_target "PID=\$(sudo podman inspect --format '{{.State.Pid}}' $RENAME_AFTER_RESTORE 2>/dev/null || sudo podman inspect --format '{{.State.Pid}}' $CONTAINER_NAME 2>/dev/null || echo 0); if [ \"\$PID\" != '0' ] && [ -n \"\$PID\" ]; then sudo nsenter -t \$PID -n ip addr add $TARGET_IP/24 dev eth0 2>/dev/null || true; sudo nsenter -t \$PID -n ip addr add $VIP/24 dev eth0 2>/dev/null || true; sudo nsenter -t \$PID -n arping -U -c 2 -I eth0 $VIP >/dev/null 2>&1 & echo \"VIP $VIP + $TARGET_IP assigned (PID \$PID)\"; else echo 'WARNING: Could not determine restored container PID'; fi"
+
+# Signal the loadgen to reconnect immediately (SIGUSR1).
+# The loadgen container (webrtc-loadgen) is always on lakewood.
+if [[ "$SOURCE_NODE" = "lakewood" ]]; then
+    on_source "sudo podman exec webrtc-loadgen kill -USR1 1 2>/dev/null || true"
+else
+    on_target "sudo podman exec webrtc-loadgen kill -USR1 1 2>/dev/null || true"
+fi
 RESTORE_DONE=$(date +%s%N)
 RESTORE_MS=$(( (RESTORE_DONE - RESTORE_START) / 1000000 ))
 printf "Restore completed in %d ms\n" "$RESTORE_MS"
@@ -224,12 +240,12 @@ SWITCH_UPDATE_START=$(date +%s%N)
 printf "\n----- Step 5: Update switch tables -----\n"
 
 # Call controller from source node (direct HTTP) when reachable; else fall back to SSH to tofino
-HTTP_CODE=$(on_source "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 \
+HTTP_CODE=$(on_source "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 4 \
     -X POST '${CONTROLLER_URL}/migrateNode' \
     -H 'Content-Type: application/json' \
     -d '{\"old_ipv4\":\"${SOURCE_IP}\", \"new_ipv4\":\"${TARGET_IP}\"}'" 2>/dev/null || true)
 if [[ -z "$HTTP_CODE" || "$HTTP_CODE" = "000" ]]; then
-  HTTP_CODE=$(on_tofino "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 \
+  HTTP_CODE=$(on_tofino "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 6 \
       -X POST 'http://127.0.0.1:5000/migrateNode' \
       -H 'Content-Type: application/json' \
       -d '{\"old_ipv4\":\"${SOURCE_IP}\", \"new_ipv4\":\"${TARGET_IP}\"}'" 2>/dev/null || true)

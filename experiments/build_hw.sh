@@ -72,6 +72,11 @@ on_lakewood "
         $SERVER_IMAGE \
         ./server -signaling-addr :${SIGNALING_PORT} -metrics-addr :${METRICS_PORT}
 
+    # Add VIP as alias on server container so loadgen can reach it via macvlan
+    SPID=\$(sudo podman inspect --format '{{.State.Pid}}' webrtc-server)
+    sudo nsenter -t \$SPID -n ip addr add ${VIP}/24 dev eth0 2>/dev/null || true
+    echo \"VIP ${VIP} added to webrtc-server (PID \$SPID)\"
+
     # Client (h1)
     sudo podman run --replace --detach --privileged \
         --name webrtc-loadgen --network $HW_NET --ip $H1_IP \

@@ -114,17 +114,36 @@ on_lakewood "ip link show $LAKEWOOD_NIC >/dev/null 2>&1" || { echo "FAIL: $LAKEW
 on_loveland "ip link show $LOVELAND_NIC >/dev/null 2>&1" || { echo "FAIL: $LOVELAND_NIC on loveland"; exit 1; }
 echo "NICs OK"
 
+echo "--- Syncing experiment scripts to lab nodes ---"
+rsync -az --delete -e "ssh $SSH_OPTS" \
+    "$SCRIPT_DIR/"  "$LAKEWOOD_SSH:$REMOTE_PROJECT_DIR/experiments/"
+rsync -az --delete -e "ssh $SSH_OPTS" \
+    "$SCRIPT_DIR/"  "$LOVELAND_SSH:$REMOTE_PROJECT_DIR/experiments/"
+echo "Scripts synced"
+
 echo "--- Building and deploying edit_checkpoint (Rust) to lab nodes ---"
-if [[ -d "$SCRIPT_DIR/../scripts/edit_checkpoint" ]] && command -v cargo >/dev/null 2>&1; then
-  (cd "$SCRIPT_DIR/../scripts/edit_checkpoint" && cargo build --release 2>/dev/null) && \
-  REMOTE_EDIT_BIN="${REMOTE_EDIT_BIN:-/tmp/edit_checkpoint}" && \
-  on_lakewood "sudo rm -f $REMOTE_EDIT_BIN; rm -f $REMOTE_EDIT_BIN" 2>/dev/null || true && \
-  on_loveland "sudo rm -f $REMOTE_EDIT_BIN; rm -f $REMOTE_EDIT_BIN" 2>/dev/null || true && \
-  scp $SSH_OPTS "$SCRIPT_DIR/../scripts/edit_checkpoint/target/release/edit_checkpoint" "$LAKEWOOD_SSH:$REMOTE_EDIT_BIN" 2>/dev/null && \
-  scp $SSH_OPTS "$SCRIPT_DIR/../scripts/edit_checkpoint/target/release/edit_checkpoint" "$LOVELAND_SSH:$REMOTE_EDIT_BIN" 2>/dev/null && \
-  on_lakewood "chmod +x $REMOTE_EDIT_BIN" 2>/dev/null || true && \
-  on_loveland "chmod +x $REMOTE_EDIT_BIN" 2>/dev/null || true && \
-  echo "edit_checkpoint deployed to both nodes." || echo "edit_checkpoint build/deploy skipped (will use Python)."
+EDIT_CRATE="$SCRIPT_DIR/../scripts/edit_checkpoint"
+if [[ -d "$EDIT_CRATE" ]] && command -v cargo >/dev/null 2>&1; then
+  REMOTE_EDIT_BIN="${REMOTE_EDIT_BIN:-/tmp/edit_checkpoint}"
+  EDIT_BIN=""
+  # Prefer musl static binary (runs on nodes with older glibc)
+  if (cd "$EDIT_CRATE" && cargo build --release --target x86_64-unknown-linux-musl 2>/dev/null); then
+    EDIT_BIN="$EDIT_CRATE/target/x86_64-unknown-linux-musl/release/edit_checkpoint"
+  fi
+  if [[ -z "$EDIT_BIN" || ! -f "$EDIT_BIN" ]]; then
+    (cd "$EDIT_CRATE" && cargo build --release 2>/dev/null) && EDIT_BIN="$EDIT_CRATE/target/release/edit_checkpoint"
+  fi
+  if [[ -n "$EDIT_BIN" && -f "$EDIT_BIN" ]]; then
+    on_lakewood "sudo rm -f $REMOTE_EDIT_BIN; rm -f $REMOTE_EDIT_BIN" 2>/dev/null || true
+    on_loveland "sudo rm -f $REMOTE_EDIT_BIN; rm -f $REMOTE_EDIT_BIN" 2>/dev/null || true
+    scp $SSH_OPTS "$EDIT_BIN" "$LAKEWOOD_SSH:$REMOTE_EDIT_BIN" 2>/dev/null && \
+    scp $SSH_OPTS "$EDIT_BIN" "$LOVELAND_SSH:$REMOTE_EDIT_BIN" 2>/dev/null && \
+    on_lakewood "chmod +x $REMOTE_EDIT_BIN" 2>/dev/null || true && \
+    on_loveland "chmod +x $REMOTE_EDIT_BIN" 2>/dev/null || true && \
+    echo "edit_checkpoint deployed to both nodes." || echo "edit_checkpoint deploy failed (will use Python)."
+  else
+    echo "edit_checkpoint build failed; will use Python edit on target."
+  fi
 else
   echo "edit_checkpoint skipped (no cargo or script dir); will use Python edit on target."
 fi
@@ -133,6 +152,19 @@ echo "--- Ensuring socat on lakewood and loveland (for direct-link transfer) ---
 on_lakewood "command -v socat >/dev/null 2>&1 || { sudo dnf install -y socat 2>/dev/null || sudo apt-get install -y socat; }"
 on_loveland "command -v socat >/dev/null 2>&1 || { sudo dnf install -y socat 2>/dev/null || sudo apt-get install -y socat; }"
 echo "socat OK"
+
+echo "--- Ensuring root@lakewood can SSH to loveland via direct link (for collector) ---"
+# The collector runs as root on lakewood. It needs SSH to loveland (192.168.10.3)
+# to fetch metrics when the server migrates there. Set up root's SSH key.
+on_lakewood "sudo test -f /root/.ssh/id_ed25519 || sudo ssh-keygen -t ed25519 -N '' -f /root/.ssh/id_ed25519 -q"
+ROOT_PUB=$(on_lakewood "sudo cat /root/.ssh/id_ed25519.pub" 2>/dev/null)
+if [[ -n "$ROOT_PUB" ]]; then
+    # Authorize root@lakewood's key on loveland (kosorins32 account)
+    on_loveland "mkdir -p ~/.ssh && chmod 700 ~/.ssh && grep -qF '$(echo "$ROOT_PUB" | head -1)' ~/.ssh/authorized_keys 2>/dev/null || echo '$(echo "$ROOT_PUB" | head -1)' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+    echo "root SSH key authorized on loveland"
+else
+    echo "WARNING: Could not set up root SSH key (remote metrics may fail)"
+fi
 
 # =============================================================================
 # Step 2: Build container images on lakewood (always — ensures latest code)
@@ -278,9 +310,17 @@ rm -f /tmp/webrtc-collector-build
 # Clean stale state on lakewood
 on_lakewood "sudo rm -f $REMOTE_COLLECTOR_CSV $REMOTE_MIGRATION_FLAG"
 
+# Extract SSH user for remote stats (collector runs as root but root can't SSH; use the lab user)
+REMOTE_SSH_USER="${LOVELAND_SSH%%@*}"
+
+printf "Remote SSH user: %s\n" "$REMOTE_SSH_USER"
+
 # Start collector on lakewood (runs locally there — no SSH overhead per tick)
+# The collector runs as root (for podman/nsenter) but drops to REMOTE_SSH_USER
+# for SSH commands via "sudo -u <user> ssh" so the user's SSH keys work.
 on_lakewood "sudo nohup $REMOTE_COLLECTOR_BIN \
     -remote-direct-ip '$LOVELAND_DIRECT_IP' \
+    -remote-ssh-user '$REMOTE_SSH_USER' \
     -metrics-port $METRICS_PORT \
     -ping-hosts '${H2_IP},${H3_IP}' \
     -server-names 'webrtc-server,h3' \
@@ -337,8 +377,9 @@ for (( i=1; i <= MIGRATION_COUNT; i++ )); do
   ssh $SSH_OPTS -o ForwardAgent=yes "$migration_ssh" \
     "cd $REMOTE_PROJECT_DIR/experiments && CR_RUN_LOCAL=1 CR_HW_RESULTS_PATH=$REMOTE_RESULTS_DIR bash cr_hw.sh $direction"
 
-  # Copy migration_timing.txt back
-  scp $SSH_OPTS "$migration_ssh:$REMOTE_RESULTS_DIR/migration_timing.txt" "$RUN_DIR/migration_timing.txt"
+  # Copy migration_timing.txt back (per-migration file + latest as migration_timing.txt)
+  scp $SSH_OPTS "$migration_ssh:$REMOTE_RESULTS_DIR/migration_timing.txt" "$RUN_DIR/migration_timing_${i}.txt"
+  cp "$RUN_DIR/migration_timing_${i}.txt" "$RUN_DIR/migration_timing.txt"
 
   if [[ $i -lt $MIGRATION_COUNT ]]; then
     printf "\nWaiting %3ds before next migration...\n" "$POST_MIGRATION_WAIT"
@@ -386,7 +427,7 @@ if [[ -f "$SCRIPT_DIR/analysis/plot_metrics.py" ]] && [[ -f "$COLLECTOR_OUTPUT" 
     (pip install -q --upgrade Pillow 2>/dev/null || true)
     if python3 plot_metrics.py \
         --csv "$COLLECTOR_OUTPUT" \
-        --migration-flag "$MIGRATION_FLAG" \
+        --migration-flag "$RUN_DIR" \
         --output-dir "$RUN_DIR"; then
         echo "Plots generated."
     else
@@ -403,6 +444,8 @@ printf "\n╔══════════════════════�
 printf "║  Experiment complete!                    ║\n"
 printf "╚══════════════════════════════════════════╝\n\n"
 printf "Run dir: %s\n" "$RUN_DIR"
-printf "  config.txt, experiment.log, metrics.csv, migration_timing.txt\n"
+printf "  config.txt, experiment.log, metrics.csv, migration_timing.txt"
+[[ "$MIGRATION_COUNT" -gt 1 ]] && printf ", migration_timing_1.txt ... migration_timing_%d.txt" "$MIGRATION_COUNT"
+printf "\n"
 printf "  *.png (plots), error.log (only if failed)\n"
 printf "To clean up: ./clean_hw.sh\n"

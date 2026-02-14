@@ -12,7 +12,9 @@ Usage:
 """
 
 import argparse
+import glob
 import os
+import re
 import sys
 
 try:
@@ -38,7 +40,7 @@ parser.add_argument(
 parser.add_argument(
     "--migration-flag",
     default="/tmp/migration_event",
-    help="Path to migration event flag file (from cr.sh)",
+    help="Path to migration event file or directory (dir: load all migration_timing*.txt)",
 )
 parser.add_argument(
     "--output-dir",
@@ -53,8 +55,8 @@ parser.add_argument(
 
 
 def load_migration_event(path: str) -> dict | None:
-    """Parse the migration event flag file created by cr.sh."""
-    if not os.path.exists(path):
+    """Parse a single migration event flag file created by cr_hw.sh."""
+    if not os.path.exists(path) or not os.path.isfile(path):
         return None
     data = {}
     with open(path) as f:
@@ -63,7 +65,42 @@ def load_migration_event(path: str) -> dict | None:
             if "=" in line:
                 k, v = line.split("=", 1)
                 data[k.strip()] = v.strip()
-    return data
+    return data if data else None
+
+
+def _migration_file_sort_key(p: str) -> tuple:
+    """Sort migration_timing_1.txt, migration_timing_2.txt, ..., migration_timing.txt."""
+    basename = os.path.basename(p)
+    m = re.match(r"migration_timing_(\d+)\.txt", basename)
+    if m:
+        return (0, int(m.group(1)))
+    if basename == "migration_timing.txt":
+        return (1, 0)
+    return (2, 0)
+
+
+def load_all_migration_events(path: str) -> list[dict]:
+    """Load one or more migration event files. path can be a file or a directory."""
+    events = []
+    if os.path.isfile(path):
+        ev = load_migration_event(path)
+        if ev:
+            events.append(ev)
+        return events
+    if os.path.isdir(path):
+        # Prefer numbered files (migration_timing_1.txt, ...) to avoid duplicate with migration_timing.txt
+        files = glob.glob(os.path.join(path, "migration_timing_*.txt"))
+        files.sort(key=_migration_file_sort_key)
+        for f in files:
+            ev = load_migration_event(f)
+            if ev:
+                events.append(ev)
+        if not events:
+            single = load_migration_event(os.path.join(path, "migration_timing.txt"))
+            if single:
+                events.append(single)
+        return events
+    return []
 
 
 def migration_time_ms(event: dict | None) -> int | None:
@@ -73,7 +110,19 @@ def migration_time_ms(event: dict | None) -> int | None:
     return None
 
 
-def plot_server_metrics(df: pd.DataFrame, migration_ms: int | None, output_dir: str, show: bool):
+def _migration_times_sec(df: pd.DataFrame, migration_ms: int | list[int] | None) -> list[float]:
+    """Convert migration timestamp(s) to seconds relative to CSV start. Returns list."""
+    if migration_ms is None:
+        return []
+    if isinstance(migration_ms, int):
+        migration_ms = [migration_ms]
+    if not migration_ms or "timestamp_unix_milli" not in df.columns:
+        return []
+    t0 = float(df["timestamp_unix_milli"].iloc[0])
+    return [(m - t0) / 1000.0 for m in migration_ms]
+
+
+def plot_server_metrics(df: pd.DataFrame, migration_ms: int | list[int] | None, output_dir: str, show: bool):
     """Plot server-side metrics: connected peers, bytes sent, uptime."""
     fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
     fig.suptitle("WebRTC Server Metrics Over Time", fontsize=14)
@@ -105,12 +154,13 @@ def plot_server_metrics(df: pd.DataFrame, migration_ms: int | None, output_dir: 
     ax.set_xlabel("Experiment Time (s)")
     ax.grid(True, alpha=0.3)
 
-    # Mark migration event
-    if migration_ms is not None and "timestamp_unix_milli" in df.columns:
-        t0 = df["timestamp_unix_milli"].iloc[0]
-        m_sec = (migration_ms - t0) / 1000.0
+    # Mark migration event(s)
+    m_times = _migration_times_sec(df, migration_ms)
+    for i, m_sec in enumerate(m_times):
+        label = "Migration" if len(m_times) == 1 else f"Migration {i + 1}"
         for ax in axes:
-            ax.axvline(x=m_sec, color="red", linestyle="--", alpha=0.7, label="Migration")
+            ax.axvline(x=m_sec, color="red", linestyle="--", alpha=0.7, label=label if ax == axes[0] else None)
+    if m_times:
         axes[0].legend()
 
     plt.tight_layout()
@@ -140,10 +190,10 @@ def plot_ping_rtt(df: pd.DataFrame, migration_ms: int | None, output_dir: str, s
         vals = vals.where(vals >= 0)
         ax.plot(t, vals, linewidth=1, label=host)
 
-    if migration_ms is not None and "timestamp_unix_milli" in df.columns:
-        t0 = df["timestamp_unix_milli"].iloc[0]
-        m_sec = (migration_ms - t0) / 1000.0
-        ax.axvline(x=m_sec, color="red", linestyle="--", alpha=0.7, label="Migration")
+    m_times = _migration_times_sec(df, migration_ms)
+    for i, m_sec in enumerate(m_times):
+        label = "Migration" if len(m_times) == 1 else f"Migration {i + 1}"
+        ax.axvline(x=m_sec, color="red", linestyle="--", alpha=0.7, label=label)
 
     ax.set_ylabel("RTT (ms)")
     ax.set_xlabel("Experiment Time (s)")
@@ -160,7 +210,7 @@ def plot_ping_rtt(df: pd.DataFrame, migration_ms: int | None, output_dir: str, s
     plt.close()
 
 
-def plot_container_stats(df: pd.DataFrame, migration_ms: int | None, output_dir: str, show: bool):
+def plot_container_stats(df: pd.DataFrame, migration_ms: int | list[int] | None, output_dir: str, show: bool):
     """Plot container CPU and memory usage."""
     cpu_cols = [c for c in df.columns if c.endswith("_cpu") or (c.startswith("cpu_") and len(c) > 4)]
     if not cpu_cols:
@@ -184,10 +234,10 @@ def plot_container_stats(df: pd.DataFrame, migration_ms: int | None, output_dir:
         ax.set_ylabel(f"{name}\nCPU %")
         ax.grid(True, alpha=0.3)
 
-        if migration_ms is not None and "timestamp_unix_milli" in df.columns:
-            t0 = df["timestamp_unix_milli"].iloc[0]
-            m_sec = (migration_ms - t0) / 1000.0
-            ax.axvline(x=m_sec, color="red", linestyle="--", alpha=0.7, label="Migration")
+        m_times = _migration_times_sec(df, migration_ms)
+        for i, m_sec in enumerate(m_times):
+            label = "Migration" if len(m_times) == 1 else f"Migration {i + 1}"
+            ax.axvline(x=m_sec, color="red", linestyle="--", alpha=0.7, label=label)
 
         ax.legend(loc="upper right")
 
@@ -203,38 +253,55 @@ def plot_container_stats(df: pd.DataFrame, migration_ms: int | None, output_dir:
     plt.close()
 
 
-def plot_migration_timing(event: dict | None, output_dir: str, show: bool):
-    """Bar chart of migration phase durations. Uses time_to_ready_ms (client-visible) when present."""
-    if event is None:
-        return
-
-    try:
-        # Prefer client-visible total (downtime); fall back to full script total
-        time_to_ready = int(event.get("time_to_ready_ms", event["total_ms"]))
-        total = int(event["total_ms"])
-        checkpoint = int(event["checkpoint_ms"])
-        transfer = int(event["transfer_ms"])
-        edit = int(event["edit_ms"])
-        restore = int(event["restore_ms"])
-        switch = int(event["switch_ms"])
-    except (KeyError, ValueError):
+def plot_migration_timing(events: list[dict], output_dir: str, show: bool):
+    """Bar chart of migration phase durations. One group per migration when multiple."""
+    if not events:
         return
 
     phases = ["Checkpoint", "Transfer", "IP Edit", "Restore", "Switch Update"]
-    durations_ms = [checkpoint, transfer, edit, restore, switch]
+    phase_keys = ["checkpoint_ms", "transfer_ms", "edit_ms", "restore_ms", "switch_ms"]
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    bars = ax.barh(phases, durations_ms, color=["#4CAF50", "#03A9F4", "#2196F3", "#FF9800", "#9C27B0"])
-    ax.set_xlabel("Duration (ms)")
-    title = f"Migration phases — client-visible (to ready): {time_to_ready} ms"
-    if total != time_to_ready:
-        title += f"  |  full script: {total} ms"
-    ax.set_title(title)
-    ax.grid(True, axis="x", alpha=0.3)
-
-    for bar, val in zip(bars, durations_ms):
-        ax.text(bar.get_width() + 1, bar.get_y() + bar.get_height() / 2,
-                f"{val:.0f} ms", va="center", fontsize=10)
+    if len(events) == 1:
+        event = events[0]
+        try:
+            time_to_ready = int(event.get("time_to_ready_ms", event["total_ms"]))
+            total = int(event["total_ms"])
+            durations_ms = [int(event.get(k, 0)) for k in phase_keys]
+        except (KeyError, ValueError):
+            return
+        fig, ax = plt.subplots(figsize=(8, 5))
+        bars = ax.barh(phases, durations_ms, color=["#4CAF50", "#03A9F4", "#2196F3", "#FF9800", "#9C27B0"])
+        ax.set_xlabel("Duration (ms)")
+        title = f"Migration phases — client-visible (to ready): {time_to_ready} ms"
+        if total != time_to_ready:
+            title += f"  |  full script: {total} ms"
+        ax.set_title(title)
+        ax.grid(True, axis="x", alpha=0.3)
+        for bar, val in zip(bars, durations_ms):
+            ax.text(bar.get_width() + 1, bar.get_y() + bar.get_height() / 2,
+                    f"{val:.0f} ms", va="center", fontsize=10)
+    else:
+        # Multiple migrations: grouped horizontal bars
+        import numpy as np
+        n_phases = len(phases)
+        n_migrations = len(events)
+        bar_h = 0.7 / n_migrations
+        fig, ax = plt.subplots(figsize=(10, 6))
+        colors = ["#4CAF50", "#03A9F4", "#2196F3", "#FF9800", "#9C27B0"]
+        for i, event in enumerate(events):
+            try:
+                durations_ms = [int(event.get(k, 0)) for k in phase_keys]
+            except (KeyError, ValueError):
+                continue
+            y_offset = (i - (n_migrations - 1) / 2) * bar_h
+            y_pos = np.arange(n_phases) + y_offset
+            bars = ax.barh(y_pos, durations_ms, height=bar_h * 0.9, label=f"Migration {i + 1}", color=colors)
+        ax.set_yticks(np.arange(n_phases))
+        ax.set_yticklabels(phases)
+        ax.set_xlabel("Duration (ms)")
+        ax.set_title(f"Migration phases — {n_migrations} migrations")
+        ax.legend(loc="lower right")
+        ax.grid(True, axis="x", alpha=0.3)
 
     plt.tight_layout()
     if show:
@@ -255,9 +322,10 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # Load migration event
-    event = load_migration_event(args.migration_flag)
-    m_ms = migration_time_ms(event)
+    # Load migration event(s): path can be file or directory (loads all migration_timing_*.txt)
+    events = load_all_migration_events(args.migration_flag)
+    migration_ms_list = [migration_time_ms(e) for e in events]
+    migration_ms_list = [m for m in migration_ms_list if m is not None]
 
     # Load CSV
     if not os.path.exists(args.csv):
@@ -285,15 +353,21 @@ def main():
 
     print(f"Loaded {len(df)} rows from {args.csv}")
     print(f"Duration: {df['t_sec'].iloc[-1]:.1f}s")
-    if m_ms is not None and t0 is not None:
-        print(f"Migration event at t={((m_ms - t0) / 1000.0):.1f}s")
-    if event is not None and "time_to_ready_ms" in event:
-        print(f"Client-visible (time to ready): {int(event['time_to_ready_ms'])} ms")
+    if t0 is not None and migration_ms_list:
+        for i, m_ms in enumerate(migration_ms_list):
+            print(f"Migration {i + 1} at t={((m_ms - t0) / 1000.0):.1f}s", end="")
+            if events and i < len(events) and "time_to_ready_ms" in events[i]:
+                print(f" — client-visible: {int(events[i]['time_to_ready_ms'])} ms")
+            else:
+                print()
 
-    plot_server_metrics(df, m_ms, args.output_dir, args.show)
-    plot_ping_rtt(df, m_ms, args.output_dir, args.show)
-    plot_container_stats(df, m_ms, args.output_dir, args.show)
-    plot_migration_timing(event, args.output_dir, args.show)
+    # Pass single value or list for vertical line(s)
+    m_ms_arg = migration_ms_list[0] if len(migration_ms_list) == 1 else (migration_ms_list if migration_ms_list else None)
+
+    plot_server_metrics(df, m_ms_arg, args.output_dir, args.show)
+    plot_ping_rtt(df, m_ms_arg, args.output_dir, args.show)
+    plot_container_stats(df, m_ms_arg, args.output_dir, args.show)
+    plot_migration_timing(events, args.output_dir, args.show)
 
     print("Done.")
 
