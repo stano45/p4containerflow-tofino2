@@ -75,7 +75,7 @@ COLLECTOR_PID=""          # local SSH wrapper PID
 COLLECTOR_REMOTE_PID=""   # PID on lakewood
 CONTROLLER_STARTED=false
 REMOTE_COLLECTOR_CSV="/tmp/collector_metrics.csv"
-REMOTE_COLLECTOR_BIN="/tmp/webrtc-collector"
+REMOTE_COLLECTOR_BIN="/tmp/stream-collector"
 
 cleanup_on_exit() {
     # Stop collector on lakewood
@@ -186,7 +186,7 @@ SYNC_TMP=/tmp/cr_image_sync_$$
 on_lakewood "sudo podman save -o $SYNC_TMP.img $SERVER_IMAGE_ID && sudo chown \$(whoami) $SYNC_TMP.img"
 ssh $SSH_OPTS -o ForwardAgent=yes "$LAKEWOOD_SSH" "scp -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=60 $SYNC_TMP.img $LOVELAND_SSH:$SYNC_TMP.img"
 on_lakewood "rm -f $SYNC_TMP.img"
-on_loveland "sudo podman load -i $SYNC_TMP.img && rm -f $SYNC_TMP.img"
+on_loveland "sudo podman load -i $SYNC_TMP.img && rm -f $SYNC_TMP.img && sudo podman tag $SERVER_IMAGE_ID $SERVER_IMAGE"
 echo "Server image synced."
 
 echo "Building $LOADGEN_IMAGE on lakewood..."
@@ -302,10 +302,10 @@ REMOTE_MIGRATION_FLAG="/tmp/collector_migration_flag"
 
 # Build collector binary for linux/amd64 and deploy to lakewood
 printf "Building collector binary...\n"
-(cd "$SCRIPT_DIR" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/webrtc-collector-build ./cmd/collector/)
+(cd "$SCRIPT_DIR" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/stream-collector-build ./cmd/collector/)
 on_lakewood "sudo rm -f $REMOTE_COLLECTOR_BIN; rm -f $REMOTE_COLLECTOR_BIN"
-scp $SSH_OPTS /tmp/webrtc-collector-build "$LAKEWOOD_SSH:$REMOTE_COLLECTOR_BIN"
-rm -f /tmp/webrtc-collector-build
+scp $SSH_OPTS /tmp/stream-collector-build "$LAKEWOOD_SSH:$REMOTE_COLLECTOR_BIN"
+rm -f /tmp/stream-collector-build
 
 # Clean stale state on lakewood
 on_lakewood "sudo rm -f $REMOTE_COLLECTOR_CSV $REMOTE_MIGRATION_FLAG"
@@ -323,8 +323,9 @@ on_lakewood "sudo nohup $REMOTE_COLLECTOR_BIN \
     -remote-ssh-user '$REMOTE_SSH_USER' \
     -metrics-port $METRICS_PORT \
     -ping-hosts '${H2_IP},${H3_IP}' \
-    -server-names 'webrtc-server,h3' \
-    -loadgen-container 'webrtc-loadgen' \
+    -server-names 'stream-server,h3' \
+    -loadgen-container 'stream-client' \
+    -loadgen-metrics-port '$LOADGEN_METRICS_PORT' \
     -migration-flag '$REMOTE_MIGRATION_FLAG' \
     -output '$REMOTE_COLLECTOR_CSV' \
     -interval '$METRICS_INTERVAL' \
@@ -332,7 +333,7 @@ on_lakewood "sudo nohup $REMOTE_COLLECTOR_BIN \
     echo \$!" &
 COLLECTOR_PID=$!
 sleep 2
-COLLECTOR_REMOTE_PID=$(on_lakewood "pgrep -f webrtc-collector | head -1" 2>/dev/null || true)
+COLLECTOR_REMOTE_PID=$(on_lakewood "pgrep -f stream-collector | head -1" 2>/dev/null || true)
 printf "Collector started on lakewood (remote PID %s)\n" "$COLLECTOR_REMOTE_PID"
 
 # =============================================================================

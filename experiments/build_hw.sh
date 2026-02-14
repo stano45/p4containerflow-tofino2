@@ -1,13 +1,13 @@
 #!/bin/bash
 # =============================================================================
-# build_hw.sh — Set up the multi-node WebRTC migration experiment
+# build_hw.sh — Set up the multi-node container migration experiment
 # =============================================================================
 # Run from your control machine. SSHs into lakewood + loveland to create
 # macvlan networks and containers on their Netronome NICs.
 #
 # Prerequisites:
 #   - SSH key-based access to lakewood and loveland
-#   - Container images built on lakewood (webrtc-server, webrtc-loadgen)
+#   - Container images built on lakewood (stream-server, stream-client)
 #   - Netronome NICs have IPs assigned and static ARP in place
 #
 # Usage:
@@ -61,28 +61,32 @@ on_lakewood "
     sudo ethtool -K $LAKEWOOD_NIC sg off 2>/dev/null || true
     sudo ip link set $LAKEWOOD_NIC mtu 9000 2>/dev/null || true
 
+    # Promiscuous mode (accept packets with any MAC — needed after migration
+    # when packets arrive with the old node's container MAC)
+    sudo ip link set $LAKEWOOD_NIC promisc on 2>/dev/null || true
+
     # Drop RST (prevents kernel from resetting migrated TCP connections)
     sudo iptables -D OUTPUT -p tcp --tcp-flags RST RST -o $LAKEWOOD_NIC -j DROP 2>/dev/null || true
     sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -o $LAKEWOOD_NIC -j DROP 2>/dev/null || true
 
-    # Server (h2)
+    # Server (h2) — no VIP alias; loadgen connects to .2 directly.
+    # TCP connections bind to .2 so CRIU can restore them on the target.
     sudo podman run --replace --detach --privileged \
-        --name webrtc-server --network $HW_NET --ip $H2_IP \
+        --name stream-server --network $HW_NET --ip $H2_IP \
         -e GODEBUG=multipathtcp=0 \
         $SERVER_IMAGE \
-        ./server -signaling-addr :${SIGNALING_PORT} -metrics-addr :${METRICS_PORT}
+        ./stream-server -signaling-addr :${SIGNALING_PORT} -metrics-addr :${METRICS_PORT}
 
-    # Add VIP as alias on server container so loadgen can reach it via macvlan
-    SPID=\$(sudo podman inspect --format '{{.State.Pid}}' webrtc-server)
-    sudo nsenter -t \$SPID -n ip addr add ${VIP}/24 dev eth0 2>/dev/null || true
-    echo \"VIP ${VIP} added to webrtc-server (PID \$SPID)\"
+    echo \"stream-server started at ${H2_IP}\"
 
-    # Client (h1)
+    # Client (h1) — connects to server IP directly (not VIP).
+    # Same-IP migration means .2 is always the server, P4 switch
+    # updates the forward table to route .2 to the new physical port.
     sudo podman run --replace --detach --privileged \
-        --name webrtc-loadgen --network $HW_NET --ip $H1_IP \
+        --name stream-client --network $HW_NET --ip $H1_IP \
         -e GODEBUG=multipathtcp=0 \
         $LOADGEN_IMAGE \
-        ./loadgen -server http://${VIP}:${SIGNALING_PORT} -peers $LOADGEN_PEERS
+        ./stream-client -server http://${H2_IP}:${SIGNALING_PORT} -connections $LOADGEN_CONNECTIONS -metrics-port $LOADGEN_METRICS_PORT
 
     echo 'lakewood setup complete'
 "
@@ -91,8 +95,6 @@ on_lakewood "
 # Loveland: CRIU+crun (for restore), server image + macvlan network
 # -----------------------------------------------------------------------------
 printf "\n===== [loveland] Ensuring CRIU and crun (for restore) =====\n"
-# Restore fails with \"could not find symbol criu_set_lsm_mount_context\" if libcriu is older than crun expects. Install CRIU from source (full install) then crun.
-# Run install scripts via stdin so they work even if repo on loveland is not synced.
 NEED_CRIU=false
 if ! on_loveland "nm -D /usr/local/lib/x86_64-linux-gnu/libcriu.so 2>/dev/null | grep -q criu_set_lsm_mount_context" 2>/dev/null; then
   if ! on_loveland "nm -D /usr/local/lib64/libcriu.so 2>/dev/null | grep -q criu_set_lsm_mount_context" 2>/dev/null; then
@@ -116,10 +118,9 @@ fi
 
 printf "\n===== [loveland] Server image (same ID as lakewood) + macvlan network =====\n"
 
-# Restore needs the *same* image ID on loveland as on lakewood. Sync from lakewood (no per-migration transfer).
 SERVER_IMAGE_ID=$(on_lakewood "sudo podman image inspect $SERVER_IMAGE --format '{{.Id}}' 2>/dev/null" | sed 's/^sha256://' || true)
 if [[ -z "$SERVER_IMAGE_ID" || ${#SERVER_IMAGE_ID} -ne 64 ]]; then
-    echo "ERROR: Server image $SERVER_IMAGE not found on lakewood. Build it there first (e.g. run_experiment.sh or: podman build -t $SERVER_IMAGE -f experiments/cmd/server/Containerfile .)."
+    echo "ERROR: Server image $SERVER_IMAGE not found on lakewood."
     exit 1
 fi
 if on_loveland "sudo podman image exists $SERVER_IMAGE_ID 2>/dev/null"; then
@@ -130,7 +131,7 @@ else
     on_lakewood "sudo podman save -o $SYNC_TMP.img $SERVER_IMAGE_ID && sudo chown \$(whoami) $SYNC_TMP.img"
     ssh $SSH_OPTS -o ForwardAgent=yes "$LAKEWOOD_SSH" "scp -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=60 $SYNC_TMP.img $LOVELAND_SSH:$SYNC_TMP.img"
     on_lakewood "rm -f $SYNC_TMP.img"
-    on_loveland "sudo podman load -i $SYNC_TMP.img && rm -f $SYNC_TMP.img"
+    on_loveland "sudo podman load -i $SYNC_TMP.img && rm -f $SYNC_TMP.img && sudo podman tag $SERVER_IMAGE_ID $SERVER_IMAGE"
     echo "Server image synced."
 fi
 
@@ -151,6 +152,9 @@ on_loveland "
     sudo ethtool -K $LOVELAND_NIC sg off 2>/dev/null || true
     sudo ip link set $LOVELAND_NIC mtu 9000 2>/dev/null || true
 
+    # Promiscuous mode
+    sudo ip link set $LOVELAND_NIC promisc on 2>/dev/null || true
+
     # Drop RST
     sudo iptables -D OUTPUT -p tcp --tcp-flags RST RST -o $LOVELAND_NIC -j DROP 2>/dev/null || true
     sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -o $LOVELAND_NIC -j DROP 2>/dev/null || true
@@ -163,8 +167,8 @@ on_loveland "
 # -----------------------------------------------------------------------------
 printf "\n===== Build complete =====\n"
 printf "Lakewood:\n"
-printf "  Host 1 (client):  %s  container=webrtc-loadgen\n" "$H1_IP"
-printf "  Host 2 (server):  %s  container=webrtc-server\n" "$H2_IP"
+printf "  Host 1 (client):  %s  container=stream-client\n" "$H1_IP"
+printf "  Host 2 (server):  %s  container=stream-server\n" "$H2_IP"
 printf "Loveland:\n"
-printf "  Host 3 (target):  %s  network only (restore target)\n" "$H3_IP"
+printf "  Host 3 (target):  network ready (restore target)\n"
 printf "VIP:                %s\n" "$VIP"

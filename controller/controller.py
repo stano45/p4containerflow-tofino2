@@ -143,6 +143,29 @@ def update_node():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/updateForward", methods=["POST"])
+def update_forward():
+    """Update forward + arp_forward table entries for same-IP migration.
+
+    Expects JSON: {"ipv4": "192.168.12.2", "sw_port": 148}
+    """
+    data = request.get_json()
+    ipv4 = data.get("ipv4")
+    sw_port = data.get("sw_port")
+
+    if not all([ipv4, sw_port]):
+        logger.error(f"updateForward: missing parameters (ipv4={ipv4}, sw_port={sw_port})")
+        return jsonify({"error": "Missing parameters: ipv4 and sw_port required"}), 400
+
+    try:
+        nodeManager.updateForward(ipv4, int(sw_port))
+        logger.info(f"Successfully updated forward entries: {ipv4} -> port {sw_port}")
+        return jsonify({"status": "success"}), 200
+    except Exception as e:
+        logger.error(f"Failed to update forward entries: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/cleanup", methods=["POST"])
 def cleanup():
     """Endpoint to manually trigger cleanup of all table entries."""

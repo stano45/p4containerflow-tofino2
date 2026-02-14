@@ -9,7 +9,8 @@ RUN go mod download
 # Copy source
 COPY cmd/server/main.go cmd/server/main.go
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags '-extldflags "-static"' -o server ./cmd/server/
+
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags '-extldflags "-static"' -o stream-server ./cmd/server/
 
 FROM alpine:latest
 
@@ -19,12 +20,12 @@ RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 WORKDIR /home/appuser/
 
-COPY --from=builder /app/server .
+COPY --from=builder /app/stream-server .
 
-RUN chmod +x ./server
+RUN chmod +x ./stream-server
 
 USER appuser
 
 EXPOSE 8080 8081
 
-CMD ["./server"]
+CMD ["./stream-server"]

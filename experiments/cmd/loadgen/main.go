@@ -1,37 +1,36 @@
-// Package main implements a WebRTC load generator client.
+// Package main implements a WebSocket load generator for container migration
+// experiments.
 //
-// It connects N concurrent WebRTC peers to the server, receives the video
-// stream, and measures per-peer metrics:
-//   - Time to first RTP packet (connection latency)
-//   - Received bytes per second (throughput)
-//   - RTP sequence gaps (packet loss indicator)
-//   - Total packets received
+// It opens N concurrent WebSocket connections to the server, sends periodic
+// ping messages with timestamps, and measures RTT, jitter, and throughput.
+// Connections are expected to survive migration transparently (no reconnect
+// logic needed beyond error recovery).
 //
-// The loadgen retries connections at startup until the server is reachable,
-// and automatically reconnects peers that disconnect (e.g. after migration).
-// Sending SIGUSR1 forces immediate reconnection of all peers.
+// It also serves a /metrics HTTP endpoint on a separate port so the
+// collector can gather client-side RTT statistics.
 //
 // Usage:
 //
-//	loadgen -server http://10.0.1.10:8080 -peers 4 -interval 1s -duration 60s
+//	loadgen -server http://192.168.12.10:8080 -connections 4 -interval 1s
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
-	"github.com/pion/webrtc/v4"
+	"github.com/gorilla/websocket"
 )
 
 // ---------------------------------------------------------------------------
@@ -39,141 +38,176 @@ import (
 // ---------------------------------------------------------------------------
 
 var (
-	serverURL = flag.String("server", "http://localhost:8080", "WebRTC signaling server URL")
-	numPeers  = flag.Int("peers", 4, "Number of concurrent WebRTC peers")
-	interval  = flag.Duration("interval", time.Second, "Metrics reporting interval")
-	duration  = flag.Duration("duration", 0, "Test duration (0 = until interrupted)")
-	rampUp    = flag.Duration("ramp-up", 200*time.Millisecond, "Delay between connecting each peer")
+	serverURL   = flag.String("server", "http://localhost:8080", "Server base URL")
+	numConns    = flag.Int("connections", 4, "Number of concurrent WebSocket connections")
+	pingMs      = flag.Int("ping-interval-ms", 100, "Ping interval in milliseconds")
+	reportIval  = flag.Duration("interval", time.Second, "Metrics reporting interval (stdout)")
+	testDur     = flag.Duration("duration", 0, "Test duration (0 = until interrupted)")
+	metricsPort = flag.Int("metrics-port", 9090, "HTTP port for /metrics endpoint")
+	rampUp      = flag.Duration("ramp-up", 200*time.Millisecond, "Delay between connecting each peer")
 )
 
 // ---------------------------------------------------------------------------
-// Per-peer metrics
+// Per-connection state
 // ---------------------------------------------------------------------------
 
-type peerMetrics struct {
-	PeerID             int     `json:"peer_id"`
-	TimestampUnixMilli int64   `json:"timestamp_unix_milli"`
-	BytesReceived      uint64  `json:"bytes_received"`
-	PacketsReceived    uint64  `json:"packets_received"`
-	SequenceGaps       uint64  `json:"sequence_gaps"`
-	Connected          bool    `json:"connected"`
-	FirstPacketMs      int64   `json:"first_packet_ms,omitempty"`
-	BytesPerSecond     float64 `json:"bytes_per_second"`
+type conn struct {
+	id   int
+	ws   *websocket.Conn
+	mu   sync.Mutex // guards ws writes
+	seq  int
+
+	bytesRecv   atomic.Uint64
+	bytesSent   atomic.Uint64
+	msgsRecv    atomic.Uint64
+	msgsSent    atomic.Uint64
+	connected   atomic.Bool
+
+	// RTT tracking (protected by rttMu)
+	rttMu      sync.Mutex
+	rttSamples []float64 // recent RTT samples in ms
+	lastRTT    float64
+	jitterSum  float64
+	jitterN    int
 }
 
-type peer struct {
-	id    int
-	pc    *webrtc.PeerConnection
-	start time.Time
+// sendPing sends a ping message with timestamp.
+func (c *conn) sendPing() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ws == nil {
+		return fmt.Errorf("not connected")
+	}
 
-	bytesReceived   atomic.Uint64
-	packetsReceived atomic.Uint64
-	sequenceGaps    atomic.Uint64
-	connected       atomic.Bool
-	firstPacketMs   atomic.Int64
+	msg := struct {
+		Seq int   `json:"seq"`
+		Ts  int64 `json:"ts"`
+	}{
+		Seq: c.seq,
+		Ts:  time.Now().UnixNano(),
+	}
+	c.seq++
 
-	prevBytes uint64
-	prevTime  time.Time
-
-	lastSeqNum uint16
-	seqInited  bool
+	data, _ := json.Marshal(msg)
+	if err := c.ws.WriteMessage(websocket.TextMessage, data); err != nil {
+		return err
+	}
+	c.bytesSent.Add(uint64(len(data)))
+	c.msgsSent.Add(1)
+	return nil
 }
 
 // ---------------------------------------------------------------------------
-// Connect a single peer
+// Aggregated metrics (served via HTTP)
 // ---------------------------------------------------------------------------
 
-func connectPeer(id int, serverURL string) (*peer, error) {
-	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
-	if err != nil {
-		return nil, fmt.Errorf("create peer connection: %w", err)
+type aggregatedMetrics struct {
+	ConnectedClients int     `json:"connected_clients"`
+	TotalClients     int     `json:"total_clients"`
+	AvgRttMs         float64 `json:"avg_rtt_ms"`
+	P50RttMs         float64 `json:"p50_rtt_ms"`
+	P95RttMs         float64 `json:"p95_rtt_ms"`
+	P99RttMs         float64 `json:"p99_rtt_ms"`
+	MaxRttMs         float64 `json:"max_rtt_ms"`
+	JitterMs         float64 `json:"jitter_ms"`
+	BytesSent        uint64  `json:"bytes_sent"`
+	BytesReceived    uint64  `json:"bytes_received"`
+	ConnectionDrops  int64   `json:"connection_drops"`
+}
+
+// ---------------------------------------------------------------------------
+// Global state
+// ---------------------------------------------------------------------------
+
+var (
+	conns          []*conn
+	connsMu        sync.RWMutex
+	connectionDrops atomic.Int64
+)
+
+func computeMetrics() aggregatedMetrics {
+	connsMu.RLock()
+	defer connsMu.RUnlock()
+
+	m := aggregatedMetrics{
+		TotalClients:    len(conns),
+		ConnectionDrops: connectionDrops.Load(),
 	}
 
-	p := &peer{
-		id:       id,
-		pc:       pc,
-		start:    time.Now(),
-		prevTime: time.Now(),
-	}
-
-	if _, err := pc.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo, webrtc.RTPTransceiverInit{
-		Direction: webrtc.RTPTransceiverDirectionRecvonly,
-	}); err != nil {
-		pc.Close()
-		return nil, fmt.Errorf("add transceiver: %w", err)
-	}
-
-	pc.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
-		log.Printf("[peer-%d] got track: %s (codec=%s)", id, track.ID(), track.Codec().MimeType)
-		buf := make([]byte, 1500)
-		for {
-			n, _, err := track.Read(buf)
-			if err != nil {
-				return
-			}
-			p.bytesReceived.Add(uint64(n))
-			pktNum := p.packetsReceived.Add(1)
-			if pktNum == 1 {
-				p.firstPacketMs.Store(time.Since(p.start).Milliseconds())
-			}
+	var allRTT []float64
+	var totalJitter float64
+	var jitterCount int
+	for _, c := range conns {
+		if c.connected.Load() {
+			m.ConnectedClients++
 		}
-	})
+		m.BytesSent += c.bytesSent.Load()
+		m.BytesReceived += c.bytesRecv.Load()
 
-	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		log.Printf("[peer-%d] state=%s", id, state.String())
-		switch state {
-		case webrtc.PeerConnectionStateConnected:
-			p.connected.Store(true)
-		case webrtc.PeerConnectionStateDisconnected,
-			webrtc.PeerConnectionStateFailed,
-			webrtc.PeerConnectionStateClosed:
-			p.connected.Store(false)
+		c.rttMu.Lock()
+		allRTT = append(allRTT, c.rttSamples...)
+		totalJitter += c.jitterSum
+		jitterCount += c.jitterN
+		c.rttMu.Unlock()
+	}
+
+	if jitterCount > 0 {
+		m.JitterMs = totalJitter / float64(jitterCount)
+	}
+
+	if len(allRTT) > 0 {
+		sort.Float64s(allRTT)
+		var sum float64
+		for _, v := range allRTT {
+			sum += v
 		}
-	})
-
-	offer, err := pc.CreateOffer(nil)
-	if err != nil {
-		pc.Close()
-		return nil, fmt.Errorf("create offer: %w", err)
+		m.AvgRttMs = sum / float64(len(allRTT))
+		m.P50RttMs = percentile(allRTT, 50)
+		m.P95RttMs = percentile(allRTT, 95)
+		m.P99RttMs = percentile(allRTT, 99)
+		m.MaxRttMs = allRTT[len(allRTT)-1]
 	}
 
-	gatherComplete := webrtc.GatheringCompletePromise(pc)
-	if err := pc.SetLocalDescription(offer); err != nil {
-		pc.Close()
-		return nil, fmt.Errorf("set local desc: %w", err)
-	}
-	<-gatherComplete
-
-	offerJSON, _ := json.Marshal(pc.LocalDescription())
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Post(serverURL+"/offer", "application/json", bytes.NewReader(offerJSON))
-	if err != nil {
-		pc.Close()
-		return nil, fmt.Errorf("POST /offer: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		pc.Close()
-		return nil, fmt.Errorf("POST /offer returned %d", resp.StatusCode)
-	}
-
-	var answer webrtc.SessionDescription
-	if err := json.NewDecoder(resp.Body).Decode(&answer); err != nil {
-		pc.Close()
-		return nil, fmt.Errorf("decode answer: %w", err)
-	}
-
-	if err := pc.SetRemoteDescription(answer); err != nil {
-		pc.Close()
-		return nil, fmt.Errorf("set remote desc: %w", err)
-	}
-
-	return p, nil
+	return m
 }
 
-// connectPeerWithRetry keeps retrying until success or context cancelled.
-func connectPeerWithRetry(ctx context.Context, id int, serverURL string) *peer {
+func percentile(sorted []float64, p float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	idx := (p / 100.0) * float64(len(sorted)-1)
+	lower := int(math.Floor(idx))
+	upper := int(math.Ceil(idx))
+	if lower == upper || upper >= len(sorted) {
+		return sorted[lower]
+	}
+	frac := idx - float64(lower)
+	return sorted[lower]*(1-frac) + sorted[upper]*frac
+}
+
+// ---------------------------------------------------------------------------
+// Connection management
+// ---------------------------------------------------------------------------
+
+func connectWS(ctx context.Context, id int, serverURL string) (*conn, error) {
+	wsURL := "ws" + serverURL[4:] + "/ws" // http:// -> ws://
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 5 * time.Second,
+	}
+	ws, _, err := dialer.DialContext(ctx, wsURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("dial %s: %w", wsURL, err)
+	}
+
+	c := &conn{
+		id: id,
+		ws: ws,
+	}
+	c.connected.Store(true)
+	return c, nil
+}
+
+func connectWithRetry(ctx context.Context, id int, serverURL string) *conn {
 	backoff := 500 * time.Millisecond
 	maxBackoff := 3 * time.Second
 	for {
@@ -182,51 +216,138 @@ func connectPeerWithRetry(ctx context.Context, id int, serverURL string) *peer {
 			return nil
 		default:
 		}
-		p, err := connectPeer(id, serverURL)
+		c, err := connectWS(ctx, id, serverURL)
 		if err == nil {
-			return p
+			return c
 		}
-		log.Printf("[peer-%d] connect failed: %v (retrying in %s)", id, err, backoff)
+		log.Printf("[conn-%d] connect failed: %v (retrying in %s)", id, err, backoff)
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-time.After(backoff):
 		}
-		backoff = backoff * 2
+		backoff *= 2
 		if backoff > maxBackoff {
 			backoff = maxBackoff
 		}
 	}
 }
 
-// snapshot returns current metrics and resets the per-interval counters.
-func (p *peer) snapshot() peerMetrics {
+// readLoop reads messages from the WebSocket and updates RTT stats.
+func readLoop(ctx context.Context, c *conn) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		_, raw, err := c.ws.ReadMessage()
+		if err != nil {
+			if c.connected.Load() {
+				c.connected.Store(false)
+				connectionDrops.Add(1)
+				log.Printf("[conn-%d] disconnected: %v", c.id, err)
+			}
+			return
+		}
+		c.bytesRecv.Add(uint64(len(raw)))
+		c.msgsRecv.Add(1)
+
+		// Try to parse as echo (pong) message
+		var echo struct {
+			Seq      int   `json:"seq"`
+			ClientTs int64 `json:"client_ts"`
+			ServerTs int64 `json:"server_ts"`
+		}
+		if err := json.Unmarshal(raw, &echo); err == nil && echo.ClientTs > 0 {
+			rtt := float64(time.Now().UnixNano()-echo.ClientTs) / 1e6 // ms
+			if rtt >= 0 && rtt < 60000 { // sanity check
+				c.rttMu.Lock()
+				// Track jitter (RTT variation)
+				if c.lastRTT > 0 {
+					j := math.Abs(rtt - c.lastRTT)
+					c.jitterSum += j
+					c.jitterN++
+				}
+				c.lastRTT = rtt
+				c.rttSamples = append(c.rttSamples, rtt)
+				// Keep last 1000 samples per connection
+				if len(c.rttSamples) > 1000 {
+					c.rttSamples = c.rttSamples[len(c.rttSamples)-1000:]
+				}
+				c.rttMu.Unlock()
+			}
+		}
+	}
+}
+
+// pingLoop sends periodic pings.
+func pingLoop(ctx context.Context, c *conn) {
+	interval := time.Duration(*pingMs) * time.Millisecond
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !c.connected.Load() {
+				return
+			}
+			if err := c.sendPing(); err != nil {
+				if c.connected.Load() {
+					c.connected.Store(false)
+					connectionDrops.Add(1)
+					log.Printf("[conn-%d] ping failed: %v", c.id, err)
+				}
+				return
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Stdout metrics (for backward compatibility with collector)
+// ---------------------------------------------------------------------------
+
+type peerMetrics struct {
+	PeerID             int     `json:"peer_id"`
+	TimestampUnixMilli int64   `json:"timestamp_unix_milli"`
+	BytesReceived      uint64  `json:"bytes_received"`
+	PacketsReceived    uint64  `json:"packets_received"`
+	Connected          bool    `json:"connected"`
+	BytesPerSecond     float64 `json:"bytes_per_second"`
+	RttMs              float64 `json:"rtt_ms"`
+}
+
+func snapshotConn(c *conn, prevBytes *uint64, prevTime *time.Time) peerMetrics {
 	now := time.Now()
-	totalBytes := p.bytesReceived.Load()
-	dt := now.Sub(p.prevTime).Seconds()
+	totalBytes := c.bytesRecv.Load()
+	dt := now.Sub(*prevTime).Seconds()
 
 	var bps float64
 	if dt > 0 {
-		bps = float64(totalBytes-p.prevBytes) / dt
+		bps = float64(totalBytes-*prevBytes) / dt
 	}
+
+	c.rttMu.Lock()
+	rtt := c.lastRTT
+	c.rttMu.Unlock()
 
 	m := peerMetrics{
-		PeerID:             p.id,
+		PeerID:             c.id,
 		TimestampUnixMilli: now.UnixMilli(),
 		BytesReceived:      totalBytes,
-		PacketsReceived:    p.packetsReceived.Load(),
-		SequenceGaps:       p.sequenceGaps.Load(),
-		Connected:          p.connected.Load(),
+		PacketsReceived:    c.msgsRecv.Load(),
+		Connected:          c.connected.Load(),
 		BytesPerSecond:     bps,
+		RttMs:              rtt,
 	}
 
-	if fp := p.firstPacketMs.Load(); fp > 0 {
-		m.FirstPacketMs = fp
-	}
-
-	p.prevBytes = totalBytes
-	p.prevTime = now
-
+	*prevBytes = totalBytes
+	*prevTime = now
 	return m
 }
 
@@ -238,15 +359,13 @@ func main() {
 	flag.Parse()
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 
-	log.Printf("Load generator: server=%s peers=%d interval=%s duration=%s",
-		*serverURL, *numPeers, *interval, *duration)
-
-	enc := json.NewEncoder(os.Stdout)
+	log.Printf("Load generator: server=%s connections=%d ping=%dms interval=%s",
+		*serverURL, *numConns, *pingMs, *reportIval)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Signal handling: SIGINT/SIGTERM to quit
+	// Signal handling
 	quitCh := make(chan os.Signal, 1)
 	signal.Notify(quitCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -255,142 +374,68 @@ func main() {
 		cancel()
 	}()
 
-	// SIGUSR1 forces immediate reconnection of all peers
-	forceReconnect := make(chan struct{}, 1)
-	usr1Ch := make(chan os.Signal, 1)
-	signal.Notify(usr1Ch, syscall.SIGUSR1)
+	// Start metrics HTTP server
 	go func() {
-		for range usr1Ch {
-			log.Println("SIGUSR1 received — forcing reconnection of all peers")
-			select {
-			case forceReconnect <- struct{}{}:
-			default:
-			}
+		mux := http.NewServeMux()
+		mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(computeMetrics())
+		})
+		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"status":"ok"}`)
+		})
+		addr := fmt.Sprintf(":%d", *metricsPort)
+		log.Printf("Metrics endpoint on %s", addr)
+		if err := http.ListenAndServe(addr, mux); err != nil {
+			log.Printf("Metrics server error: %v", err)
 		}
 	}()
 
-	peers := make([]*peer, *numPeers)
-	var mu sync.Mutex
-
-	// Connect peers with retry (blocks until server reachable or cancelled)
-	for i := 0; i < *numPeers; i++ {
-		p := connectPeerWithRetry(ctx, i, *serverURL)
-		if p == nil {
-			break // cancelled
+	// Connect all WebSocket clients
+	conns = make([]*conn, *numConns)
+	for i := 0; i < *numConns; i++ {
+		c := connectWithRetry(ctx, i, *serverURL)
+		if c == nil {
+			break
 		}
-		mu.Lock()
-		peers[i] = p
-		mu.Unlock()
-		log.Printf("[peer-%d] connected", i)
-		if i < *numPeers-1 {
+		connsMu.Lock()
+		conns[i] = c
+		connsMu.Unlock()
+		log.Printf("[conn-%d] connected", i)
+
+		// Start read and ping loops
+		go readLoop(ctx, c)
+		go pingLoop(ctx, c)
+
+		if i < *numConns-1 {
 			time.Sleep(*rampUp)
 		}
 	}
+
 	connectedCount := 0
-	for _, p := range peers {
-		if p != nil {
+	for _, c := range conns {
+		if c != nil {
 			connectedCount++
 		}
 	}
-	log.Printf("Connected %d / %d peers", connectedCount, *numPeers)
+	log.Printf("Connected %d / %d clients", connectedCount, *numConns)
 
-	// reconnectAll closes all peers and reconnects them. Called from
-	// the reconnector goroutine when SIGUSR1 is received or health
-	// check detects the server moved.
-	reconnectAll := func() {
-		mu.Lock()
-		// Close all existing peer connections
-		for i, p := range peers {
-			if p != nil {
-				p.pc.Close()
-				peers[i] = nil
-			}
-		}
-		mu.Unlock()
-
-		// Reconnect each peer (not holding the lock)
-		for i := 0; i < *numPeers; i++ {
-			newP := connectPeerWithRetry(ctx, i, *serverURL)
-			if newP == nil {
-				break // context cancelled
-			}
-			mu.Lock()
-			peers[i] = newP
-			mu.Unlock()
-			log.Printf("[peer-%d] reconnected", i)
-			if i < *numPeers-1 {
-				time.Sleep(*rampUp)
-			}
-		}
-	}
-
-	// Reconnector goroutine: responds to SIGUSR1 or health-check failures
-	go func() {
-		healthClient := &http.Client{Timeout: 2 * time.Second}
-		healthTicker := time.NewTicker(2 * time.Second)
-		defer healthTicker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-
-			case <-forceReconnect:
-				log.Println("Reconnecting all peers (forced)")
-				reconnectAll()
-
-			case <-healthTicker.C:
-				// Check if any peer is connected
-				mu.Lock()
-				anyConnected := false
-				for _, p := range peers {
-					if p != nil && p.connected.Load() {
-						anyConnected = true
-						break
-					}
-				}
-				mu.Unlock()
-
-				if anyConnected {
-					// Also verify the server is still reachable
-					resp, err := healthClient.Get(*serverURL + "/health")
-					if err == nil {
-						resp.Body.Close()
-						if resp.StatusCode == http.StatusOK {
-							continue // healthy
-						}
-					}
-					// Server unreachable while peers think they're connected
-					log.Printf("Health check failed — server unreachable, reconnecting")
-					reconnectAll()
-				} else {
-					// No peers connected — check if any peer objects exist
-					mu.Lock()
-					hasPeers := false
-					for _, p := range peers {
-						if p != nil {
-							hasPeers = true
-							break
-						}
-					}
-					mu.Unlock()
-					if hasPeers {
-						// Peers exist but none connected — try reconnection
-						log.Printf("No peers connected — attempting reconnection")
-						reconnectAll()
-					}
-				}
-			}
-		}
-	}()
-
-	// Metrics reporting loop
-	ticker := time.NewTicker(*interval)
+	// Stdout metrics reporting loop
+	enc := json.NewEncoder(os.Stdout)
+	ticker := time.NewTicker(*reportIval)
 	defer ticker.Stop()
 
+	// Track per-connection byte counts for throughput calculation
+	prevBytes := make([]uint64, *numConns)
+	prevTimes := make([]time.Time, *numConns)
+	for i := range prevTimes {
+		prevTimes[i] = time.Now()
+	}
+
 	var durationCh <-chan time.Time
-	if *duration > 0 {
-		durationCh = time.After(*duration)
+	if *testDur > 0 {
+		durationCh = time.After(*testDur)
 	}
 
 	for {
@@ -398,14 +443,14 @@ func main() {
 		case <-ctx.Done():
 			goto cleanup
 		case <-ticker.C:
-			mu.Lock()
-			for _, p := range peers {
-				if p != nil {
-					m := p.snapshot()
+			connsMu.RLock()
+			for i, c := range conns {
+				if c != nil {
+					m := snapshotConn(c, &prevBytes[i], &prevTimes[i])
 					enc.Encode(m)
 				}
 			}
-			mu.Unlock()
+			connsMu.RUnlock()
 		case <-durationCh:
 			log.Printf("Duration reached, shutting down")
 			goto cleanup
@@ -413,12 +458,12 @@ func main() {
 	}
 
 cleanup:
-	mu.Lock()
-	for _, p := range peers {
-		if p != nil {
-			p.pc.Close()
+	connsMu.RLock()
+	for _, c := range conns {
+		if c != nil && c.ws != nil {
+			c.ws.Close()
 		}
 	}
-	mu.Unlock()
+	connsMu.RUnlock()
 	log.Printf("Load generator finished")
 }

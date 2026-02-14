@@ -1,11 +1,11 @@
 # =============================================================================
-# experiments/Makefile — WebRTC container migration experiment
+# experiments/Makefile — Container migration experiment
 # =============================================================================
 #
 # Targets mirror the p4containerflow/examples/redis pattern:
 #
 #   make all            Build images + set up experiment
-#   make build-server   Build the WebRTC server container image
+#   make build-server   Build the stream server container image
 #   make build-loadgen  Build the load generator container image
 #   make build          Run build.sh (create networks, pods, containers)
 #   make controller     Start the P4 controller (in parent project)
@@ -27,10 +27,10 @@ all: build-server build-loadgen build controller
 # ---------------------------------------------------------------------------
 
 build-server:
-	sudo podman build -t webrtc-server -f cmd/server/Containerfile .
+	sudo podman build -t stream-server -f cmd/server/Containerfile .
 
 build-loadgen:
-	sudo podman build -t webrtc-loadgen -f cmd/loadgen/Containerfile .
+	sudo podman build -t stream-client -f cmd/loadgen/Containerfile .
 
 # ---------------------------------------------------------------------------
 # Experiment Lifecycle
@@ -56,10 +56,10 @@ migrate:
 
 collector:
 	go run ./cmd/collector/ \
-		-server-metrics http://10.0.2.2:8081/metrics \
-		-controller http://127.0.0.1:5000 \
+		-server-names stream-server \
+		-loadgen-container stream-client \
+		-metrics-port 8081 \
 		-ping-hosts 10.0.2.2,10.0.3.3 \
-		-containers webrtc-server \
 		-output results/metrics.csv
 
 plot:
@@ -85,10 +85,11 @@ hw-migrate:
 
 hw-collector:
 	go run ./cmd/collector/ \
-		-server-metrics http://192.168.12.10:8081/metrics \
+		-server-names stream-server,h3 \
+		-loadgen-container stream-client \
+		-metrics-port 8081 \
+		-loadgen-metrics-port 9090 \
 		-ping-hosts 192.168.12.2,192.168.12.3 \
-		-containers webrtc-server \
-		-ssh-host stan@131.130.124.72 \
 		-migration-flag /tmp/migration_event \
 		-output results/metrics.csv
 

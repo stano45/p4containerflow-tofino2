@@ -7,7 +7,7 @@ RUN go mod download
 
 COPY cmd/loadgen/main.go cmd/loadgen/main.go
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags '-extldflags "-static"' -o loadgen ./cmd/loadgen/
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags '-extldflags "-static"' -o stream-client ./cmd/loadgen/
 
 FROM alpine:latest
 
@@ -17,10 +17,12 @@ RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 WORKDIR /home/appuser/
 
-COPY --from=builder /app/loadgen .
+COPY --from=builder /app/stream-client .
 
-RUN chmod +x ./loadgen
+RUN chmod +x ./stream-client
 
 USER appuser
 
-CMD ["./loadgen"]
+EXPOSE 9090
+
+CMD ["./stream-client"]

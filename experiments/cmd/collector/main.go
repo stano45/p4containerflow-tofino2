@@ -1,12 +1,13 @@
-// Package main implements a metrics collector for the WebRTC container
-// migration experiment. Runs ON lakewood (the source node) as root.
+// Package main implements a metrics collector for the container migration
+// experiment. Runs ON lakewood (the source node) as root.
 //
 // Metrics collection strategy (works across multiple migrations):
 //   1. Server metrics: Try local container first. If not found, fetch from
 //      the remote node via a persistent SSH multiplexed connection.
 //   2. Container stats: Try local podman stats first. If not found, fetch
 //      from the remote node via the same SSH connection.
-//   3. Pings: Always from the loadgen container's netns (local).
+//   3. Loadgen metrics: Always fetched locally (loadgen stays on lakewood).
+//   4. Pings: Always from the loadgen container's netns (local).
 //
 // SSH multiplexing: a ControlMaster connection is established at startup
 // and reused for all subsequent SSH commands, reducing per-command overhead
@@ -35,32 +36,43 @@ import (
 // ---------------------------------------------------------------------------
 
 var (
-	remoteDirectIP = flag.String("remote-direct-ip", "", "Direct-link IP of the remote node (e.g. 192.168.10.3)")
-	remoteSSHUser  = flag.String("remote-ssh-user", "", "SSH user for the remote node")
-	metricsPort    = flag.Int("metrics-port", 8081, "Server /metrics port inside the container")
-	serverIPs      = flag.String("server-ips", "", "Comma-separated container IPs to try for metrics (e.g. 192.168.12.2,192.168.12.3)")
-	pingHosts      = flag.String("ping-hosts", "", "Comma-separated IPs to ping from loadgen netns")
-	serverNames    = flag.String("server-names", "webrtc-server,h3", "Container names to try for the server")
-	loadgenName    = flag.String("loadgen-container", "webrtc-loadgen", "Loadgen container name (for pings)")
-	migrationFlg   = flag.String("migration-flag", "/tmp/migration_event", "Migration event flag file")
-	outputFile     = flag.String("output", "metrics.csv", "CSV output path")
-	interval       = flag.Duration("interval", 1*time.Second, "Collection interval")
+	remoteDirectIP     = flag.String("remote-direct-ip", "", "Direct-link IP of the remote node (e.g. 192.168.10.3)")
+	remoteSSHUser      = flag.String("remote-ssh-user", "", "SSH user for the remote node")
+	metricsPort        = flag.Int("metrics-port", 8081, "Server /metrics port inside the container")
+	loadgenMetricsPort = flag.Int("loadgen-metrics-port", 9090, "Loadgen /metrics port inside the container")
+	pingHosts          = flag.String("ping-hosts", "", "Comma-separated IPs to ping from loadgen netns")
+	serverNames        = flag.String("server-names", "stream-server,h3", "Container names to try for the server")
+	loadgenName        = flag.String("loadgen-container", "stream-client", "Loadgen container name")
+	migrationFlg       = flag.String("migration-flag", "/tmp/migration_event", "Migration event flag file")
+	outputFile         = flag.String("output", "metrics.csv", "CSV output path")
+	interval           = flag.Duration("interval", 1*time.Second, "Collection interval")
 )
 
 // ---------------------------------------------------------------------------
 // Data structures
 // ---------------------------------------------------------------------------
 
+// ServerMetrics matches the JSON from the server's /metrics endpoint.
 type ServerMetrics struct {
-	ActivePeers    int     `json:"active_peers"`
-	ConnectedPeers int     `json:"connected_peers"`
-	TotalPeers     int64   `json:"total_peers"`
-	BytesSent      int64   `json:"bytes_sent"`
-	BytesReceived  int64   `json:"bytes_received"`
-	FramesSent     int64   `json:"frames_sent"`
-	KeyframesSent  int64   `json:"keyframes_sent"`
-	UptimeSeconds  float64 `json:"uptime_seconds"`
-	AvgBitrateBps  float64 `json:"avg_bitrate_bps"`
+	ConnectedClients int     `json:"connected_clients"`
+	TotalClients     int64   `json:"total_clients"`
+	BytesSent        uint64  `json:"bytes_sent"`
+	BytesReceived    uint64  `json:"bytes_received"`
+	UptimeSeconds    float64 `json:"uptime_seconds"`
+}
+
+// LoadgenMetrics matches the JSON from the loadgen's /metrics endpoint.
+type LoadgenMetrics struct {
+	ConnectedClients int     `json:"connected_clients"`
+	AvgRttMs         float64 `json:"avg_rtt_ms"`
+	P50RttMs         float64 `json:"p50_rtt_ms"`
+	P95RttMs         float64 `json:"p95_rtt_ms"`
+	P99RttMs         float64 `json:"p99_rtt_ms"`
+	MaxRttMs         float64 `json:"max_rtt_ms"`
+	JitterMs         float64 `json:"jitter_ms"`
+	BytesSent        uint64  `json:"bytes_sent"`
+	BytesReceived    uint64  `json:"bytes_received"`
+	ConnectionDrops  int64   `json:"connection_drops"`
 }
 
 type ContainerStats struct {
@@ -73,7 +85,6 @@ type ContainerStats struct {
 // SSH Multiplexing
 // ---------------------------------------------------------------------------
 
-// sshMux manages a persistent SSH ControlMaster connection.
 type sshMux struct {
 	user       string
 	host       string
@@ -88,11 +99,8 @@ func newSSHMux(user, host string) *sshMux {
 	}
 }
 
-// start establishes the ControlMaster background connection.
 func (m *sshMux) start() error {
-	// Clean up any stale socket
 	os.Remove(m.socketPath)
-
 	target := m.host
 	if m.user != "" {
 		target = m.user + "@" + m.host
@@ -104,13 +112,12 @@ func (m *sshMux) start() error {
 		"-o", fmt.Sprintf("ControlPath=%s", m.socketPath),
 		"-o", "ControlMaster=yes",
 		"-o", "ControlPersist=yes",
-		"-N", // no command, just hold connection
+		"-N",
 		target,
 	)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("ssh mux start: %w", err)
 	}
-	// Wait a moment for the socket to appear
 	for i := 0; i < 20; i++ {
 		time.Sleep(100 * time.Millisecond)
 		if _, err := os.Stat(m.socketPath); err == nil {
@@ -121,7 +128,6 @@ func (m *sshMux) start() error {
 	return fmt.Errorf("ssh mux socket never appeared at %s", m.socketPath)
 }
 
-// run executes a command over the multiplexed connection.
 func (m *sshMux) run(ctx context.Context, script string) ([]byte, error) {
 	target := m.host
 	if m.user != "" {
@@ -136,7 +142,6 @@ func (m *sshMux) run(ctx context.Context, script string) ([]byte, error) {
 	return cmd.Output()
 }
 
-// close tears down the ControlMaster.
 func (m *sshMux) close() {
 	target := m.host
 	if m.user != "" {
@@ -151,7 +156,7 @@ func (m *sshMux) close() {
 }
 
 // ---------------------------------------------------------------------------
-// Local probes — server container is on this machine
+// Local probes
 // ---------------------------------------------------------------------------
 
 func findLocalContainer(names []string) (string, string) {
@@ -184,6 +189,23 @@ func fetchMetricsLocal(pid string, port int) ServerMetrics {
 	return sm
 }
 
+func fetchLoadgenMetrics(loadgenPID string, port int) LoadgenMetrics {
+	var lm LoadgenMetrics
+	if loadgenPID == "" {
+		return lm
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "sudo", "nsenter", "-t", loadgenPID, "-n",
+		"curl", "-sf", "--max-time", "1",
+		fmt.Sprintf("http://localhost:%d/metrics", port)).Output()
+	if err != nil {
+		return lm
+	}
+	_ = json.Unmarshal(out, &lm)
+	return lm
+}
+
 func fetchStatsLocal(name string) ContainerStats {
 	if name == "" {
 		return ContainerStats{}
@@ -197,8 +219,7 @@ func fetchStatsLocal(name string) ContainerStats {
 }
 
 // ---------------------------------------------------------------------------
-// Remote probes via SSH multiplexed connection — fetches BOTH metrics and
-// stats in a single SSH round-trip to minimize latency.
+// Remote probes via SSH mux
 // ---------------------------------------------------------------------------
 
 type remoteResult struct {
@@ -212,8 +233,6 @@ func fetchRemoteBoth(mux *sshMux, names []string, port int) remoteResult {
 		return result
 	}
 	nameList := strings.Join(names, " ")
-	// Single script: find the server container, fetch metrics via nsenter/curl,
-	// and podman stats, print both separated by a delimiter.
 	script := fmt.Sprintf(`
 SPID=0; SNAME=""
 for N in %s; do
@@ -248,7 +267,7 @@ fi
 }
 
 // ---------------------------------------------------------------------------
-// Ping — always from the loadgen container's network namespace (local)
+// Ping
 // ---------------------------------------------------------------------------
 
 func pingOnce(loadgenPID, host string) float64 {
@@ -319,7 +338,7 @@ func splitNonEmpty(s, sep string) []string {
 }
 
 func itoa(i int) string     { return strconv.Itoa(i) }
-func i64toa(i int64) string { return strconv.FormatInt(i, 10) }
+func u64toa(i uint64) string { return strconv.FormatUint(i, 10) }
 
 // ---------------------------------------------------------------------------
 // Main
@@ -346,9 +365,14 @@ func main() {
 	}
 	header := []string{
 		"timestamp", "timestamp_unix_milli", "elapsed_s",
-		"active_peers", "total_peers", "bytes_sent", "bytes_received",
-		"frames_sent", "keyframes_sent", "uptime_s", "avg_bitrate_bps",
+		"connected_clients", "total_clients", "bytes_sent", "bytes_received",
+		"uptime_s",
 	}
+	// Loadgen RTT metrics
+	header = append(header,
+		"ws_rtt_avg_ms", "ws_rtt_p50_ms", "ws_rtt_p95_ms", "ws_rtt_p99_ms", "ws_rtt_max_ms",
+		"ws_jitter_ms", "connection_drops",
+	)
 	for _, h := range pingTargets {
 		header = append(header, fmt.Sprintf("ping_ms_%s", h))
 	}
@@ -357,7 +381,7 @@ func main() {
 	_ = w.Write(header)
 	w.Flush()
 
-	// Set up SSH multiplexed connection for remote probes
+	// Set up SSH mux for remote probes
 	var mux *sshMux
 	if *remoteDirectIP != "" && *remoteSSHUser != "" {
 		mux = newSSHMux(*remoteSSHUser, *remoteDirectIP)
@@ -379,8 +403,8 @@ func main() {
 	ticker := time.NewTicker(*interval)
 	defer ticker.Stop()
 
-	log.Printf("Collector started: remote=%s remote-user=%s mux=%v ping=%v server-names=%v interval=%s",
-		*remoteDirectIP, *remoteSSHUser, mux != nil, pingTargets, srvNames, *interval)
+	log.Printf("Collector started: remote=%s remote-user=%s mux=%v ping=%v server-names=%v loadgen=%s interval=%s",
+		*remoteDirectIP, *remoteSSHUser, mux != nil, pingTargets, srvNames, *loadgenName, *interval)
 
 	for {
 		select {
@@ -392,7 +416,6 @@ func main() {
 			elapsed := t.Sub(startTime).Seconds()
 
 			// --- Server metrics + container stats ---
-			// 1. Try local container (fast, no network)
 			var sm ServerMetrics
 			var cs ContainerStats
 			name, pid := findLocalContainer(srvNames)
@@ -401,37 +424,35 @@ func main() {
 				cs = fetchStatsLocal(name)
 			}
 
-			// 2. If local failed, fetch both metrics+stats from remote in one SSH call
 			if !metricsValid(&sm) && mux != nil {
 				r := fetchRemoteBoth(mux, srvNames, *metricsPort)
 				sm = r.Metrics
 				cs = r.Stats
 			}
 
-			// --- Pings ---
+			// --- Loadgen metrics (always local) ---
 			_, loadgenPID := findLocalContainer([]string{*loadgenName})
-
-			// --- Normalize peers ---
-			activePeers := sm.ActivePeers
-			if activePeers == 0 {
-				activePeers = sm.ConnectedPeers
-			}
-			totalPeers := sm.TotalPeers
-			if totalPeers == 0 && sm.ConnectedPeers > 0 {
-				totalPeers = int64(sm.ConnectedPeers)
-			}
+			lm := fetchLoadgenMetrics(loadgenPID, *loadgenMetricsPort)
 
 			// Build row
 			row := []string{
 				t.Format(time.RFC3339Nano),
 				fmt.Sprintf("%d", t.UnixMilli()),
 				fmt.Sprintf("%.3f", elapsed),
-				itoa(activePeers), itoa(int(totalPeers)),
-				i64toa(sm.BytesSent), i64toa(sm.BytesReceived),
-				i64toa(sm.FramesSent), i64toa(sm.KeyframesSent),
+				itoa(sm.ConnectedClients), fmt.Sprintf("%d", sm.TotalClients),
+				u64toa(sm.BytesSent), u64toa(sm.BytesReceived),
 				fmt.Sprintf("%.1f", sm.UptimeSeconds),
-				fmt.Sprintf("%.0f", sm.AvgBitrateBps),
 			}
+			// Loadgen RTT metrics
+			row = append(row,
+				fmt.Sprintf("%.3f", lm.AvgRttMs),
+				fmt.Sprintf("%.3f", lm.P50RttMs),
+				fmt.Sprintf("%.3f", lm.P95RttMs),
+				fmt.Sprintf("%.3f", lm.P99RttMs),
+				fmt.Sprintf("%.3f", lm.MaxRttMs),
+				fmt.Sprintf("%.3f", lm.JitterMs),
+				fmt.Sprintf("%d", lm.ConnectionDrops),
+			)
 			for _, h := range pingTargets {
 				rtt := pingOnce(loadgenPID, h)
 				row = append(row, fmt.Sprintf("%.3f", rtt))

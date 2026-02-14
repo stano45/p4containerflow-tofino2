@@ -16,7 +16,7 @@ printf "===== Cleaning up multi-node experiment =====\n"
 printf "\n----- [lakewood] -----\n"
 if on_lakewood true 2>/dev/null; then
     on_lakewood "
-        for name in webrtc-server webrtc-loadgen h2 h3; do
+        for name in stream-server stream-client webrtc-server webrtc-loadgen h2 h3; do
             sudo podman kill \$name 2>/dev/null || true
             sudo podman rm -f \$name 2>/dev/null || true
         done
@@ -33,7 +33,7 @@ fi
 printf "\n----- [loveland] -----\n"
 if on_loveland true 2>/dev/null; then
     on_loveland "
-        for name in webrtc-server h3; do
+        for name in stream-server webrtc-server h3; do
             sudo podman kill \$name 2>/dev/null || true
             sudo podman rm -f \$name 2>/dev/null || true
         done

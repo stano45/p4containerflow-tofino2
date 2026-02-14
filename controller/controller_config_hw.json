@@ -30,11 +30,6 @@
         "ipv4": "192.168.12.2",
         "is_lb_node": true,
         "sw_port": 140
-      },
-      {
-        "ipv4": "192.168.12.3",
-        "is_lb_node": true,
-        "sw_port": 148
       }
     ]
   }

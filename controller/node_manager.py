@@ -152,6 +152,39 @@ class NodeManager(object):
         self._setup_tables(self._initial_nodes_config)
         self.logger.info("Reinitialization complete")
 
+    def updateForward(self, ipv4, sw_port):
+        """Update forward + arp_forward table entries to point ipv4 to a new switch port.
+
+        Used for same-IP migration: the server keeps its IP but moves to a
+        different physical node (different switch port).
+        """
+        try:
+            self.switch_controller.insertForwardEntry(
+                dst_addr=ipv4,
+                port=sw_port,
+                update_type=UpdateType.MODIFY,
+            )
+            self.logger.info(
+                f"Updated forward entry: {ipv4} -> port {sw_port}"
+            )
+
+            self.switch_controller.insertArpForwardEntry(
+                target_ip=ipv4,
+                port=sw_port,
+                update_type=UpdateType.MODIFY,
+            )
+            self.logger.info(
+                f"Updated ARP forward entry: {ipv4} -> port {sw_port}"
+            )
+        except grpc.RpcError as e:
+            raise Exception(
+                f"Failed to update forward entries for {ipv4} -> port {sw_port}: {printGrpcError(e)}"
+            )
+        except Exception as e:
+            raise Exception(
+                f"Failed to update forward entries for {ipv4} -> port {sw_port}: {e}"
+            )
+
     def migrateNode(self, old_ipv4, new_ipv4):
         # No-op if migrating to same IP
         if old_ipv4 == new_ipv4:
