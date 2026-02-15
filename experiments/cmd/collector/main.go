@@ -317,6 +317,7 @@ func main() {
 		"timestamp", "timestamp_unix_milli", "elapsed_s",
 		"connected_clients", "total_clients", "bytes_sent", "bytes_received",
 		"uptime_s",
+		"lg_connected_clients",
 		"ws_rtt_avg_ms", "ws_rtt_p50_ms", "ws_rtt_p95_ms", "ws_rtt_p99_ms", "ws_rtt_max_ms",
 		"ws_jitter_ms", "connection_drops",
 	}
@@ -385,6 +386,7 @@ func main() {
 				itoa(sm.ConnectedClients), fmt.Sprintf("%d", sm.TotalClients),
 				u64toa(sm.BytesSent), u64toa(sm.BytesReceived),
 				fmt.Sprintf("%.1f", sm.UptimeSeconds),
+				itoa(lm.ConnectedClients),
 				fmt.Sprintf("%.3f", lm.AvgRttMs),
 				fmt.Sprintf("%.3f", lm.P50RttMs),
 				fmt.Sprintf("%.3f", lm.P95RttMs),

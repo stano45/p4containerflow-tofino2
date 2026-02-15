@@ -322,7 +322,7 @@ on_lakewood "sudo nohup $REMOTE_COLLECTOR_BIN \
     -remote-direct-ip '$LOVELAND_DIRECT_IP' \
     -remote-ssh-user '$REMOTE_SSH_USER' \
     -metrics-port $METRICS_PORT \
-    -ping-hosts '${H2_IP},${H3_IP}' \
+    -ping-hosts '${H2_IP}' \
     -server-names 'stream-server,h3' \
     -loadgen-container 'stream-client' \
     -loadgen-metrics-port '$LOADGEN_METRICS_PORT' \

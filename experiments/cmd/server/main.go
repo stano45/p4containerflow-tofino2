@@ -6,18 +6,26 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
 var (
-	listenAddr = flag.String("signaling-addr", ":8080", "HTTP address for WebSocket + health")
+	listenAddr  = flag.String("signaling-addr", ":8080", "HTTP address for WebSocket + health")
 	metricsAddr = flag.String("metrics-addr", ":8081", "HTTP address for metrics")
-	dataFPS    = flag.Int("fps", 30, "Data frames per second sent to each client")
+	dataFPS     = flag.Int("fps", 30, "Data frames per second sent to each client")
 )
+
+// quiesced is toggled by SIGUSR2. When true, the writer goroutines skip
+// sending data frames, letting the kernel TCP send queue drain before a
+// CRIU checkpoint. After restore, cr_hw.sh sends SIGUSR2 again to resume.
+var quiesced atomic.Bool
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -101,7 +109,7 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	done := make(chan struct{})
 
-	// Writer: periodic data frames
+	// Writer: periodic data frames (skipped when quiesced)
 	go func() {
 		frameDuration := time.Second / time.Duration(*dataFPS)
 		ticker := time.NewTicker(frameDuration)
@@ -119,6 +127,9 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 			case <-done:
 				return
 			case <-ticker.C:
+				if quiesced.Load() {
+					continue
+				}
 				msg := dataMsg{
 					Seq:     seq,
 					Ts:      time.Now().UnixNano(),
@@ -135,13 +146,21 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Reader: echo client pings
+	// Reader: echo client pings (skipped when quiesced so TCP send queue
+	// can drain fully before a CRIU checkpoint)
 	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
 			break
 		}
 		s.bytesRecv.Add(uint64(len(raw)))
+
+		// When quiesced, still read (keeps the connection alive) but
+		// don't write echo responses — lets the kernel flush the TCP
+		// send buffer completely before the checkpoint.
+		if quiesced.Load() {
+			continue
+		}
 
 		var cm clientMsg
 		if err := json.Unmarshal(raw, &cm); err != nil {
@@ -193,6 +212,21 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func main() {
 	flag.Parse()
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+
+	// SIGUSR2 toggles quiesce mode for pre-checkpoint send-queue drain
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGUSR2)
+	go func() {
+		for range sigCh {
+			prev := quiesced.Load()
+			quiesced.Store(!prev)
+			if !prev {
+				log.Println("SIGUSR2: quiesced — data frames paused (send queue draining)")
+			} else {
+				log.Println("SIGUSR2: resumed — data frames active")
+			}
+		}
+	}()
 
 	s := newServer()
 

@@ -89,7 +89,7 @@ hw-collector:
 		-loadgen-container stream-client \
 		-metrics-port 8081 \
 		-loadgen-metrics-port 9090 \
-		-ping-hosts 192.168.12.2,192.168.12.3 \
+		-ping-hosts 192.168.12.2 \
 		-migration-flag /tmp/migration_event \
 		-output results/metrics.csv
 

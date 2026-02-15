@@ -92,8 +92,14 @@ fi
 TARGET_PREP_PID=$!
 
 # Ensure CRIU skips in-flight (half-open) connections.
-# These can appear when the collector probes the server mid-checkpoint.
 on_source "sudo mkdir -p /etc/criu && echo 'skip-in-flight' | sudo tee /etc/criu/default.conf >/dev/null"
+
+# Quiesce: pause server data frames AND echo handler so TCP send queue drains
+# before checkpoint.  SIGUSR2 toggles the quiesce flag; writer goroutines stop
+# generating frames and the echo handler stops writing responses. 200ms is
+# enough for the kernel to flush the remaining bytes.
+on_source "sudo podman kill --signal SIGUSR2 $CONTAINER_NAME"
+sleep 0.2
 
 on_source "
     sudo mkdir -p $CHECKPOINT_DIR
@@ -104,7 +110,6 @@ on_source "
         --tcp-established \
         $CONTAINER_NAME
 "
-# NOTE: No --leave-running! Container stops here. TCP state is frozen.
 
 CHECKPOINT_DONE=$(date +%s%N)
 CHECKPOINT_MS=$(( (CHECKPOINT_DONE - MIGRATION_START) / 1000000 ))
@@ -188,14 +193,38 @@ if ! on_target "
         --tcp-established \
         --ignore-static-mac
 "; then
-    echo "ERROR: Restore failed (see above)."
+    # Fetch CRIU restore log for diagnosis
+    RESTORE_LOG=$(on_target "
+        CID=\$(sudo podman ps -a --no-trunc --format '{{.ID}}' --filter name=$CONTAINER_NAME 2>/dev/null | head -1)
+        if [ -z \"\$CID\" ]; then CID=$CONTAINER_NAME; fi
+        LOG=/var/lib/containers/storage/overlay-containers/\${CID}/userdata/restore.log
+        if [ -f \"\$LOG\" ]; then sudo grep -i 'error\|fail\|broken\|queue' \"\$LOG\" | tail -20; fi
+    " 2>/dev/null || true)
+    printf "\n===== CRIU RESTORE FAILED on %s =====\n" "$TARGET_NODE"
+    printf "Direction:    %s -> %s\n" "$SOURCE_NODE" "$TARGET_NODE"
+    printf "Container:    %s\n" "$CONTAINER_NAME"
+    printf "Checkpoint:   %s/checkpoint.tar (%s bytes)\n" "$CHECKPOINT_DIR" "${CHECKPOINT_SIZE:-?}"
+    if [[ -n "$RESTORE_LOG" ]]; then
+        printf "\nCRIU restore log (errors):\n%s\n" "$RESTORE_LOG"
+        if echo "$RESTORE_LOG" | grep -q "send queue data.*Broken pipe"; then
+            printf "\nDiagnosis: TCP send-queue data could not be replayed (EPIPE).\n"
+            printf "The server had unsent data buffered at checkpoint time. After multiple\n"
+            printf "migration cycles the peer's TCP state drifted enough to reject the\n"
+            printf "replayed queue. This is a known CRIU limitation with --tcp-established\n"
+            printf "under sustained throughput. Reducing --fps or checkpoint frequency helps.\n"
+        fi
+    else
+        printf "\n(Could not retrieve CRIU restore log)\n"
+    fi
+    printf "=====\n"
     exit 1
 fi
 on_target "sudo podman rename $CONTAINER_NAME $RENAME_AFTER_RESTORE 2>/dev/null || true"
 
-# Ensure the container has the server IP on its interface and send gratuitous ARP
-# so the loadgen's ARP cache updates to the new MAC for .2.
-# No VIP alias — TCP connections bind to .2 only, which CRIU restores cleanly.
+# Resume data frames (server was quiesced before checkpoint, still quiesced after restore)
+on_target "sudo podman kill --signal SIGUSR2 $RENAME_AFTER_RESTORE 2>/dev/null || sudo podman kill --signal SIGUSR2 $CONTAINER_NAME 2>/dev/null || true"
+
+# Ensure the container has the server IP and send gratuitous ARP
 on_target "PID=\$(sudo podman inspect --format '{{.State.Pid}}' $RENAME_AFTER_RESTORE 2>/dev/null || sudo podman inspect --format '{{.State.Pid}}' $CONTAINER_NAME 2>/dev/null || echo 0); if [ \"\$PID\" != '0' ] && [ -n \"\$PID\" ]; then sudo nsenter -t \$PID -n ip addr add $SERVER_IP/24 dev eth0 2>/dev/null || true; sudo nsenter -t \$PID -n arping -U -c 2 -I eth0 $SERVER_IP >/dev/null 2>&1 & echo \"$SERVER_IP assigned (PID \$PID)\"; else echo 'WARNING: Could not determine restored container PID'; fi"
 
 RESTORE_DONE=$(date +%s%N)
@@ -232,6 +261,21 @@ if [ "$HTTP_CODE" = "200" ]; then
 else
     printf "WARNING: Switch update returned HTTP %s\n" "$HTTP_CODE"
 fi
+
+# Flush the loadgen's stale ARP entry for the server IP so the kernel sends a
+# fresh ARP request.  The P4 switch has arp_forward table entries for all node
+# IPs (updated by /updateForward above), so the request reaches the restored
+# container and the reply comes back — no manual MAC injection needed.
+if [[ "$SOURCE_NODE" = "lakewood" ]]; then
+    _LG_PID=$(on_source "sudo podman inspect --format '{{.State.Pid}}' stream-client 2>/dev/null" || true)
+    [[ -n "$_LG_PID" && "$_LG_PID" != "0" ]] && \
+        on_source "sudo nsenter -t $_LG_PID -n ip neigh flush to $SERVER_IP dev eth0 2>/dev/null" || true
+else
+    _LG_PID=$(on_target "sudo podman inspect --format '{{.State.Pid}}' stream-client 2>/dev/null" || true)
+    [[ -n "$_LG_PID" && "$_LG_PID" != "0" ]] && \
+        on_target "sudo nsenter -t $_LG_PID -n ip neigh flush to $SERVER_IP dev eth0 2>/dev/null" || true
+fi
+printf "Loadgen ARP flushed for %s (will re-resolve via P4 switch)\n" "$SERVER_IP"
 
 # =============================================================================
 # Step 5: Remove source container (already stopped by checkpoint)
