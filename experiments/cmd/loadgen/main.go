@@ -1,17 +1,3 @@
-// Package main implements a WebSocket load generator for container migration
-// experiments.
-//
-// It opens N concurrent WebSocket connections to the server, sends periodic
-// ping messages with timestamps, and measures RTT, jitter, and throughput.
-// Connections are expected to survive migration transparently (no reconnect
-// logic needed beyond error recovery).
-//
-// It also serves a /metrics HTTP endpoint on a separate port so the
-// collector can gather client-side RTT statistics.
-//
-// Usage:
-//
-//	loadgen -server http://192.168.12.10:8080 -connections 4 -interval 1s
 package main
 
 import (
@@ -33,10 +19,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// ---------------------------------------------------------------------------
-// Flags
-// ---------------------------------------------------------------------------
-
 var (
 	serverURL   = flag.String("server", "http://localhost:8080", "Server base URL")
 	numConns    = flag.Int("connections", 4, "Number of concurrent WebSocket connections")
@@ -47,31 +29,25 @@ var (
 	rampUp      = flag.Duration("ramp-up", 200*time.Millisecond, "Delay between connecting each peer")
 )
 
-// ---------------------------------------------------------------------------
-// Per-connection state
-// ---------------------------------------------------------------------------
-
 type conn struct {
-	id   int
-	ws   *websocket.Conn
-	mu   sync.Mutex // guards ws writes
-	seq  int
+	id  int
+	ws  *websocket.Conn
+	mu  sync.Mutex
+	seq int
 
-	bytesRecv   atomic.Uint64
-	bytesSent   atomic.Uint64
-	msgsRecv    atomic.Uint64
-	msgsSent    atomic.Uint64
-	connected   atomic.Bool
+	bytesRecv atomic.Uint64
+	bytesSent atomic.Uint64
+	msgsRecv  atomic.Uint64
+	msgsSent  atomic.Uint64
+	connected atomic.Bool
 
-	// RTT tracking (protected by rttMu)
 	rttMu      sync.Mutex
-	rttSamples []float64 // recent RTT samples in ms
+	rttSamples []float64
 	lastRTT    float64
 	jitterSum  float64
 	jitterN    int
 }
 
-// sendPing sends a ping message with timestamp.
 func (c *conn) sendPing() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -97,10 +73,6 @@ func (c *conn) sendPing() error {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// Aggregated metrics (served via HTTP)
-// ---------------------------------------------------------------------------
-
 type aggregatedMetrics struct {
 	ConnectedClients int     `json:"connected_clients"`
 	TotalClients     int     `json:"total_clients"`
@@ -115,13 +87,9 @@ type aggregatedMetrics struct {
 	ConnectionDrops  int64   `json:"connection_drops"`
 }
 
-// ---------------------------------------------------------------------------
-// Global state
-// ---------------------------------------------------------------------------
-
 var (
-	conns          []*conn
-	connsMu        sync.RWMutex
+	conns           []*conn
+	connsMu         sync.RWMutex
 	connectionDrops atomic.Int64
 )
 
@@ -185,12 +153,8 @@ func percentile(sorted []float64, p float64) float64 {
 	return sorted[lower]*(1-frac) + sorted[upper]*frac
 }
 
-// ---------------------------------------------------------------------------
-// Connection management
-// ---------------------------------------------------------------------------
-
 func connectWS(ctx context.Context, id int, serverURL string) (*conn, error) {
-	wsURL := "ws" + serverURL[4:] + "/ws" // http:// -> ws://
+	wsURL := "ws" + serverURL[4:] + "/ws"
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 5 * time.Second,
 	}
@@ -233,7 +197,6 @@ func connectWithRetry(ctx context.Context, id int, serverURL string) *conn {
 	}
 }
 
-// readLoop reads messages from the WebSocket and updates RTT stats.
 func readLoop(ctx context.Context, c *conn) {
 	for {
 		select {
@@ -254,25 +217,21 @@ func readLoop(ctx context.Context, c *conn) {
 		c.bytesRecv.Add(uint64(len(raw)))
 		c.msgsRecv.Add(1)
 
-		// Try to parse as echo (pong) message
 		var echo struct {
 			Seq      int   `json:"seq"`
 			ClientTs int64 `json:"client_ts"`
 			ServerTs int64 `json:"server_ts"`
 		}
 		if err := json.Unmarshal(raw, &echo); err == nil && echo.ClientTs > 0 {
-			rtt := float64(time.Now().UnixNano()-echo.ClientTs) / 1e6 // ms
-			if rtt >= 0 && rtt < 60000 { // sanity check
+			rtt := float64(time.Now().UnixNano()-echo.ClientTs) / 1e6
+			if rtt >= 0 && rtt < 60000 {
 				c.rttMu.Lock()
-				// Track jitter (RTT variation)
 				if c.lastRTT > 0 {
-					j := math.Abs(rtt - c.lastRTT)
-					c.jitterSum += j
+					c.jitterSum += math.Abs(rtt - c.lastRTT)
 					c.jitterN++
 				}
 				c.lastRTT = rtt
 				c.rttSamples = append(c.rttSamples, rtt)
-				// Keep last 1000 samples per connection
 				if len(c.rttSamples) > 1000 {
 					c.rttSamples = c.rttSamples[len(c.rttSamples)-1000:]
 				}
@@ -282,7 +241,6 @@ func readLoop(ctx context.Context, c *conn) {
 	}
 }
 
-// pingLoop sends periodic pings.
 func pingLoop(ctx context.Context, c *conn) {
 	interval := time.Duration(*pingMs) * time.Millisecond
 	ticker := time.NewTicker(interval)
@@ -307,10 +265,6 @@ func pingLoop(ctx context.Context, c *conn) {
 		}
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Stdout metrics (for backward compatibility with collector)
-// ---------------------------------------------------------------------------
 
 type peerMetrics struct {
 	PeerID             int     `json:"peer_id"`
@@ -351,10 +305,6 @@ func snapshotConn(c *conn, prevBytes *uint64, prevTime *time.Time) peerMetrics {
 	return m
 }
 
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
 func main() {
 	flag.Parse()
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
@@ -365,7 +315,6 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Signal handling
 	quitCh := make(chan os.Signal, 1)
 	signal.Notify(quitCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -374,7 +323,6 @@ func main() {
 		cancel()
 	}()
 
-	// Start metrics HTTP server
 	go func() {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
@@ -392,7 +340,6 @@ func main() {
 		}
 	}()
 
-	// Connect all WebSocket clients
 	conns = make([]*conn, *numConns)
 	for i := 0; i < *numConns; i++ {
 		c := connectWithRetry(ctx, i, *serverURL)
@@ -404,7 +351,6 @@ func main() {
 		connsMu.Unlock()
 		log.Printf("[conn-%d] connected", i)
 
-		// Start read and ping loops
 		go readLoop(ctx, c)
 		go pingLoop(ctx, c)
 
@@ -421,12 +367,10 @@ func main() {
 	}
 	log.Printf("Connected %d / %d clients", connectedCount, *numConns)
 
-	// Stdout metrics reporting loop
 	enc := json.NewEncoder(os.Stdout)
 	ticker := time.NewTicker(*reportIval)
 	defer ticker.Stop()
 
-	// Track per-connection byte counts for throughput calculation
 	prevBytes := make([]uint64, *numConns)
 	prevTimes := make([]time.Time, *numConns)
 	for i := range prevTimes {

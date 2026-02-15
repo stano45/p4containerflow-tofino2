@@ -1,15 +1,3 @@
-// Package main implements a WebSocket streaming server for container migration
-// experiments.
-//
-// The server accepts persistent WebSocket connections and echoes client
-// messages with server-side timestamps, enabling precise RTT measurement.
-// It also sends periodic data frames to generate throughput.
-//
-// Endpoints:
-//
-//	GET  /ws      – WebSocket upgrade; echo + periodic data
-//	GET  /metrics – JSON metrics (connected clients, bytes, uptime)
-//	GET  /health  – Simple health check
 package main
 
 import (
@@ -25,52 +13,33 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// ---------------------------------------------------------------------------
-// Flags
-// ---------------------------------------------------------------------------
-
 var (
-	signalingAddr = flag.String("signaling-addr", ":8080", "HTTP address for WebSocket + health")
-	metricsAddr   = flag.String("metrics-addr", ":8081", "HTTP address for metrics")
-	dataFPS       = flag.Int("fps", 30, "Data frames per second sent to each client")
+	listenAddr = flag.String("signaling-addr", ":8080", "HTTP address for WebSocket + health")
+	metricsAddr = flag.String("metrics-addr", ":8081", "HTTP address for metrics")
+	dataFPS    = flag.Int("fps", 30, "Data frames per second sent to each client")
 )
-
-// ---------------------------------------------------------------------------
-// WebSocket upgrader
-// ---------------------------------------------------------------------------
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// ---------------------------------------------------------------------------
-// Message types
-// ---------------------------------------------------------------------------
-
-// clientMsg is what the loadgen sends.
 type clientMsg struct {
 	Seq int   `json:"seq"`
-	Ts  int64 `json:"ts"` // Unix nanoseconds
+	Ts  int64 `json:"ts"`
 }
 
-// echoMsg is what the server sends back for each client ping.
 type echoMsg struct {
 	Seq      int   `json:"seq"`
 	ClientTs int64 `json:"client_ts"`
 	ServerTs int64 `json:"server_ts"`
 }
 
-// dataMsg is the periodic server-initiated data frame.
 type dataMsg struct {
-	Seq      int    `json:"seq"`
-	Ts       int64  `json:"ts"`
-	Size     int    `json:"size"`
-	Padding  string `json:"padding,omitempty"`
+	Seq     int    `json:"seq"`
+	Ts      int64  `json:"ts"`
+	Size    int    `json:"size"`
+	Padding string `json:"padding,omitempty"`
 }
-
-// ---------------------------------------------------------------------------
-// Server state
-// ---------------------------------------------------------------------------
 
 type server struct {
 	mu           sync.RWMutex
@@ -112,10 +81,6 @@ func (s *server) connectedCount() int {
 	return n
 }
 
-// ---------------------------------------------------------------------------
-// WebSocket handler
-// ---------------------------------------------------------------------------
-
 func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -126,31 +91,28 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 	clientID := s.addClient(conn)
 	log.Printf("[client-%d] connected", clientID)
 
-	// gorilla/websocket requires serialised writes — use a mutex
+	// gorilla/websocket requires serialised writes
 	var writeMu sync.Mutex
-
 	writeMsg := func(data []byte) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
 		return conn.WriteMessage(websocket.TextMessage, data)
 	}
 
-	// Channel to signal writer goroutine to stop
 	done := make(chan struct{})
 
-	// Writer goroutine: sends periodic data frames
+	// Writer: periodic data frames
 	go func() {
 		frameDuration := time.Second / time.Duration(*dataFPS)
 		ticker := time.NewTicker(frameDuration)
 		defer ticker.Stop()
 
 		seq := 0
-		// ~512 bytes of padding per frame for throughput
-		padding := make([]byte, 512)
-		for i := range padding {
-			padding[i] = 'x'
+		paddingBuf := make([]byte, 512)
+		for i := range paddingBuf {
+			paddingBuf[i] = 'x'
 		}
-		paddingStr := string(padding)
+		paddingStr := string(paddingBuf)
 
 		for {
 			select {
@@ -173,7 +135,7 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Reader loop: read client pings and echo them
+	// Reader: echo client pings
 	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
@@ -204,10 +166,6 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[client-%d] disconnected", clientID)
 }
 
-// ---------------------------------------------------------------------------
-// HTTP Handlers
-// ---------------------------------------------------------------------------
-
 type metricsResponse struct {
 	ConnectedClients int     `json:"connected_clients"`
 	TotalClients     int64   `json:"total_clients"`
@@ -232,32 +190,26 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, `{"status":"ok"}`)
 }
 
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
 func main() {
 	flag.Parse()
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 
 	s := newServer()
 
-	// Signaling + WebSocket server
 	sigMux := http.NewServeMux()
 	sigMux.HandleFunc("/ws", s.handleWS)
 	sigMux.HandleFunc("/health", s.handleHealth)
 
-	// Metrics server (separate port)
 	metMux := http.NewServeMux()
 	metMux.HandleFunc("/metrics", s.handleMetrics)
 	metMux.HandleFunc("/health", s.handleHealth)
 
 	log.Printf("Stream server starting — ws=%s  metrics=%s  fps=%d",
-		*signalingAddr, *metricsAddr, *dataFPS)
+		*listenAddr, *metricsAddr, *dataFPS)
 
 	go func() {
 		log.Fatal(http.ListenAndServe(*metricsAddr, metMux))
 	}()
 
-	log.Fatal(http.ListenAndServe(*signalingAddr, sigMux))
+	log.Fatal(http.ListenAndServe(*listenAddr, sigMux))
 }

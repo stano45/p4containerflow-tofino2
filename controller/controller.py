@@ -17,15 +17,12 @@ app = Flask(__name__)
 
 nodeManager = None
 
-# Configure logger
 logger = logging.getLogger("P4RuntimeController")
-logger.setLevel(logging.DEBUG)  # Set log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+logger.setLevel(logging.DEBUG)
 formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
-
-# Optionally log to a file
 file_handler = logging.FileHandler("controller.log")
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
@@ -36,7 +33,6 @@ def main(config_file_path):
         with open(config_file_path, "r") as config_file:
             switch_configs = json.load(config_file)
 
-        # Determine program name based on ARCH environment variable
         arch = os.environ.get("ARCH", "tf2")
         if arch == "tf1":
             program_name = "tna_load_balancer"
@@ -48,8 +44,6 @@ def main(config_file_path):
         master_config = None
 
         for config in switch_configs:
-            # Master needs to be initialized last,
-            # otherwise performing master arbitration update will fail
             if config.get("master", False):
                 if master_config is not None:
                     raise Exception(
@@ -59,26 +53,20 @@ def main(config_file_path):
                 continue
 
             switch_controller = SwitchController(
-                # p4info_file_path=config["p4info_file_path"],
-                # bmv2_file_path=config["bmv2_file_path"],
                 logger=logger,
                 sw_name=program_name,
                 sw_addr=config["addr"],
                 sw_id=config["id"],
                 client_id=config["client_id"],
                 load_balancer_ip=config["load_balancer_ip"],
-                # proto_dump_file=config["proto_dump_file"],
-                # initial_table_rules_file=config["runtime_file"],
             )
             switch_controllers.append(switch_controller)
 
         if master_config is None:
-            raise Exception("No master switch specifiedin the configuration file.")
+            raise Exception("No master switch specified in the configuration file.")
         nodes = master_config.get("nodes", None)
 
         master_controller = SwitchController(
-            # p4info_file_path=master_config["p4info_file_path"],
-            # bmv2_file_path=master_config["bmv2_file_path"],
             logger=logger,
             sw_name=program_name,
             sw_addr=master_config["addr"],
@@ -86,13 +74,8 @@ def main(config_file_path):
             client_id=master_config["client_id"],
             load_balancer_ip=master_config["load_balancer_ip"],
             service_port=master_config["service_port"],
-            # proto_dump_file=master_config["proto_dump_file"],
-            # initial_table_rules_file=master_config["runtime_file"],
         )
 
-        # Configure switch ports if port_setup is specified in config.
-        # This adds front-panel ports with speed/FEC via the BF-RT $PORT table,
-        # replacing the need for manual bfshell port-add commands after switchd starts.
         port_setup = master_config.get("port_setup", [])
         if port_setup:
             master_controller.setup_ports(port_setup)
@@ -102,7 +85,6 @@ def main(config_file_path):
             logger=logger, switch_controller=master_controller, initial_nodes=nodes
         )
 
-        # Register cleanup handlers
         signal.signal(signal.SIGTERM, shutdown_handler)
         signal.signal(signal.SIGINT, shutdown_handler)
         atexit.register(lambda: nodeManager.cleanup() if nodeManager else None)
@@ -124,7 +106,6 @@ def main(config_file_path):
 @app.route("/migrateNode", methods=["POST"])
 def update_node():
     data = request.get_json()
-
     old_ipv4 = data.get("old_ipv4")
     new_ipv4 = data.get("new_ipv4")
 
@@ -168,7 +149,6 @@ def update_forward():
 
 @app.route("/cleanup", methods=["POST"])
 def cleanup():
-    """Endpoint to manually trigger cleanup of all table entries."""
     global nodeManager
     if nodeManager is None:
         return jsonify({"error": "NodeManager not initialized"}), 500
@@ -183,11 +163,7 @@ def cleanup():
 
 @app.route("/reinitialize", methods=["POST"])
 def reinitialize():
-    """Clean up all table entries and re-insert from original config.
-
-    Restores the controller to the same state as a fresh startup without
-    needing to restart the process. Useful for test idempotency.
-    """
+    """Clean up all table entries and re-insert from original config."""
     global nodeManager
     if nodeManager is None:
         return jsonify({"error": "NodeManager not initialized"}), 500
@@ -201,7 +177,6 @@ def reinitialize():
 
 
 def shutdown_handler(signum, frame):
-    """Handle shutdown signals by cleaning up table entries."""
     global nodeManager
     logger.info(f"Received signal {signum}, initiating cleanup...")
     if nodeManager is not None:
