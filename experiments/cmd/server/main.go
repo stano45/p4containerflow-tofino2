@@ -99,17 +99,25 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 	clientID := s.addClient(conn)
 	log.Printf("[client-%d] connected", clientID)
 
+	// Echo responses are sent via a channel to avoid blocking the reader.
+	// The reader must never block on a write (shared write mutex) because
+	// after a CRIU migration the TCP send buffer may fill up while the
+	// kernel re-establishes the path.  If the reader blocks, it can't
+	// consume incoming ACK-carrying data, creating a deadlock.
+	echoCh := make(chan []byte, 64)
+
+	done := make(chan struct{})
+
 	// gorilla/websocket requires serialised writes
 	var writeMu sync.Mutex
 	writeMsg := func(data []byte) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
+		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		return conn.WriteMessage(websocket.TextMessage, data)
 	}
 
-	done := make(chan struct{})
-
-	// Writer: periodic data frames (skipped when quiesced)
+	// Writer: periodic data frames + echo responses
 	go func() {
 		frameDuration := time.Second / time.Duration(*dataFPS)
 		ticker := time.NewTicker(frameDuration)
@@ -126,10 +134,33 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 			select {
 			case <-done:
 				return
+
+			case echoData := <-echoCh:
+				if err := writeMsg(echoData); err != nil {
+					return
+				}
+				s.bytesSent.Add(uint64(len(echoData)))
+
 			case <-ticker.C:
 				if quiesced.Load() {
 					continue
 				}
+
+				// Drain any pending echo responses before writing data
+				// so latency measurements stay fresh.
+			drainEchoes:
+				for {
+					select {
+					case echoData := <-echoCh:
+						if err := writeMsg(echoData); err != nil {
+							return
+						}
+						s.bytesSent.Add(uint64(len(echoData)))
+					default:
+						break drainEchoes
+					}
+				}
+
 				msg := dataMsg{
 					Seq:     seq,
 					Ts:      time.Now().UnixNano(),
@@ -146,8 +177,7 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Reader: echo client pings (skipped when quiesced so TCP send queue
-	// can drain fully before a CRIU checkpoint)
+	// Reader: echo client pings via channel (never blocks on write)
 	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
@@ -173,10 +203,17 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 			ServerTs: time.Now().UnixNano(),
 		}
 		data, _ := json.Marshal(echo)
-		if err := writeMsg(data); err != nil {
-			break
+
+		// Non-blocking send: if the echo channel is full, drop the
+		// echo rather than blocking the reader.  This keeps the reader
+		// draining the TCP receive buffer so the kernel can process
+		// incoming ACKs, which is critical for TCP recovery after
+		// migration.
+		select {
+		case echoCh <- data:
+		default:
+			// echo dropped (write backpressure)
 		}
-		s.bytesSent.Add(uint64(len(data)))
 	}
 
 	close(done)

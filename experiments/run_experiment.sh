@@ -233,9 +233,19 @@ printf "\n╔══════════════════════�
 printf "║  Step 4: Ensure controller is running    ║\n"
 printf "╚══════════════════════════════════════════╝\n\n"
 
+# Helper: call controller API via SSH to tofino (avoids firewall issues)
+ctrl_api() {
+    local endpoint="$1"
+    shift
+    on_tofino "curl -sf $* http://127.0.0.1:5000${endpoint}" 2>/dev/null
+}
+ctrl_api_code() {
+    local endpoint="$1"
+    on_tofino "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 3 http://127.0.0.1:5000${endpoint} -X POST" 2>/dev/null || echo "000"
+}
+
 # Check if controller is already responding
-CTRL_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 3 \
-    "${CONTROLLER_URL}/reinitialize" -X POST 2>/dev/null || echo "000")
+CTRL_HTTP=$(ctrl_api_code "/reinitialize")
 
 if [[ "$CTRL_HTTP" != "000" ]]; then
     echo "Controller already running (HTTP $CTRL_HTTP)"
@@ -249,8 +259,7 @@ else
     "
     echo "Waiting for controller to start..."
     for i in $(seq 1 30); do
-        CTRL_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 \
-            "${CONTROLLER_URL}/reinitialize" -X POST 2>/dev/null || echo "000")
+        CTRL_HTTP=$(ctrl_api_code "/reinitialize")
         if [[ "$CTRL_HTTP" != "000" ]]; then
             echo "Controller is up after ${i}s (HTTP $CTRL_HTTP)"
             CONTROLLER_STARTED=true
@@ -267,8 +276,16 @@ fi
 
 # Reinitialize tables to clean state
 echo "Reinitializing controller tables..."
-curl -s -X POST "${CONTROLLER_URL}/reinitialize" \
-    -H "Content-Type: application/json" | jq . 2>/dev/null || true
+ctrl_api "/reinitialize" "-X POST -H 'Content-Type: application/json'" | jq . 2>/dev/null || true
+
+# Delete the client_snat entry.  The SNAT rule rewrites the src IP of server
+# responses (src_port=8080) from the real server IP (192.168.12.2) to the VIP
+# (192.168.12.10).  This is correct for VIP-based load balancing where clients
+# connect to the VIP, but BREAKS same-IP migration where the client connects
+# directly to 192.168.12.2 — the client's TCP stack drops the response because
+# the source IP doesn't match the established connection.
+echo "Deleting client_snat entry (not needed for same-IP migration)..."
+ctrl_api "/deleteClientSnat" "-X POST -H 'Content-Type: application/json'" | jq . 2>/dev/null || true
 
 # =============================================================================
 # Step 5: Clean previous run
@@ -306,6 +323,11 @@ printf "Building collector binary...\n"
 on_lakewood "sudo rm -f $REMOTE_COLLECTOR_BIN; rm -f $REMOTE_COLLECTOR_BIN"
 scp $SSH_OPTS /tmp/stream-collector-build "$LAKEWOOD_SSH:$REMOTE_COLLECTOR_BIN"
 rm -f /tmp/stream-collector-build
+
+# Kill any stale collector processes from previous runs.
+# Use [s] trick so pkill's own command line doesn't match the pattern.
+on_lakewood "sudo pkill -f '[s]tream-collector' 2>/dev/null; true"
+sleep 1
 
 # Clean stale state on lakewood
 on_lakewood "sudo rm -f $REMOTE_COLLECTOR_CSV $REMOTE_MIGRATION_FLAG"

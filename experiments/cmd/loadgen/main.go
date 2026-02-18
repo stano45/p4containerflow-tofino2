@@ -93,6 +93,10 @@ var (
 	connectionDrops atomic.Int64
 )
 
+// computeMetrics returns per-interval metrics and resets the windowed RTT/jitter
+// accumulators.  This makes each /metrics poll return fresh data for the current
+// collection interval rather than cumulative values that get permanently dragged
+// up by migration-induced spikes.
 func computeMetrics() aggregatedMetrics {
 	connsMu.RLock()
 	defer connsMu.RUnlock()
@@ -116,6 +120,10 @@ func computeMetrics() aggregatedMetrics {
 		allRTT = append(allRTT, c.rttSamples...)
 		totalJitter += c.jitterSum
 		jitterCount += c.jitterN
+		// Reset windowed accumulators so next poll gets fresh data
+		c.rttSamples = c.rttSamples[:0]
+		c.jitterSum = 0
+		c.jitterN = 0
 		c.rttMu.Unlock()
 	}
 
@@ -225,17 +233,14 @@ func readLoop(ctx context.Context, c *conn) {
 		if err := json.Unmarshal(raw, &echo); err == nil && echo.ClientTs > 0 {
 			rtt := float64(time.Now().UnixNano()-echo.ClientTs) / 1e6
 			if rtt >= 0 && rtt < 60000 {
-				c.rttMu.Lock()
-				if c.lastRTT > 0 {
-					c.jitterSum += math.Abs(rtt - c.lastRTT)
-					c.jitterN++
-				}
-				c.lastRTT = rtt
-				c.rttSamples = append(c.rttSamples, rtt)
-				if len(c.rttSamples) > 1000 {
-					c.rttSamples = c.rttSamples[len(c.rttSamples)-1000:]
-				}
-				c.rttMu.Unlock()
+			c.rttMu.Lock()
+			if c.lastRTT > 0 {
+				c.jitterSum += math.Abs(rtt - c.lastRTT)
+				c.jitterN++
+			}
+			c.lastRTT = rtt
+			c.rttSamples = append(c.rttSamples, rtt)
+			c.rttMu.Unlock()
 			}
 		}
 	}

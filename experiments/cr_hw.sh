@@ -42,6 +42,7 @@ if [[ "$MIGRATION_DIRECTION" = "loveland_lakewood" ]]; then
   CONTAINER_NAME="h3"
   RENAME_AFTER_RESTORE="stream-server"
   TARGET_SW_PORT=$LAKEWOOD_SW_PORT
+  TARGET_NIC=$LAKEWOOD_NIC
 else
   SOURCE_SSH="$LAKEWOOD_SSH"
   TARGET_SSH="$LOVELAND_SSH"
@@ -53,6 +54,7 @@ else
   CONTAINER_NAME="stream-server"
   RENAME_AFTER_RESTORE="h3"
   TARGET_SW_PORT=$LOVELAND_SW_PORT
+  TARGET_NIC=$LOVELAND_NIC
 fi
 
 # The server always keeps the same IP
@@ -96,10 +98,29 @@ on_source "sudo mkdir -p /etc/criu && echo 'skip-in-flight' | sudo tee /etc/criu
 
 # Quiesce: pause server data frames AND echo handler so TCP send queue drains
 # before checkpoint.  SIGUSR2 toggles the quiesce flag; writer goroutines stop
-# generating frames and the echo handler stops writing responses. 200ms is
-# enough for the kernel to flush the remaining bytes.
+# generating frames and the echo handler stops writing responses.
 on_source "sudo podman kill --signal SIGUSR2 $CONTAINER_NAME"
-sleep 0.2
+
+# Wait for TCP send queues to fully drain.  CRIU must replay the "not-sent"
+# portion of each send queue on restore, which requires a working network
+# interface.  After cross-node migration the macvlan is recreated but might
+# have brief connectivity gaps.  An active drain loop avoids any timing gamble.
+_SRV_PID=$(on_source "sudo podman inspect --format '{{.State.Pid}}' $CONTAINER_NAME 2>/dev/null" || true)
+if [[ -n "$_SRV_PID" && "$_SRV_PID" != "0" ]]; then
+    for _i in $(seq 1 20); do  # up to 20 × 100ms = 2s
+        _SQ=$(on_source "sudo nsenter -t $_SRV_PID -n ss -tn state established 2>/dev/null | awk 'NR>1{s+=\$2} END{print s+0}'" 2>/dev/null | tr -d '[:space:]')
+        if [[ "${_SQ:-0}" = "0" ]]; then
+            printf "Send queues drained in %d00 ms\n" "$_i"
+            break
+        fi
+        sleep 0.1
+    done
+    if [[ "${_SQ:-0}" != "0" ]]; then
+        printf "WARNING: Send queues still have %s bytes after 2s drain\n" "$_SQ"
+    fi
+else
+    sleep 0.2
+fi
 
 on_source "
     sudo mkdir -p $CHECKPOINT_DIR
@@ -182,7 +203,21 @@ printf "Transfer completed in %d ms\n" "$TRANSFER_MS"
 # =============================================================================
 printf "\n----- Step 3: Restore on %s (same IP %s) -----\n" "$TARGET_NODE" "$SERVER_IP"
 
+# Remove the source container NOW.  Its macvlan still has the server IP and
+# responds to ARP broadcasts on the source NIC.  If we leave it alive, the
+# client's ARP re-resolution (~20-30 s later) picks up the old (local) MAC
+# instead of the migrated server's MAC, breaking the data path.
+# The checkpoint tar is already on the target, so the source is dispensable.
+on_source "sudo podman rm -f $CONTAINER_NAME 2>/dev/null; true" &
+SOURCE_RM_PID=$!
+
+# Ensure CRIU skips in-flight (half-open) connections on the target.
+on_target "sudo mkdir -p /etc/criu && echo 'skip-in-flight' | sudo tee /etc/criu/default.conf >/dev/null" 2>/dev/null
+
 PRE_RESTORE_MS=0
+
+# Ensure source container is fully removed before we restore (ARP interference fix)
+wait $SOURCE_RM_PID 2>/dev/null || true
 
 RESTORE_START=$(date +%s%N)
 if ! on_target "
@@ -221,11 +256,39 @@ if ! on_target "
 fi
 on_target "sudo podman rename $CONTAINER_NAME $RENAME_AFTER_RESTORE 2>/dev/null || true"
 
+# Fix the macvlan interface: CRIU restores the container's network namespace from
+# the checkpoint, but the macvlan references the SOURCE host's NIC index, which
+# is wrong on the target.  We recreate it with the SAME fixed MAC ($H2_MAC) that
+# the container was created with, so the client's ARP cache stays valid and
+# packets arriving from the switch are delivered to the correct macvlan.
+on_target "
+    _CTR_PID=\$(sudo podman inspect --format '{{.State.Pid}}' $RENAME_AFTER_RESTORE 2>/dev/null || sudo podman inspect --format '{{.State.Pid}}' $CONTAINER_NAME 2>/dev/null || echo 0)
+    if [ \"\$_CTR_PID\" != '0' ] && [ -n \"\$_CTR_PID\" ]; then
+        sudo nsenter -t \$_CTR_PID -n ip link del eth0 2>/dev/null || true
+        sudo ip link add cr_mv_eth0 link $TARGET_NIC address $H2_MAC type macvlan mode bridge
+        sudo ip link set cr_mv_eth0 netns \$_CTR_PID
+        sudo nsenter -t \$_CTR_PID -n ip link set cr_mv_eth0 name eth0
+        sudo nsenter -t \$_CTR_PID -n ip addr add $SERVER_IP/24 dev eth0
+        sudo nsenter -t \$_CTR_PID -n ip link set eth0 up
+
+        # Flush the route cache so TCP sockets do a fresh lookup through the new eth0
+        sudo nsenter -t \$_CTR_PID -n ip route flush cache 2>/dev/null || true
+
+        # Pre-populate ARP for the client so the first retransmission doesn't
+        # need to wait for ARP resolution (saves ~1 RTT through the switch)
+        sudo nsenter -t \$_CTR_PID -n ip neigh replace $H1_IP dev eth0 lladdr $H1_MAC nud reachable 2>/dev/null || true
+
+        # Gratuitous ARP to update upstream caches (switch, NICs in promisc mode)
+        sudo nsenter -t \$_CTR_PID -n arping -U -c 2 -I eth0 $SERVER_IP >/dev/null 2>&1 &
+
+        echo \"macvlan recreated on $TARGET_NIC, $SERVER_IP/$H2_MAC assigned (PID \$_CTR_PID)\"
+    else
+        echo 'WARNING: Could not determine restored container PID'
+    fi
+"
+
 # Resume data frames (server was quiesced before checkpoint, still quiesced after restore)
 on_target "sudo podman kill --signal SIGUSR2 $RENAME_AFTER_RESTORE 2>/dev/null || sudo podman kill --signal SIGUSR2 $CONTAINER_NAME 2>/dev/null || true"
-
-# Ensure the container has the server IP and send gratuitous ARP
-on_target "PID=\$(sudo podman inspect --format '{{.State.Pid}}' $RENAME_AFTER_RESTORE 2>/dev/null || sudo podman inspect --format '{{.State.Pid}}' $CONTAINER_NAME 2>/dev/null || echo 0); if [ \"\$PID\" != '0' ] && [ -n \"\$PID\" ]; then sudo nsenter -t \$PID -n ip addr add $SERVER_IP/24 dev eth0 2>/dev/null || true; sudo nsenter -t \$PID -n arping -U -c 2 -I eth0 $SERVER_IP >/dev/null 2>&1 & echo \"$SERVER_IP assigned (PID \$PID)\"; else echo 'WARNING: Could not determine restored container PID'; fi"
 
 RESTORE_DONE=$(date +%s%N)
 RESTORE_MS=$(( (RESTORE_DONE - RESTORE_START) / 1000000 ))
@@ -262,30 +325,27 @@ else
     printf "WARNING: Switch update returned HTTP %s\n" "$HTTP_CODE"
 fi
 
-# Flush the loadgen's stale ARP entry for the server IP so the kernel sends a
-# fresh ARP request.  The P4 switch has arp_forward table entries for all node
-# IPs (updated by /updateForward above), so the request reaches the restored
-# container and the reply comes back — no manual MAC injection needed.
+# Set the loadgen's ARP entry for the server IP to the fixed MAC ($H2_MAC).
+# Since we always recreate the macvlan with the same MAC, we can inject it
+# directly instead of flushing and waiting for ARP re-resolution through the
+# switch.  This eliminates the race between the first retransmission and ARP.
 if [[ "$SOURCE_NODE" = "lakewood" ]]; then
     _LG_PID=$(on_source "sudo podman inspect --format '{{.State.Pid}}' stream-client 2>/dev/null" || true)
     [[ -n "$_LG_PID" && "$_LG_PID" != "0" ]] && \
-        on_source "sudo nsenter -t $_LG_PID -n ip neigh flush to $SERVER_IP dev eth0 2>/dev/null" || true
+        on_source "sudo nsenter -t $_LG_PID -n ip neigh replace $SERVER_IP dev eth0 lladdr $H2_MAC nud reachable 2>/dev/null" || true
 else
     _LG_PID=$(on_target "sudo podman inspect --format '{{.State.Pid}}' stream-client 2>/dev/null" || true)
     [[ -n "$_LG_PID" && "$_LG_PID" != "0" ]] && \
-        on_target "sudo nsenter -t $_LG_PID -n ip neigh flush to $SERVER_IP dev eth0 2>/dev/null" || true
+        on_target "sudo nsenter -t $_LG_PID -n ip neigh replace $SERVER_IP dev eth0 lladdr $H2_MAC nud reachable 2>/dev/null" || true
 fi
-printf "Loadgen ARP flushed for %s (will re-resolve via P4 switch)\n" "$SERVER_IP"
+printf "Loadgen ARP set for %s -> %s\n" "$SERVER_IP" "$H2_MAC"
 
 # =============================================================================
-# Step 5: Remove source container (already stopped by checkpoint)
+# Step 5: Source container already removed (done during pre-restore to prevent
+#         the old macvlan from interfering with ARP resolution)
 # =============================================================================
-printf "\n----- Step 5: Remove source container on %s -----\n" "$SOURCE_NODE"
-SOURCE_STOP_START=$(date +%s%N)
-on_source "sudo podman rm -f $CONTAINER_NAME 2>/dev/null; true"
-SOURCE_STOP_DONE=$(date +%s%N)
-SOURCE_STOP_MS=$(( (SOURCE_STOP_DONE - SOURCE_STOP_START) / 1000000 ))
-echo "Source container removed (${SOURCE_STOP_MS} ms)."
+printf "\n----- Step 5: Source container already removed -----\n"
+SOURCE_STOP_MS=0
 
 # =============================================================================
 # Step 6: Write migration timing

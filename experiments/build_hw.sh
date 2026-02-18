@@ -71,19 +71,24 @@ on_lakewood "
 
     # Server (h2) — no VIP alias; loadgen connects to .2 directly.
     # TCP connections bind to .2 so CRIU can restore them on the target.
+    # Fixed MAC so the P4-switch path works identically before and after migration
+    # (the same MAC is used when recreating the macvlan on the migration target).
     sudo podman run --replace --detach --privileged \
         --name stream-server --network $HW_NET --ip $H2_IP \
+        --mac-address $H2_MAC \
         -e GODEBUG=multipathtcp=0 \
         $SERVER_IMAGE \
         ./stream-server -signaling-addr :${SIGNALING_PORT} -metrics-addr :${METRICS_PORT}
 
-    echo \"stream-server started at ${H2_IP}\"
+    echo \"stream-server started at ${H2_IP} (MAC ${H2_MAC})\"
 
     # Client (h1) — connects to server IP directly (not VIP).
     # Same-IP migration means .2 is always the server, P4 switch
     # updates the forward table to route .2 to the new physical port.
+    # Fixed MAC so the server can pre-populate its ARP cache after migration.
     sudo podman run --replace --detach --privileged \
         --name stream-client --network $HW_NET --ip $H1_IP \
+        --mac-address $H1_MAC \
         -e GODEBUG=multipathtcp=0 \
         $LOADGEN_IMAGE \
         ./stream-client -server http://${H2_IP}:${SIGNALING_PORT} -connections $LOADGEN_CONNECTIONS -metrics-port $LOADGEN_METRICS_PORT

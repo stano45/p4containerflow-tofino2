@@ -100,7 +100,7 @@ def main(config_file_path):
         print(f"Error: {e}")
         exit(1)
 
-    app.run(port=5000)
+    app.run(host="0.0.0.0", port=5000)
 
 
 @app.route("/migrateNode", methods=["POST"])
@@ -173,6 +173,31 @@ def reinitialize():
         return jsonify({"status": "success", "message": "Reinitialization complete"}), 200
     except Exception as e:
         logger.error(f"Reinitialize failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/deleteClientSnat", methods=["POST"])
+def delete_client_snat():
+    """Delete the client_snat table entry for the service port.
+
+    Used for same-IP migration experiments where the client connects
+    directly to the server IP (not the VIP), so the SNAT rule that
+    rewrites server responses to appear from the VIP is incorrect and
+    causes TCP connections to break when traffic traverses the switch.
+    """
+    global nodeManager
+    if nodeManager is None:
+        return jsonify({"error": "NodeManager not initialized"}), 500
+
+    try:
+        sc = nodeManager.switch_controller
+        sc.deleteClientSnatEntry(src_port=sc.service_port)
+        logger.info(
+            f"Deleted client_snat entry for service_port={sc.service_port}"
+        )
+        return jsonify({"status": "success", "message": "client_snat entry deleted"}), 200
+    except Exception as e:
+        logger.error(f"Failed to delete client_snat entry: {e}")
         return jsonify({"error": str(e)}), 500
 
 

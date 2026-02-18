@@ -15,6 +15,7 @@ printf "===== Cleaning up multi-node experiment =====\n"
 printf "\n----- [lakewood] -----\n"
 if on_lakewood true 2>/dev/null; then
     on_lakewood "
+        sudo pkill -f '[s]tream-collector' 2>/dev/null || true
         for name in stream-server stream-client h2 h3; do
             sudo podman kill \$name 2>/dev/null || true
             sudo podman rm -f \$name 2>/dev/null || true
