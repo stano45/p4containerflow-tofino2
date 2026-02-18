@@ -249,16 +249,28 @@ class SwitchController(AbstractSwitchController):
         self,
         dst_addr: str,
         port: int,
+        dst_mac: str | None = None,
         update_type: UpdateType = UpdateType.INSERT,
     ):
-        self.getUpdateFn(update_type)(
-            "pipe.SwitchIngress.forward",
-            [gc.KeyTuple("hdr.ipv4.dst_addr", gc.ipv4_to_bytes(dst_addr))],
-            "SwitchIngress.set_egress_port",
-            [
-                gc.DataTuple("port", port),
-            ],
-        )
+        if dst_mac:
+            self.getUpdateFn(update_type)(
+                "pipe.SwitchIngress.forward",
+                [gc.KeyTuple("hdr.ipv4.dst_addr", gc.ipv4_to_bytes(dst_addr))],
+                "SwitchIngress.set_egress_port_with_mac",
+                [
+                    gc.DataTuple("port", port),
+                    gc.DataTuple("dst_mac", gc.mac_to_bytes(dst_mac)),
+                ],
+            )
+        else:
+            self.getUpdateFn(update_type)(
+                "pipe.SwitchIngress.forward",
+                [gc.KeyTuple("hdr.ipv4.dst_addr", gc.ipv4_to_bytes(dst_addr))],
+                "SwitchIngress.set_egress_port",
+                [
+                    gc.DataTuple("port", port),
+                ],
+            )
 
     def insertArpForwardEntry(
         self,

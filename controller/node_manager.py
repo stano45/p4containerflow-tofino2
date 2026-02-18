@@ -24,8 +24,25 @@ class NodeManager(object):
 
         self._setup_tables(initial_nodes)
 
+    def _clear_stale_tables(self):
+        """Best-effort clear of all tables to handle restarts after unclean shutdown."""
+        tables_to_clear = [
+            "pipe.SwitchIngress.node_selector",
+            "pipe.SwitchIngress.action_selector",
+            "pipe.SwitchIngress.action_selector_ap",
+            "pipe.SwitchIngress.forward",
+            "pipe.SwitchIngress.arp_forward",
+            "pipe.SwitchIngress.client_snat",
+        ]
+        for tname in tables_to_clear:
+            try:
+                self.switch_controller.clearTable(tname)
+            except Exception:
+                pass
+
     def _setup_tables(self, initial_nodes):
         """Insert all table entries from the given node configuration."""
+        self._clear_stale_tables()
         try:
             self.switch_controller.insertClientSnatEntry(
                 src_port=self.switch_controller.service_port,
@@ -54,9 +71,9 @@ class NodeManager(object):
                     idx=i,
                     ipv4=node["ipv4"],
                     sw_port=node["sw_port"],
-                    smac=node["mac"] if "mac" in node else None,
-                    dmac=None,
-                    is_lb_node=node["is_lb_node"] if "is_lb_node" in node else False,
+                    smac=node.get("mac"),
+                    dmac=node.get("dst_mac"),
+                    is_lb_node=node.get("is_lb_node", False),
                 )
                 self.nodes[node.ipv4] = node
 
@@ -64,6 +81,7 @@ class NodeManager(object):
                     self.switch_controller.insertForwardEntry(
                         port=node.sw_port,
                         dst_addr=node.ipv4,
+                        dst_mac=node.dmac,
                     )
                 except grpc.RpcError as e:
                     raise Exception(
@@ -152,20 +170,23 @@ class NodeManager(object):
         self._setup_tables(self._initial_nodes_config)
         self.logger.info("Reinitialization complete")
 
-    def updateForward(self, ipv4, sw_port):
+    def updateForward(self, ipv4, sw_port, dst_mac=None):
         """Update forward + arp_forward table entries to point ipv4 to a new switch port.
 
         Used for same-IP migration: the server keeps its IP but moves to a
         different physical node (different switch port).
+        When dst_mac is provided, the forward action also rewrites the L2 dst.
         """
         try:
             self.switch_controller.insertForwardEntry(
                 dst_addr=ipv4,
                 port=sw_port,
+                dst_mac=dst_mac,
                 update_type=UpdateType.MODIFY,
             )
             self.logger.info(
                 f"Updated forward entry: {ipv4} -> port {sw_port}"
+                + (f", dst_mac={dst_mac}" if dst_mac else "")
             )
 
             self.switch_controller.insertArpForwardEntry(

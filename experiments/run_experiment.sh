@@ -71,20 +71,20 @@ on_lakewood() { ssh $SSH_OPTS "$LAKEWOOD_SSH" "$@"; }
 on_loveland() { ssh $SSH_OPTS "$LOVELAND_SSH" "$@"; }
 on_tofino()   { ssh $SSH_OPTS "$TOFINO_SSH" "$@"; }
 
-COLLECTOR_PID=""          # local SSH wrapper PID
-COLLECTOR_REMOTE_PID=""   # PID on lakewood
+COLLECTOR_PID=""          # local collector process PID
+SSH_TUNNEL_PID=""         # SSH tunnel process PID
 CONTROLLER_STARTED=false
-REMOTE_COLLECTOR_CSV="/tmp/collector_metrics.csv"
-REMOTE_COLLECTOR_BIN="/tmp/stream-collector"
 
 cleanup_on_exit() {
-    # Stop collector on lakewood
-    if [[ -n "$COLLECTOR_REMOTE_PID" ]]; then
-        on_lakewood "sudo kill $COLLECTOR_REMOTE_PID 2>/dev/null; true" 2>/dev/null || true
-    fi
+    # Kill remote loadgen on lakewood
+    ssh $SSH_OPTS "$LAKEWOOD_SSH" "sudo pkill -f '[s]tream-client' 2>/dev/null || true" 2>/dev/null || true
     if [[ -n "$COLLECTOR_PID" ]] && kill -0 "$COLLECTOR_PID" 2>/dev/null; then
         kill "$COLLECTOR_PID" 2>/dev/null || true
         wait "$COLLECTOR_PID" 2>/dev/null || true
+    fi
+    if [[ -n "$SSH_TUNNEL_PID" ]] && kill -0 "$SSH_TUNNEL_PID" 2>/dev/null; then
+        kill "$SSH_TUNNEL_PID" 2>/dev/null || true
+        wait "$SSH_TUNNEL_PID" 2>/dev/null || true
     fi
 }
 exit_trap() {
@@ -121,6 +121,12 @@ rsync -az --delete -e "ssh $SSH_OPTS" \
     "$SCRIPT_DIR/"  "$LOVELAND_SSH:$REMOTE_PROJECT_DIR/experiments/"
 echo "Scripts synced"
 
+echo "--- Syncing controller code to tofino ---"
+rsync -az -e "ssh $SSH_OPTS" \
+    "$SCRIPT_DIR/../controller/"  "$TOFINO_SSH:$REMOTE_PROJECT_DIR/controller/" \
+    --exclude '.venv' --exclude '__pycache__' --exclude '*.pyc'
+echo "Controller synced"
+
 echo "--- Building and deploying edit_checkpoint (Rust) to lab nodes ---"
 EDIT_CRATE="$SCRIPT_DIR/../scripts/edit_checkpoint"
 if [[ -d "$EDIT_CRATE" ]] && command -v cargo >/dev/null 2>&1; then
@@ -153,17 +159,12 @@ on_lakewood "command -v socat >/dev/null 2>&1 || { sudo dnf install -y socat 2>/
 on_loveland "command -v socat >/dev/null 2>&1 || { sudo dnf install -y socat 2>/dev/null || sudo apt-get install -y socat; }"
 echo "socat OK"
 
-echo "--- Ensuring root@lakewood can SSH to loveland via direct link (for collector) ---"
-# The collector runs as root on lakewood. It needs SSH to loveland (192.168.10.3)
-# to fetch metrics when the server migrates there. Set up root's SSH key.
-on_lakewood "sudo test -f /root/.ssh/id_ed25519 || sudo ssh-keygen -t ed25519 -N '' -f /root/.ssh/id_ed25519 -q"
-ROOT_PUB=$(on_lakewood "sudo cat /root/.ssh/id_ed25519.pub" 2>/dev/null)
+echo "--- root@lakewood SSH to loveland (for collector fallback / manual debug) ---"
+on_lakewood "sudo test -f /root/.ssh/id_ed25519 || sudo ssh-keygen -t ed25519 -N '' -f /root/.ssh/id_ed25519 -q" 2>/dev/null || true
+ROOT_PUB=$(on_lakewood "sudo cat /root/.ssh/id_ed25519.pub" 2>/dev/null || true)
 if [[ -n "$ROOT_PUB" ]]; then
-    # Authorize root@lakewood's key on loveland (kosorins32 account)
-    on_loveland "mkdir -p ~/.ssh && chmod 700 ~/.ssh && grep -qF '$(echo "$ROOT_PUB" | head -1)' ~/.ssh/authorized_keys 2>/dev/null || echo '$(echo "$ROOT_PUB" | head -1)' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+    on_loveland "mkdir -p ~/.ssh && chmod 700 ~/.ssh && grep -qF '$(echo "$ROOT_PUB" | head -1)' ~/.ssh/authorized_keys 2>/dev/null || echo '$(echo "$ROOT_PUB" | head -1)' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" 2>/dev/null || true
     echo "root SSH key authorized on loveland"
-else
-    echo "WARNING: Could not set up root SSH key (remote metrics may fail)"
 fi
 
 # =============================================================================
@@ -189,8 +190,9 @@ on_lakewood "rm -f $SYNC_TMP.img"
 on_loveland "sudo podman load -i $SYNC_TMP.img && rm -f $SYNC_TMP.img && sudo podman tag $SERVER_IMAGE_ID $SERVER_IMAGE"
 echo "Server image synced."
 
-echo "Building $LOADGEN_IMAGE on lakewood..."
-on_lakewood "cd $REMOTE_PROJECT_DIR/experiments && sudo podman build -t $LOADGEN_IMAGE -f cmd/loadgen/Containerfile ."
+echo "Building loadgen binary locally..."
+(cd "$SCRIPT_DIR" && CGO_ENABLED=0 go build -o "$SCRIPT_DIR/bin/stream-client" ./cmd/loadgen/)
+echo "Loadgen built: $SCRIPT_DIR/bin/stream-client"
 
 # =============================================================================
 # Step 3: Start switchd on tofino (if not running)
@@ -199,9 +201,11 @@ printf "\n╔══════════════════════�
 printf "║  Step 3: Ensure switchd is running       ║\n"
 printf "╚══════════════════════════════════════════╝\n\n"
 
+SWITCHD_FRESH=false
 if on_tofino "pgrep -x bf_switchd >/dev/null 2>&1"; then
     echo "switchd already running on tofino"
 else
+    SWITCHD_FRESH=true
     echo "Starting switchd on tofino (background)..."
     on_tofino "
         cd $REMOTE_PROJECT_DIR
@@ -209,10 +213,10 @@ else
         nohup bash -c 'make switch ARCH=tf1' > /tmp/switchd.log 2>&1 &
         echo \"switchd PID: \$!\"
     "
-    echo "Waiting for switchd to initialize..."
+    echo "Waiting for switchd process to appear..."
     for i in $(seq 1 30); do
         if on_tofino "pgrep -x bf_switchd >/dev/null 2>&1"; then
-            echo "switchd is up after ${i}s"
+            echo "switchd process up after ${i}s"
             break
         fi
         if [[ $i -eq 30 ]]; then
@@ -222,8 +226,18 @@ else
         fi
         sleep 1
     done
-    # Give it a few more seconds to fully bind the pipeline
-    sleep 5
+    echo "Waiting for switchd to finish loading (server started marker)..."
+    for i in $(seq 1 120); do
+        if on_tofino "grep -q 'server started - listening on port 9999' /tmp/switchd.log 2>/dev/null" 2>/dev/null; then
+            echo "switchd fully loaded after ${i}s"
+            sleep 5
+            break
+        fi
+        if [[ $i -eq 120 ]]; then
+            echo "WARNING: switchd load not confirmed after 120s — continuing anyway"
+        fi
+        sleep 1
+    done
 fi
 
 # =============================================================================
@@ -241,15 +255,31 @@ ctrl_api() {
 }
 ctrl_api_code() {
     local endpoint="$1"
-    on_tofino "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 3 http://127.0.0.1:5000${endpoint} -X POST" 2>/dev/null || echo "000"
+    local code
+    code=$(on_tofino "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 http://127.0.0.1:5000${endpoint} -X POST" 2>/dev/null) || true
+    echo "${code:-000}"
 }
 
 # Check if controller is already responding
 CTRL_HTTP=$(ctrl_api_code "/reinitialize")
+NEED_RESTART=false
 
-if [[ "$CTRL_HTTP" != "000" ]]; then
+if $SWITCHD_FRESH; then
+    echo "switchd was freshly started — controller needs restart for fresh gRPC connection"
+    NEED_RESTART=true
+elif [[ "$CTRL_HTTP" != "200" && "$CTRL_HTTP" != "000" ]]; then
+    echo "Controller returned HTTP $CTRL_HTTP — restarting for clean state"
+    NEED_RESTART=true
+fi
+
+if [[ "$CTRL_HTTP" == "200" ]] && ! $NEED_RESTART; then
     echo "Controller already running (HTTP $CTRL_HTTP)"
 else
+    if [[ "$CTRL_HTTP" != "000" ]] || $NEED_RESTART; then
+        echo "Killing stale controller..."
+        on_tofino "fuser -k 5000/tcp 2>/dev/null; sleep 1; fuser -k 5000/tcp 2>/dev/null; true" || true
+        sleep 3
+    fi
     echo "Starting controller on tofino (background)..."
     on_tofino "
         cd $REMOTE_PROJECT_DIR/controller
@@ -260,7 +290,7 @@ else
     echo "Waiting for controller to start..."
     for i in $(seq 1 30); do
         CTRL_HTTP=$(ctrl_api_code "/reinitialize")
-        if [[ "$CTRL_HTTP" != "000" ]]; then
+        if [[ "$CTRL_HTTP" == "200" ]]; then
             echo "Controller is up after ${i}s (HTTP $CTRL_HTTP)"
             CONTROLLER_STARTED=true
             break
@@ -306,57 +336,81 @@ printf "╚═══════════════════════
 "$SCRIPT_DIR/build_hw.sh"
 
 # =============================================================================
-# Step 7: Start collector
+# Step 7: Deploy loadgen to lakewood + start collector locally
 # =============================================================================
 printf "\n╔══════════════════════════════════════════╗\n"
-printf "║  Step 7: Start metrics collector         ║\n"
+printf "║  Step 7: Start loadgen + collector       ║\n"
 printf "╚══════════════════════════════════════════╝\n\n"
 
 COLLECTOR_OUTPUT="$RUN_DIR/metrics.csv"
-MIGRATION_FLAG="$RUN_DIR/migration_timing.txt"
-REMOTE_MIGRATION_FLAG="/tmp/collector_migration_flag"
-# No stale flag: RUN_DIR is fresh; cr_hw.sh will write migration_timing.txt on each migration
+MIGRATION_FLAG="$RUN_DIR/migration_event"
 
-# Build collector binary for linux/amd64 and deploy to lakewood
+# Build binaries
 printf "Building collector binary...\n"
-(cd "$SCRIPT_DIR" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/stream-collector-build ./cmd/collector/)
-on_lakewood "sudo rm -f $REMOTE_COLLECTOR_BIN; rm -f $REMOTE_COLLECTOR_BIN"
-scp $SSH_OPTS /tmp/stream-collector-build "$LAKEWOOD_SSH:$REMOTE_COLLECTOR_BIN"
-rm -f /tmp/stream-collector-build
+(cd "$SCRIPT_DIR" && CGO_ENABLED=0 go build -o "$SCRIPT_DIR/bin/stream-collector" ./cmd/collector/)
 
-# Kill any stale collector processes from previous runs.
-# Use [s] trick so pkill's own command line doesn't match the pattern.
-on_lakewood "sudo pkill -f '[s]tream-collector' 2>/dev/null; true"
-sleep 1
+printf "Building loadgen binary for lakewood (linux/amd64)...\n"
+(cd "$SCRIPT_DIR" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/stream-client-build ./cmd/loadgen/)
+scp $SSH_OPTS /tmp/stream-client-build "$LAKEWOOD_SSH:/tmp/stream-client"
+rm -f /tmp/stream-client-build
+echo "Loadgen deployed to lakewood:/tmp/stream-client"
 
-# Clean stale state on lakewood
-on_lakewood "sudo rm -f $REMOTE_COLLECTOR_CSV $REMOTE_MIGRATION_FLAG"
+# Kill any stale loadgen on lakewood from a previous run
+on_lakewood "sudo pkill -f '[s]tream-client' 2>/dev/null || true"
 
-# Extract SSH user for remote stats (collector runs as root but root can't SSH; use the lab user)
-REMOTE_SSH_USER="${LOVELAND_SSH%%@*}"
-
-printf "Remote SSH user: %s\n" "$REMOTE_SSH_USER"
-
-# Start collector on lakewood (runs locally there — no SSH overhead per tick)
-# The collector runs as root (for podman/nsenter) but drops to REMOTE_SSH_USER
-# for SSH commands via "sudo -u <user> ssh" so the user's SSH keys work.
-on_lakewood "sudo nohup $REMOTE_COLLECTOR_BIN \
-    -remote-direct-ip '$LOVELAND_DIRECT_IP' \
-    -remote-ssh-user '$REMOTE_SSH_USER' \
-    -metrics-port $METRICS_PORT \
-    -ping-hosts '${H2_IP}' \
-    -server-names 'stream-server,h3' \
-    -loadgen-container 'stream-client' \
-    -loadgen-metrics-port '$LOADGEN_METRICS_PORT' \
-    -migration-flag '$REMOTE_MIGRATION_FLAG' \
-    -output '$REMOTE_COLLECTOR_CSV' \
-    -interval '$METRICS_INTERVAL' \
-    > /tmp/collector.log 2>&1 &
-    echo \$!" &
-COLLECTOR_PID=$!
+# Start loadgen on lakewood — connects directly to the server container
+# via the macvlan-shim. Measures true network RTT (sub-ms) without
+# SSH tunnel overhead in the data path.
+printf "Starting loadgen on lakewood: %d connections to http://%s:%s\n" \
+    "$LOADGEN_CONNECTIONS" "$H2_IP" "$SIGNALING_PORT"
+on_lakewood "nohup /tmp/stream-client \
+    -server 'http://${H2_IP}:${SIGNALING_PORT}' \
+    -connections $LOADGEN_CONNECTIONS \
+    -metrics-port $LOADGEN_METRICS_PORT \
+    > /tmp/loadgen.log 2>&1 &"
 sleep 2
-COLLECTOR_REMOTE_PID=$(on_lakewood "pgrep -f stream-collector | head -1" 2>/dev/null || true)
-printf "Collector started on lakewood (remote PID %s)\n" "$COLLECTOR_REMOTE_PID"
+# Verify loadgen started
+if ! on_lakewood "pgrep -f stream-client >/dev/null 2>&1"; then
+    echo "FAIL: Loadgen did not start on lakewood."
+    on_lakewood "cat /tmp/loadgen.log 2>/dev/null" || true
+    exit 1
+fi
+echo "Loadgen running on lakewood"
+
+# SSH tunnel for metrics collection only (not data path):
+#   - loadgen metrics: lakewood:9090 → localhost:19090
+#   - server metrics:  macshim→192.168.12.2:8081 → localhost:18081
+printf "Starting SSH tunnel (metrics only): localhost:%s → lakewood:%s, localhost:%s → %s:%s\n" \
+    "$SSH_TUNNEL_LOCAL_PORT" "$LOADGEN_METRICS_PORT" \
+    "$SSH_TUNNEL_METRICS_PORT" "$H2_IP" "$METRICS_PORT"
+ssh -N \
+    -L "${SSH_TUNNEL_LOCAL_PORT}:localhost:${LOADGEN_METRICS_PORT}" \
+    -L "${SSH_TUNNEL_METRICS_PORT}:${H2_IP}:${METRICS_PORT}" \
+    -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=10 \
+    -o ServerAliveCountMax=6 \
+    $SSH_OPTS "$LAKEWOOD_SSH" &
+SSH_TUNNEL_PID=$!
+sleep 2
+if ! kill -0 "$SSH_TUNNEL_PID" 2>/dev/null; then
+    echo "FAIL: SSH tunnel died immediately. Check SSH access to $LAKEWOOD_SSH."
+    exit 1
+fi
+echo "SSH tunnel started (PID $SSH_TUNNEL_PID)"
+
+# Start collector locally — scrapes loadgen + server metrics through SSH tunnel.
+# The tunnel is only for metrics; the data path is loadgen→macshim→server.
+printf "Starting collector...\n"
+"$SCRIPT_DIR/bin/stream-collector" \
+    -server-metrics-url "http://localhost:${SSH_TUNNEL_METRICS_PORT}" \
+    -loadgen-url "http://localhost:${SSH_TUNNEL_LOCAL_PORT}" \
+    -migration-flag "$MIGRATION_FLAG" \
+    -output "$COLLECTOR_OUTPUT" \
+    -interval "$METRICS_INTERVAL" \
+    > "$RUN_DIR/collector.log" 2>&1 &
+COLLECTOR_PID=$!
+echo "Collector started (PID $COLLECTOR_PID)"
+sleep 2
 
 # =============================================================================
 # Step 8: Wait for steady-state
@@ -365,13 +419,16 @@ printf "\n╔══════════════════════�
 printf "║  Step 8: Healthy, then %3ds steady-state ║\n" "$STEADY_STATE_WAIT"
 printf "╚══════════════════════════════════════════╝\n\n"
 
-echo "Waiting for server to become healthy..."
-# Brief delay so we don't spam before the container is listening
+echo "Waiting for server to become healthy (via lakewood macshim)..."
 sleep 2
 for i in $(seq 1 40); do
-    if on_lakewood "curl -s --connect-timeout 1 http://${H2_IP}:${METRICS_PORT}/health" >/dev/null 2>&1; then
-        echo "Server healthy after $(( 2 + (i - 1) / 2 ))s"
+    if on_lakewood "curl -sf --connect-timeout 2 'http://${H2_IP}:${SIGNALING_PORT}/health'" >/dev/null 2>&1; then
+        echo "Server reachable through macshim after $(( 2 + (i - 1) / 2 ))s"
         break
+    fi
+    if [[ $i -eq 40 ]]; then
+        echo "WARNING: Server health check failed after 20s. Check macshim + container."
+        echo "Debug: ssh lakewood 'curl -sf http://${H2_IP}:${SIGNALING_PORT}/health'"
     fi
     sleep 0.5
 done
@@ -394,6 +451,9 @@ for (( i=1; i <= MIGRATION_COUNT; i++ )); do
   printf "\n╔══════════════════════════════════════════╗\n"
   printf "║  Step 9.%d: CRIU migration %s (%d/%d)   ║\n" "$i" "$direction" "$i" "$MIGRATION_COUNT"
   printf "╚══════════════════════════════════════════╝\n\n"
+
+  # Signal the collector that a migration is starting
+  touch "$MIGRATION_FLAG"
 
   # Run cr_hw.sh ON the source node — local commands, direct-link to target
   # ForwardAgent so the source node can SSH to tofino for the switch update
@@ -426,22 +486,22 @@ printf "\n╔══════════════════════�
 printf "║  Step 11: Results & plots                ║\n"
 printf "╚══════════════════════════════════════════╝\n\n"
 
-# Stop collector on lakewood and copy CSV back
-if [[ -n "$COLLECTOR_REMOTE_PID" ]]; then
-    on_lakewood "sudo kill $COLLECTOR_REMOTE_PID 2>/dev/null; true" || true
-    sleep 1
-fi
+# Stop collector FIRST so the last CSV row still has live data
 if [[ -n "$COLLECTOR_PID" ]] && kill -0 "$COLLECTOR_PID" 2>/dev/null; then
     kill -TERM "$COLLECTOR_PID" 2>/dev/null || true
     wait "$COLLECTOR_PID" 2>/dev/null || true
 fi
 COLLECTOR_PID=""
-COLLECTOR_REMOTE_PID=""
 
-# Copy CSV from lakewood (chown first — collector ran as root)
-on_lakewood "sudo chown \$(whoami) $REMOTE_COLLECTOR_CSV /tmp/collector.log 2>/dev/null; true"
-scp $SSH_OPTS "$LAKEWOOD_SSH:$REMOTE_COLLECTOR_CSV" "$COLLECTOR_OUTPUT" 2>/dev/null || true
-scp $SSH_OPTS "$LAKEWOOD_SSH:/tmp/collector.log" "$RUN_DIR/collector.log" 2>/dev/null || true
+# Stop remote loadgen on lakewood and copy its log back
+on_lakewood "sudo pkill -f '[s]tream-client' 2>/dev/null || true"
+scp $SSH_OPTS "$LAKEWOOD_SSH:/tmp/loadgen.log" "$RUN_DIR/loadgen.log" 2>/dev/null || true
+
+if [[ -n "$SSH_TUNNEL_PID" ]] && kill -0 "$SSH_TUNNEL_PID" 2>/dev/null; then
+    kill -TERM "$SSH_TUNNEL_PID" 2>/dev/null || true
+    wait "$SSH_TUNNEL_PID" 2>/dev/null || true
+fi
+SSH_TUNNEL_PID=""
 
 if [[ -f "$SCRIPT_DIR/analysis/plot_metrics.py" ]] && [[ -f "$COLLECTOR_OUTPUT" ]]; then
     cd "$SCRIPT_DIR/analysis"

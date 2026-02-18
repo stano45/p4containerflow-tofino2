@@ -2,6 +2,7 @@
 /server
 /loadgen
 /collector
+/bin/
 
 # Results (keep directory via .gitkeep)
 results/*.csv

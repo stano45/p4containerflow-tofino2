@@ -23,6 +23,7 @@ var (
 	serverURL   = flag.String("server", "http://localhost:8080", "Server base URL")
 	numConns    = flag.Int("connections", 4, "Number of concurrent WebSocket connections")
 	pingMs      = flag.Int("ping-interval-ms", 100, "Ping interval in milliseconds")
+	rttCapMs    = flag.Float64("rtt-cap-ms", 1000, "Discard echo RTTs above this threshold (stale echoes from migration freeze)")
 	reportIval  = flag.Duration("interval", time.Second, "Metrics reporting interval (stdout)")
 	testDur     = flag.Duration("duration", 0, "Test duration (0 = until interrupted)")
 	metricsPort = flag.Int("metrics-port", 9090, "HTTP port for /metrics endpoint")
@@ -110,6 +111,9 @@ func computeMetrics() aggregatedMetrics {
 	var totalJitter float64
 	var jitterCount int
 	for _, c := range conns {
+		if c == nil {
+			continue
+		}
 		if c.connected.Load() {
 			m.ConnectedClients++
 		}
@@ -120,7 +124,6 @@ func computeMetrics() aggregatedMetrics {
 		allRTT = append(allRTT, c.rttSamples...)
 		totalJitter += c.jitterSum
 		jitterCount += c.jitterN
-		// Reset windowed accumulators so next poll gets fresh data
 		c.rttSamples = c.rttSamples[:0]
 		c.jitterSum = 0
 		c.jitterN = 0
@@ -232,15 +235,15 @@ func readLoop(ctx context.Context, c *conn) {
 		}
 		if err := json.Unmarshal(raw, &echo); err == nil && echo.ClientTs > 0 {
 			rtt := float64(time.Now().UnixNano()-echo.ClientTs) / 1e6
-			if rtt >= 0 && rtt < 60000 {
-			c.rttMu.Lock()
-			if c.lastRTT > 0 {
-				c.jitterSum += math.Abs(rtt - c.lastRTT)
-				c.jitterN++
-			}
-			c.lastRTT = rtt
-			c.rttSamples = append(c.rttSamples, rtt)
-			c.rttMu.Unlock()
+			if rtt >= 0 && rtt < *rttCapMs {
+				c.rttMu.Lock()
+				if c.lastRTT > 0 {
+					c.jitterSum += math.Abs(rtt - c.lastRTT)
+					c.jitterN++
+				}
+				c.lastRTT = rtt
+				c.rttSamples = append(c.rttSamples, rtt)
+				c.rttMu.Unlock()
 			}
 		}
 	}

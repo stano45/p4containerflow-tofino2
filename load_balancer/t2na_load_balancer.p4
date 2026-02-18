@@ -130,6 +130,11 @@ control SwitchIngress(
         ig_tm_md.ucast_egress_port = port;
     }
 
+    action set_egress_port_with_mac(bit<9> port, mac_addr_t dst_mac) {
+        ig_tm_md.ucast_egress_port = port;
+        hdr.ethernet.dst_addr = dst_mac;
+    }
+
     table client_snat {
         key = {
             hdr.tcp.src_port: exact;
@@ -178,9 +183,10 @@ control SwitchIngress(
         }
         actions = {
             set_egress_port;
+            set_egress_port_with_mac;
             NoAction;
         }
-        const default_action = NoAction;
+        default_action = NoAction;
         size = 1024;
     }
 

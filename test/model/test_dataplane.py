@@ -21,6 +21,10 @@ def ip(ip_string):
     return gc.ipv4_to_bytes(ip_string)
 
 
+def mac(mac_string):
+    return gc.mac_to_bytes(mac_string)
+
+
 class AbstractTest(BfRuntimeTest):
     def setUp(self):
         # Pass p4_name=None so the framework auto-detects from the running
@@ -166,6 +170,38 @@ class AbstractTest(BfRuntimeTest):
             "SwitchIngress.set_egress_port",
             [
                 gc.DataTuple("port", port),
+            ],
+        )
+
+    def insertForwardWithMacEntry(self, dst_addr, port, dst_mac):
+        self.insertTableEntry(
+            "SwitchIngress.forward",
+            [gc.KeyTuple("hdr.ipv4.dst_addr", ip(dst_addr))],
+            "SwitchIngress.set_egress_port_with_mac",
+            [
+                gc.DataTuple("port", port),
+                gc.DataTuple("dst_mac", mac(dst_mac)),
+            ],
+        )
+
+    def modifyForwardEntry(self, dst_addr, port):
+        self.modifyTableEntry(
+            "SwitchIngress.forward",
+            [gc.KeyTuple("hdr.ipv4.dst_addr", ip(dst_addr))],
+            "SwitchIngress.set_egress_port",
+            [
+                gc.DataTuple("port", port),
+            ],
+        )
+
+    def modifyForwardWithMacEntry(self, dst_addr, port, dst_mac):
+        self.modifyTableEntry(
+            "SwitchIngress.forward",
+            [gc.KeyTuple("hdr.ipv4.dst_addr", ip(dst_addr))],
+            "SwitchIngress.set_egress_port_with_mac",
+            [
+                gc.DataTuple("port", port),
+                gc.DataTuple("dst_mac", mac(dst_mac)),
             ],
         )
 
@@ -699,6 +735,196 @@ class TestArpForwarding(AbstractTest):
                 send_packet(self, self.ports[j], arp_reply)
                 # Should arrive on node i's port
                 verify_packet(self, arp_reply, self.ports[i])
+
+    def runTest(self):
+        self.runTestImpl()
+
+
+class TestForwardingWithMacRewrite(AbstractTest):
+    """Verify that set_egress_port_with_mac rewrites dst MAC in forwarded packets."""
+
+    def setUp(self):
+        super().setUp()
+        self.num_nodes = 3
+        self.ports = [swports[i] for i in range(self.num_nodes)]
+        self.ips = [f"10.0.0.{i}" for i in range(self.num_nodes)]
+        self.original_macs = [f"00:11:22:33:44:{i:02x}" for i in range(self.num_nodes)]
+        self.rewrite_macs = [f"aa:bb:cc:dd:ee:{i:02x}" for i in range(self.num_nodes)]
+
+    def setupCtrlPlane(self):
+        self.clearTables()
+        for i in range(self.num_nodes):
+            self.insertForwardWithMacEntry(
+                self.ips[i], self.ports[i], self.rewrite_macs[i]
+            )
+
+    def sendPacket(self):
+        for i in range(self.num_nodes):
+            for j in range(self.num_nodes):
+                if i == j:
+                    continue
+                pkt = simple_tcp_packet(
+                    eth_src=self.original_macs[i],
+                    eth_dst=self.original_macs[j],
+                    ip_src=self.ips[i],
+                    ip_dst=self.ips[j],
+                )
+                expected_pkt = simple_tcp_packet(
+                    eth_src=self.original_macs[i],
+                    eth_dst=self.rewrite_macs[j],
+                    ip_src=self.ips[i],
+                    ip_dst=self.ips[j],
+                )
+                logger.info(
+                    "Sending from port %d (%s) to %s, expect dst_mac rewritten to %s",
+                    self.ports[i], self.ips[i], self.ips[j], self.rewrite_macs[j],
+                )
+                send_packet(self, self.ports[i], pkt)
+                verify_packet(self, expected_pkt, self.ports[j])
+
+    def runTest(self):
+        self.runTestImpl()
+
+
+class TestHairpinForwarding(AbstractTest):
+    """Verify hairpin: packet exits the same port it entered, with dst MAC rewritten.
+
+    This is the key scenario for routing traffic through the switch even when
+    the server is on the same host as the ingress link (e.g. lakewood).
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.hairpin_port = swports[0]
+        self.other_port = swports[1]
+        self.server_ip = "10.0.0.1"
+        self.client_ip = "10.0.0.2"
+        self.server_mac = "aa:bb:cc:00:00:01"
+        self.client_mac = "00:11:22:33:44:00"
+
+    def setupCtrlPlane(self):
+        self.clearTables()
+        self.insertForwardWithMacEntry(
+            self.server_ip, self.hairpin_port, self.server_mac
+        )
+        self.insertForwardEntry(self.client_ip, self.other_port)
+
+    def sendPacket(self):
+        # Client-to-server: arrives on hairpin_port, forwarded back out hairpin_port
+        pkt = simple_tcp_packet(
+            eth_src=self.client_mac,
+            eth_dst="ff:ff:ff:ff:ff:ff",
+            ip_src=self.client_ip,
+            ip_dst=self.server_ip,
+            tcp_sport=50000,
+            tcp_dport=8080,
+        )
+        expected_pkt = simple_tcp_packet(
+            eth_src=self.client_mac,
+            eth_dst=self.server_mac,
+            ip_src=self.client_ip,
+            ip_dst=self.server_ip,
+            tcp_sport=50000,
+            tcp_dport=8080,
+        )
+        logger.info(
+            "Hairpin test: sending on port %d, expecting back on same port with dst_mac=%s",
+            self.hairpin_port, self.server_mac,
+        )
+        send_packet(self, self.hairpin_port, pkt)
+        verify_packet(self, expected_pkt, self.hairpin_port)
+
+        # Server response: arrives on hairpin_port, forwarded to other_port (normal path)
+        resp_pkt = simple_tcp_packet(
+            eth_src=self.server_mac,
+            eth_dst=self.client_mac,
+            ip_src=self.server_ip,
+            ip_dst=self.client_ip,
+            tcp_sport=8080,
+            tcp_dport=50000,
+        )
+        logger.info(
+            "Response: sending from hairpin_port %d, expecting on port %d",
+            self.hairpin_port, self.other_port,
+        )
+        send_packet(self, self.hairpin_port, resp_pkt)
+        verify_packet(self, resp_pkt, self.other_port)
+
+    def runTest(self):
+        self.runTestImpl()
+
+
+class TestHairpinMigration(AbstractTest):
+    """Simulate migration from hairpin (same-port) to a different port.
+
+    Before migration: server is on hairpin_port (same as client ingress).
+    After migration: server moves to a different port.
+    Verifies that forward table MODIFY correctly switches from hairpin to cross-port.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.client_port = swports[0]
+        self.server_port_before = swports[0]  # hairpin
+        self.server_port_after = swports[1]   # different host
+        self.server_ip = "10.0.0.1"
+        self.client_ip = "10.0.0.2"
+        self.server_mac_before = "aa:bb:cc:00:00:01"
+        self.server_mac_after = "aa:bb:cc:00:00:02"
+        self.client_mac = "00:11:22:33:44:00"
+        self.numPackets = 10
+
+    def setupCtrlPlane(self):
+        self.clearTables()
+        self.insertForwardWithMacEntry(
+            self.server_ip, self.server_port_before, self.server_mac_before
+        )
+        self.insertForwardEntry(self.client_ip, self.client_port)
+
+    def sendPacket(self):
+        pkt = simple_tcp_packet(
+            eth_src=self.client_mac,
+            eth_dst="ff:ff:ff:ff:ff:ff",
+            ip_src=self.client_ip,
+            ip_dst=self.server_ip,
+            tcp_sport=50000,
+            tcp_dport=8080,
+        )
+
+        # Phase 1: hairpin — packet returns on same port
+        for i in range(self.numPackets):
+            expected = simple_tcp_packet(
+                eth_src=self.client_mac,
+                eth_dst=self.server_mac_before,
+                ip_src=self.client_ip,
+                ip_dst=self.server_ip,
+                tcp_sport=50000,
+                tcp_dport=8080,
+            )
+            logger.info("Pre-migration packet %d (hairpin)", i)
+            send_packet(self, self.client_port, pkt)
+            verify_packet(self, expected, self.server_port_before)
+
+        # Simulate migration: update forward entry to new port + MAC
+        logger.info("Simulating migration: %s -> port %d, mac %s",
+                     self.server_ip, self.server_port_after, self.server_mac_after)
+        self.modifyForwardWithMacEntry(
+            self.server_ip, self.server_port_after, self.server_mac_after
+        )
+
+        # Phase 2: post-migration — packet goes to new port
+        for i in range(self.numPackets):
+            expected = simple_tcp_packet(
+                eth_src=self.client_mac,
+                eth_dst=self.server_mac_after,
+                ip_src=self.client_ip,
+                ip_dst=self.server_ip,
+                tcp_sport=50000,
+                tcp_dport=8080,
+            )
+            logger.info("Post-migration packet %d (cross-port)", i)
+            send_packet(self, self.client_port, pkt)
+            verify_packet(self, expected, self.server_port_after)
 
     def runTest(self):
         self.runTestImpl()

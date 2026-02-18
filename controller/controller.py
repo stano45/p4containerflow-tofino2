@@ -133,14 +133,16 @@ def update_forward():
     data = request.get_json()
     ipv4 = data.get("ipv4")
     sw_port = data.get("sw_port")
+    dst_mac = data.get("dst_mac")
 
     if not all([ipv4, sw_port]):
         logger.error(f"updateForward: missing parameters (ipv4={ipv4}, sw_port={sw_port})")
         return jsonify({"error": "Missing parameters: ipv4 and sw_port required"}), 400
 
     try:
-        nodeManager.updateForward(ipv4, int(sw_port))
-        logger.info(f"Successfully updated forward entries: {ipv4} -> port {sw_port}")
+        nodeManager.updateForward(ipv4, int(sw_port), dst_mac=dst_mac)
+        logger.info(f"Successfully updated forward entries: {ipv4} -> port {sw_port}"
+                     + (f", dst_mac={dst_mac}" if dst_mac else ""))
         return jsonify({"status": "success"}), 200
     except Exception as e:
         logger.error(f"Failed to update forward entries: {e}")
@@ -173,6 +175,33 @@ def reinitialize():
         return jsonify({"status": "success", "message": "Reinitialization complete"}), 200
     except Exception as e:
         logger.error(f"Reinitialize failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/addForward", methods=["POST"])
+def add_forward():
+    """Add a forward + arp_forward table entry.
+
+    Expects JSON: {"dst_addr": "192.168.12.1", "port": 64}
+    Optional: "dst_mac" to also rewrite destination MAC (for hairpinning).
+    """
+    data = request.get_json()
+    dst_addr = data.get("dst_addr")
+    port = data.get("port")
+    dst_mac = data.get("dst_mac")
+
+    if not all([dst_addr, port]):
+        return jsonify({"error": "Missing parameters: dst_addr and port required"}), 400
+
+    try:
+        sc = nodeManager.switch_controller
+        sc.insertForwardEntry(dst_addr=dst_addr, port=int(port), dst_mac=dst_mac)
+        sc.insertArpForwardEntry(target_ip=dst_addr, port=int(port))
+        logger.info(f"Added forward entries: {dst_addr} -> port {port}"
+                     + (f", dst_mac={dst_mac}" if dst_mac else ""))
+        return jsonify({"status": "success"}), 200
+    except Exception as e:
+        logger.error(f"Failed to add forward entry: {e}")
         return jsonify({"error": str(e)}), 500
 
 

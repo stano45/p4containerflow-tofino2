@@ -170,9 +170,46 @@ def _migration_times_sec(df, events):
     return [(m - t0) / 1000.0 for m in ms_list]
 
 
+def _split_legend(ax, metric_loc="upper left", migration_loc="upper right"):
+    """Split an axes' legend into metric lines vs migration markers."""
+    handles, labels = ax.get_legend_handles_labels()
+    met_h, met_l, mig_h, mig_l = [], [], [], []
+    for h, l in zip(handles, labels):
+        if l.startswith("M") and "\u2192" in l:
+            mig_h.append(h); mig_l.append(l)
+        else:
+            met_h.append(h); met_l.append(l)
+    if met_h:
+        leg1 = ax.legend(met_h, met_l, loc=metric_loc, fontsize=8, framealpha=0.9)
+        ax.add_artist(leg1)
+    if mig_h:
+        ax.legend(mig_h, mig_l, loc=migration_loc, fontsize=7.5,
+                  framealpha=0.9, ncol=1, handlelength=1.5)
+    elif met_h:
+        ax.legend(met_h, met_l, loc=metric_loc, fontsize=8, framealpha=0.9)
+
+
 # ═════════════════════════════════════════════════════════════════════════
 #  PLOTS — one function per figure, one concept per figure
 # ═════════════════════════════════════════════════════════════════════════
+
+
+def _trim_shutdown(df):
+    """Drop trailing rows caused by the loadgen being killed at experiment end.
+
+    The loadgen is stopped after the collector, but a race can leave one or two
+    final rows with lg_connected_clients == 0 and all RTTs == 0.  These create
+    a misleading visual drop.  We trim rows at the tail where the loadgen
+    reports 0 connections, provided there were > 0 connections before.
+    """
+    lg_col = _col(df, "lg_connected_clients")
+    if not lg_col:
+        return df
+    vals = _numeric(df, lg_col)
+    if vals.empty or (vals == 0).all():
+        return df
+    last_nonzero = vals[vals > 0].index[-1]
+    return df.loc[:last_nonzero].copy()
 
 
 def plot_connection_health(df, m_times, output_dir, show, events=None):
@@ -185,6 +222,7 @@ def plot_connection_health(df, m_times, output_dir, show, events=None):
     always reachable.  A flat line at the expected count + zero drops proves
     that migrations are transparent.
     """
+    df = _trim_shutdown(df)
     fig, axes = plt.subplots(2, 1, figsize=(12, 5.5), sharex=True,
                              gridspec_kw={"height_ratios": [2, 1]})
     fig.suptitle("Client Connection Health", fontweight="bold")
@@ -202,6 +240,16 @@ def plot_connection_health(df, m_times, output_dir, show, events=None):
         ax.plot(t, vals, lw=1.5, color=sns.color_palette()[0],
                 label="Active connections (client)")
         ax.fill_between(t, 0, vals, alpha=0.10, color=sns.color_palette()[0])
+
+        # Overlay service-availability shading: mark intervals where
+        # connections exist but no echo data is being received (server frozen).
+        rtt_col = _col(df, "ws_rtt_p50_ms")
+        if rtt_col:
+            rtt_vals = _numeric(df, rtt_col)
+            frozen = (vals > 0) & ((rtt_vals == 0) | rtt_vals.isna())
+            ax.fill_between(t, 0, vals.max() * 1.05, where=frozen,
+                            alpha=0.12, color="red", label="Service frozen",
+                            step="mid")
     elif srv_col:
         vals = _numeric(df, srv_col).copy()
         vals[vals == 0] = np.nan  # mask collection gaps
@@ -212,7 +260,7 @@ def plot_connection_health(df, m_times, output_dir, show, events=None):
     ax.set_ylabel("Active Connections")
     ax.set_ylim(bottom=0)
     _draw_migrations(ax, m_times, events=events)
-    ax.legend(loc="lower left", fontsize=8, ncol=2)
+    _split_legend(ax, metric_loc="lower left")
 
     # ── Bottom: cumulative connection drops ──
     ax = axes[1]
@@ -300,18 +348,7 @@ def plot_ws_latency(df, m_times, output_dir, show, events=None):
     ax.yaxis.set_minor_formatter(mticker.NullFormatter())
     _draw_migrations(ax, m_times, events=events)
 
-    handles, labels = ax.get_legend_handles_labels()
-    met_h, met_l, mig_h, mig_l = [], [], [], []
-    for h, l in zip(handles, labels):
-        if l.startswith("M") and "\u2192" in l:
-            mig_h.append(h); mig_l.append(l)
-        else:
-            met_h.append(h); met_l.append(l)
-    leg1 = ax.legend(met_h, met_l, loc="upper left", fontsize=8, framealpha=0.9)
-    ax.add_artist(leg1)
-    if mig_h:
-        ax.legend(mig_h, mig_l, loc="upper right", fontsize=7.5,
-                  framealpha=0.9, ncol=1, handlelength=1.5)
+    _split_legend(ax)
 
     ax.text(0.01, 0.01,
             "Gaps = no echo responses received during that interval",
@@ -323,18 +360,23 @@ def plot_ws_latency(df, m_times, output_dir, show, events=None):
     # ── Jitter ──
     jitter_col = _col(df, "ws_jitter_ms")
     if jitter_col:
-        fig_jit, ax = plt.subplots(figsize=(12, 4))
+        fig_jit, ax = plt.subplots(figsize=(12, 4.5))
         fig_jit.suptitle("Application-Layer Jitter (client-measured)", fontweight="bold")
         jitter = _mask_stale_rtt(df, jitter_col)
         jitter = jitter.where(lambda x: x > 0)
-        ax.plot(t, jitter, lw=1.2, color="#7B1FA2", label="Jitter", alpha=0.85)
-        ax.fill_between(t, 0, jitter, alpha=0.08, color="#7B1FA2")
+        ax.plot(t, jitter, lw=1.2, color="#7B1FA2", label="Jitter (mean |RTTₙ − RTTₙ₋₁|)", alpha=0.85)
         ax.set_ylabel("Jitter (ms)")
         ax.set_xlabel("Time (s)")
-        ax.set_ylim(bottom=0)
-        ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.1f"))
-        ax.legend(loc="upper right", fontsize=9)
+        ax.set_yscale("log")
+        ax.yaxis.set_major_locator(mticker.LogLocator(base=10, numticks=10))
+        ax.yaxis.set_major_formatter(mticker.FuncFormatter(
+            lambda v, _: f"{v:g}" if v >= 1 else f"{v:.2f}" if v >= 0.01 else f"{v:.3f}"
+        ))
+        ax.yaxis.set_minor_locator(
+            mticker.LogLocator(base=10, subs=np.arange(2, 10) * 0.1, numticks=50))
+        ax.yaxis.set_minor_formatter(mticker.NullFormatter())
         _draw_migrations(ax, m_times, events=events)
+        _split_legend(ax)
         plt.tight_layout()
         _save(fig_jit, output_dir, "ws_jitter.png", show)
 
@@ -385,7 +427,7 @@ def plot_throughput(df, m_times, output_dir, show, events=None):
     ax.set_xlabel("Time (s)")
     ax.set_ylim(bottom=0)
     _draw_migrations(ax, m_times, events=events)
-    ax.legend(loc="upper right", fontsize=8, ncol=2)
+    _split_legend(ax)
 
     plt.tight_layout()
     _save(fig, output_dir, "throughput.png", show)
@@ -426,7 +468,7 @@ def plot_ping_rtt(df, m_times, output_dir, show, events=None):
     ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
     ax.set_ylim(bottom=0)
     _draw_migrations(ax, m_times, events=events)
-    ax.legend(fontsize=8, ncol=2)
+    _split_legend(ax)
 
     if unreachable:
         labels = [PING_LABELS.get(h, h) for h in unreachable]
@@ -441,8 +483,19 @@ def plot_ping_rtt(df, m_times, output_dir, show, events=None):
 def plot_container_resources(df, m_times, output_dir, show, events=None):
     """Container CPU utilisation over time."""
     cpu_cols = [c for c in df.columns
-                if c.endswith("_cpu") or (c.startswith("cpu_") and len(c) > 4)]
+                if c.endswith("_cpu") or (c.startswith("cpu_") and len(c) > 4)
+                or c == "cpu_percent"]
     if not cpu_cols:
+        return
+
+    has_data = False
+    for col in cpu_cols:
+        vals = df[col].astype(str).str.rstrip("%").str.strip()
+        vals = pd.to_numeric(vals, errors="coerce")
+        if vals.notna().any() and (vals > 0).any():
+            has_data = True
+            break
+    if not has_data:
         return
 
     fig, ax = plt.subplots(figsize=(12, 4))
@@ -452,8 +505,11 @@ def plot_container_resources(df, m_times, output_dir, show, events=None):
     palette = sns.color_palette("deep", len(cpu_cols))
     for i, col in enumerate(cpu_cols):
         name = col.replace("container_", "").replace("_cpu", "").replace("cpu_", "")
+        if name == "percent":
+            name = "server"
         cpu = df[col].astype(str).str.rstrip("%").str.strip()
         cpu = pd.to_numeric(cpu, errors="coerce")
+        cpu = cpu.where(cpu > 0)
         ax.plot(t, cpu, lw=1.2, color=palette[i], label=f"{name}")
         ax.fill_between(t, 0, cpu, alpha=0.10, color=palette[i])
 
@@ -461,7 +517,7 @@ def plot_container_resources(df, m_times, output_dir, show, events=None):
     ax.set_xlabel("Time (s)")
     ax.set_ylim(bottom=0)
     _draw_migrations(ax, m_times, events=events)
-    ax.legend(loc="upper right", fontsize=8, ncol=2)
+    _split_legend(ax)
 
     plt.tight_layout()
     _save(fig, output_dir, "container_resources.png", show)
@@ -497,8 +553,9 @@ def plot_migration_timing(events, output_dir, show):
         bars = ax.barh(phases, durations, color=colors, edgecolor="white", lw=0.5)
         ax.set_xlabel("Duration (ms)")
         ax.set_title(f"Migration Phases \u2014 downtime: {ttr} ms", fontweight="bold")
+        x_pad = max(durations) * 0.03
         for bar, v in zip(bars, durations):
-            ax.text(bar.get_width() + 2, bar.get_y() + bar.get_height() / 2,
+            ax.text(bar.get_width() + x_pad, bar.get_y() + bar.get_height() / 2,
                     f"{v} ms", va="center", fontsize=10)
     else:
         all_dur = {p: [] for p in phases}
@@ -530,8 +587,9 @@ def plot_migration_timing(events, output_dir, show):
             f"Migration Phases \u2014 {len(events)} migrations "
             f"(mean downtime: {np.mean(totals):.0f} ms)", fontweight="bold")
 
+        x_pad = max(means) * 0.03
         for bar, m, s in zip(bars, means, stds):
-            ax.text(bar.get_width() + s + 5, bar.get_y() + bar.get_height() / 2,
+            ax.text(bar.get_width() + s + x_pad, bar.get_y() + bar.get_height() / 2,
                     f"{m:.0f} \u00b1 {s:.0f} ms", va="center", fontsize=9)
 
         ax.text(0.5, -0.18,
@@ -566,7 +624,9 @@ def _build_location_windows(df, events, m_times):
 
     # Walk through timeline segments.
     # Skip a buffer after each migration to exclude recovery transients.
-    RECOVERY_BUFFER = 8  # seconds to skip after migration ends
+    # With stale-echo filtering in the loadgen (RTT cap), the first valid
+    # measurement arrives shortly after restore completes.
+    RECOVERY_BUFFER = 5  # seconds to skip after migration ends
     prev_end = 0.0
     location = "lakewood"  # server starts here
     for i in range(len(m_times)):
@@ -600,11 +660,16 @@ def plot_rtt_by_location(df, m_times, events, output_dir, show):
     if not windows:
         return
 
-    # Collect P50 RTT samples per location category
+    # Collect P50 RTT samples per location category, dropping recovery spikes
     categories = {}
     for label, mask in windows:
         vals = _numeric(df.loc[mask], "ws_rtt_p50_ms").dropna()
         vals = vals[vals > 0]
+        if vals.empty:
+            continue
+        # Remove recovery spikes (> 5x median) that leak past the buffer
+        med = vals.median()
+        vals = vals[vals <= med * 5]
         if vals.empty:
             continue
         categories.setdefault(label, []).append(vals)
@@ -640,10 +705,14 @@ def plot_rtt_by_location(df, m_times, events, output_dir, show):
         patch.set_facecolor(color)
         patch.set_alpha(0.6)
 
-    # Overlay individual points (jittered)
+    # Overlay individual points (jittered), filtering extreme outliers
     for i, data in enumerate(box_data):
-        jitter = np.random.normal(0, 0.04, len(data))
-        ax.scatter(np.full(len(data), i + 1) + jitter, data,
+        q1, q3 = np.percentile(data, [25, 75])
+        iqr = q3 - q1
+        upper_fence = q3 + 3.0 * iqr
+        inliers = data[data <= upper_fence]
+        jitter = np.random.normal(0, 0.04, len(inliers))
+        ax.scatter(np.full(len(inliers), i + 1) + jitter, inliers,
                    alpha=0.15, s=8, color=colors[i], zorder=3)
 
     ax.set_ylabel("P50 RTT (ms)")
@@ -651,8 +720,8 @@ def plot_rtt_by_location(df, m_times, events, output_dir, show):
     ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
 
     ax.text(0.5, -0.17,
-            "Lakewood = same host as client (direct)    "
-            "Loveland = cross-switch via Tofino P4",
+            "Lakewood = server local to tunnel endpoint (macvlan bridge)    "
+            "Loveland = remote host (cross-switch via Tofino P4)",
             transform=ax.transAxes, ha="center", fontsize=8.5,
             color="#555", style="italic")
 

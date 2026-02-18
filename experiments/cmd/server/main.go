@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -57,12 +58,14 @@ type server struct {
 	totalClients atomic.Int64
 	bytesSent    atomic.Uint64
 	bytesRecv    atomic.Uint64
+	cpu          *cpuTracker
 }
 
 func newServer() *server {
 	return &server{
 		clients:   make(map[uint64]*websocket.Conn),
 		startTime: time.Now(),
+		cpu:       newCPUTracker(),
 	}
 }
 
@@ -197,6 +200,15 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// Drop stale pings buffered during a CRIU freeze so the backlog
+		// doesn't delay fresh echo measurements after restore.
+		if cm.Ts > 0 {
+			ageMs := float64(time.Now().UnixNano()-cm.Ts) / 1e6
+			if ageMs > 1000 {
+				continue
+			}
+		}
+
 		echo := echoMsg{
 			Seq:      cm.Seq,
 			ClientTs: cm.Ts,
@@ -222,15 +234,91 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[client-%d] disconnected", clientID)
 }
 
+type cpuTracker struct {
+	mu          sync.Mutex
+	lastUser    uint64
+	lastSystem  uint64
+	lastWall    time.Time
+	cpuPercent  float64
+}
+
+func newCPUTracker() *cpuTracker {
+	ct := &cpuTracker{lastWall: time.Now()}
+	ct.lastUser, ct.lastSystem = readProcCPU()
+	return ct
+}
+
+func readProcCPU() (user, sys uint64) {
+	data, err := os.ReadFile("/proc/self/stat")
+	if err != nil {
+		return 0, 0
+	}
+	// Fields: pid (comm) state ... field14=utime field15=stime (1-indexed)
+	// Skip past the (comm) field which may contain spaces
+	i := 0
+	for i < len(data) && data[i] != ')' {
+		i++
+	}
+	if i >= len(data) {
+		return 0, 0
+	}
+	fields := string(data[i+2:]) // skip ") "
+	var vals []uint64
+	var cur uint64
+	inNum := false
+	for _, b := range fields {
+		if b >= '0' && b <= '9' {
+			cur = cur*10 + uint64(b-'0')
+			inNum = true
+		} else if inNum {
+			vals = append(vals, cur)
+			cur = 0
+			inNum = false
+			if len(vals) >= 13 {
+				break
+			}
+		}
+	}
+	if inNum && len(vals) < 13 {
+		vals = append(vals, cur)
+	}
+	// After (comm) state: field index 0=ppid ... 11=utime(idx11) 12=stime(idx12)
+	if len(vals) >= 13 {
+		return vals[11], vals[12]
+	}
+	return 0, 0
+}
+
+func (ct *cpuTracker) sample() float64 {
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+	now := time.Now()
+	user, sys := readProcCPU()
+	dt := now.Sub(ct.lastWall).Seconds()
+	if dt > 0 && (user+sys) >= (ct.lastUser+ct.lastSystem) {
+		// Clock ticks to seconds: typically 100 ticks/sec on Linux
+		ticksUsed := float64((user + sys) - (ct.lastUser + ct.lastSystem))
+		ct.cpuPercent = (ticksUsed / 100.0 / dt) * 100.0
+	}
+	ct.lastUser = user
+	ct.lastSystem = sys
+	ct.lastWall = now
+	return ct.cpuPercent
+}
+
 type metricsResponse struct {
 	ConnectedClients int     `json:"connected_clients"`
 	TotalClients     int64   `json:"total_clients"`
 	UptimeSeconds    float64 `json:"uptime_seconds"`
 	BytesSent        uint64  `json:"bytes_sent"`
 	BytesReceived    uint64  `json:"bytes_received"`
+	CPUPercent       float64 `json:"cpu_percent"`
+	MemoryMB         float64 `json:"memory_mb"`
 }
 
 func (s *server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(metricsResponse{
 		ConnectedClients: s.connectedCount(),
@@ -238,6 +326,8 @@ func (s *server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		UptimeSeconds:    time.Since(s.startTime).Seconds(),
 		BytesSent:        s.bytesSent.Load(),
 		BytesReceived:    s.bytesRecv.Load(),
+		CPUPercent:       s.cpu.sample(),
+		MemoryMB:         float64(m.Sys) / 1024 / 1024,
 	})
 }
 

@@ -274,8 +274,8 @@ on_target "
         # Flush the route cache so TCP sockets do a fresh lookup through the new eth0
         sudo nsenter -t \$_CTR_PID -n ip route flush cache 2>/dev/null || true
 
-        # Pre-populate ARP for the client so the first retransmission doesn't
-        # need to wait for ARP resolution (saves ~1 RTT through the switch)
+        # Pre-populate ARP for the macvlan-shim (loadgen's SSH tunnel source)
+        # so the first retransmission doesn't wait for ARP resolution
         sudo nsenter -t \$_CTR_PID -n ip neigh replace $H1_IP dev eth0 lladdr $H1_MAC nud reachable 2>/dev/null || true
 
         # Gratuitous ARP to update upstream caches (switch, NICs in promisc mode)
@@ -325,20 +325,8 @@ else
     printf "WARNING: Switch update returned HTTP %s\n" "$HTTP_CODE"
 fi
 
-# Set the loadgen's ARP entry for the server IP to the fixed MAC ($H2_MAC).
-# Since we always recreate the macvlan with the same MAC, we can inject it
-# directly instead of flushing and waiting for ARP re-resolution through the
-# switch.  This eliminates the race between the first retransmission and ARP.
-if [[ "$SOURCE_NODE" = "lakewood" ]]; then
-    _LG_PID=$(on_source "sudo podman inspect --format '{{.State.Pid}}' stream-client 2>/dev/null" || true)
-    [[ -n "$_LG_PID" && "$_LG_PID" != "0" ]] && \
-        on_source "sudo nsenter -t $_LG_PID -n ip neigh replace $SERVER_IP dev eth0 lladdr $H2_MAC nud reachable 2>/dev/null" || true
-else
-    _LG_PID=$(on_target "sudo podman inspect --format '{{.State.Pid}}' stream-client 2>/dev/null" || true)
-    [[ -n "$_LG_PID" && "$_LG_PID" != "0" ]] && \
-        on_target "sudo nsenter -t $_LG_PID -n ip neigh replace $SERVER_IP dev eth0 lladdr $H2_MAC nud reachable 2>/dev/null" || true
-fi
-printf "Loadgen ARP set for %s -> %s\n" "$SERVER_IP" "$H2_MAC"
+# No loadgen ARP update needed — loadgen connects through an SSH tunnel via
+# lakewood's macvlan-shim. The shim's ARP cache is on lakewood's kernel.
 
 # =============================================================================
 # Step 5: Source container already removed (done during pre-restore to prevent

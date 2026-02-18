@@ -38,17 +38,15 @@ on_loveland "ip link show $LOVELAND_NIC >/dev/null 2>&1" || { echo "FAIL: $LOVEL
 printf "Preflight OK\n"
 
 # -----------------------------------------------------------------------------
-# Lakewood: macvlan network + server + client containers
+# Lakewood: macvlan network + server container (no client — runs locally)
 # -----------------------------------------------------------------------------
-printf "\n===== [lakewood] Creating macvlan network + containers =====\n"
+printf "\n===== [lakewood] Creating macvlan network + server container =====\n"
 
 on_lakewood "
     set -euo pipefail
 
-    # Clean stale state
     sudo podman network rm -f $HW_NET 2>/dev/null || true
 
-    # macvlan on Netronome NIC
     sudo podman network create \
         --driver macvlan \
         --subnet $HW_SUBNET \
@@ -61,18 +59,15 @@ on_lakewood "
     sudo ethtool -K $LAKEWOOD_NIC sg off 2>/dev/null || true
     sudo ip link set $LAKEWOOD_NIC mtu 9000 2>/dev/null || true
 
-    # Promiscuous mode (accept packets with any MAC — needed after migration
-    # when packets arrive with the old node's container MAC)
+    # Promiscuous mode (needed after migration for packets with old node's MAC)
     sudo ip link set $LAKEWOOD_NIC promisc on 2>/dev/null || true
 
     # Drop RST (prevents kernel from resetting migrated TCP connections)
     sudo iptables -D OUTPUT -p tcp --tcp-flags RST RST -o $LAKEWOOD_NIC -j DROP 2>/dev/null || true
     sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -o $LAKEWOOD_NIC -j DROP 2>/dev/null || true
 
-    # Server (h2) — no VIP alias; loadgen connects to .2 directly.
-    # TCP connections bind to .2 so CRIU can restore them on the target.
-    # Fixed MAC so the P4-switch path works identically before and after migration
-    # (the same MAC is used when recreating the macvlan on the migration target).
+    # Server only — loadgen runs locally and reaches the server through
+    # an SSH tunnel + macvlan-shim on this host.
     sudo podman run --replace --detach --privileged \
         --name stream-server --network $HW_NET --ip $H2_IP \
         --mac-address $H2_MAC \
@@ -81,18 +76,6 @@ on_lakewood "
         ./stream-server -signaling-addr :${SIGNALING_PORT} -metrics-addr :${METRICS_PORT}
 
     echo \"stream-server started at ${H2_IP} (MAC ${H2_MAC})\"
-
-    # Client (h1) — connects to server IP directly (not VIP).
-    # Same-IP migration means .2 is always the server, P4 switch
-    # updates the forward table to route .2 to the new physical port.
-    # Fixed MAC so the server can pre-populate its ARP cache after migration.
-    sudo podman run --replace --detach --privileged \
-        --name stream-client --network $HW_NET --ip $H1_IP \
-        --mac-address $H1_MAC \
-        -e GODEBUG=multipathtcp=0 \
-        $LOADGEN_IMAGE \
-        ./stream-client -server http://${H2_IP}:${SIGNALING_PORT} -connections $LOADGEN_CONNECTIONS -metrics-port $LOADGEN_METRICS_PORT
-
     echo 'lakewood setup complete'
 "
 
@@ -168,12 +151,46 @@ on_loveland "
 "
 
 # -----------------------------------------------------------------------------
+# Lakewood: macvlan-shim (host-side access to the container subnet)
+# -----------------------------------------------------------------------------
+printf "\n===== [lakewood] Creating macvlan-shim (%s) =====\n" "$MACSHIM_IF"
+
+on_lakewood "
+    set -euo pipefail
+
+    # Remove stale shim if it exists
+    sudo ip link del $MACSHIM_IF 2>/dev/null || true
+
+    # Create a macvlan sub-interface on the same parent NIC as the containers.
+    # Bridge mode lets the shim talk to local containers directly and sends
+    # unknown-MAC traffic to the parent NIC (→ P4 switch → remote node).
+    sudo ip link add $MACSHIM_IF link $LAKEWOOD_NIC type macvlan mode bridge
+    sudo ip link set $MACSHIM_IF address $H1_MAC
+    sudo ip addr add ${H1_IP}/24 dev $MACSHIM_IF
+    sudo ip link set $MACSHIM_IF up
+
+    echo 'macvlan-shim created: ${MACSHIM_IF} ${H1_IP}/24 (MAC ${H1_MAC}) on ${LAKEWOOD_NIC}'
+"
+
+# Pre-populate ARP in the server container for the macshim so the first
+# response doesn't wait for ARP resolution.
+printf "Setting static ARP on server container for macshim...\n"
+SERVER_PID=$(on_lakewood "sudo podman inspect --format '{{.State.Pid}}' stream-server 2>/dev/null" || true)
+if [[ -n "$SERVER_PID" && "$SERVER_PID" != "0" ]]; then
+    on_lakewood "sudo nsenter -t $SERVER_PID -n ip neigh replace ${H1_IP} lladdr ${H1_MAC} dev eth0 nud reachable"
+    echo "Static ARP set: ${H1_IP} → ${H1_MAC} (in server container)"
+else
+    echo "WARNING: Could not set static ARP on server container (PID not found)"
+fi
+
+# -----------------------------------------------------------------------------
 # Done
 # -----------------------------------------------------------------------------
 printf "\n===== Build complete =====\n"
 printf "Lakewood:\n"
-printf "  Host 1 (client):  %s  container=stream-client\n" "$H1_IP"
-printf "  Host 2 (server):  %s  container=stream-server\n" "$H2_IP"
+printf "  Server:   %s  container=stream-server  (MAC %s)\n" "$H2_IP" "$H2_MAC"
+printf "  Macshim:  %s  iface=%s  (MAC %s)\n" "$H1_IP" "$MACSHIM_IF" "$H1_MAC"
 printf "Loveland:\n"
-printf "  Host 3 (target):  network ready (restore target)\n"
-printf "VIP:                %s\n" "$VIP"
+printf "  Target:   network ready (restore target)\n"
+printf "Client:\n"
+printf "  Loadgen runs locally → SSH tunnel → %s:%s\n" "$H2_IP" "$SIGNALING_PORT"
