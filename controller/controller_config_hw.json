@@ -24,12 +24,14 @@
     "nodes": [
       {
         "ipv4": "192.168.12.100",
-        "sw_port": 140
+        "sw_port": 140,
+        "dst_mac": "02:42:c0:a8:0c:64"
       },
       {
         "ipv4": "192.168.12.2",
         "is_lb_node": true,
-        "sw_port": 140
+        "sw_port": 140,
+        "dst_mac": "02:42:c0:a8:0c:02"
       }
     ]
   }

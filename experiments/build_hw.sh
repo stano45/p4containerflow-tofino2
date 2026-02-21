@@ -52,6 +52,7 @@ on_lakewood "
         --subnet $HW_SUBNET \
         --gateway $HW_GATEWAY \
         -o parent=$LAKEWOOD_NIC \
+        -o mode=vepa \
         $HW_NET
 
     # NIC tuning
@@ -133,6 +134,7 @@ on_loveland "
         --subnet $HW_SUBNET \
         --gateway $HW_GATEWAY \
         -o parent=$LOVELAND_NIC \
+        -o mode=vepa \
         $HW_NET
 
     # NIC tuning
@@ -162,9 +164,9 @@ on_lakewood "
     sudo ip link del $MACSHIM_IF 2>/dev/null || true
 
     # Create a macvlan sub-interface on the same parent NIC as the containers.
-    # Bridge mode lets the shim talk to local containers directly and sends
-    # unknown-MAC traffic to the parent NIC (→ P4 switch → remote node).
-    sudo ip link add $MACSHIM_IF link $LAKEWOOD_NIC type macvlan mode bridge
+    # VEPA mode forces all traffic through the physical NIC and external
+    # P4 switch, even for local container traffic (hairpin).
+    sudo ip link add $MACSHIM_IF link $LAKEWOOD_NIC type macvlan mode vepa
     sudo ip link set $MACSHIM_IF address $H1_MAC
     sudo ip addr add ${H1_IP}/24 dev $MACSHIM_IF
     sudo ip link set $MACSHIM_IF up

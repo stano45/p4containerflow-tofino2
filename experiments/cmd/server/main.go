@@ -120,11 +120,39 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return conn.WriteMessage(websocket.TextMessage, data)
 	}
 
-	// Writer: periodic data frames + echo responses
+	// Writer: periodic data frames + echo responses.
+	// Tolerates transient write failures (up to consecutiveErrLimit) so that
+	// a brief network outage during CRIU migration doesn't permanently kill
+	// the goroutine while the macvlan interface is being recreated.
 	go func() {
 		frameDuration := time.Second / time.Duration(*dataFPS)
 		ticker := time.NewTicker(frameDuration)
 		defer ticker.Stop()
+
+		const consecutiveErrLimit = 30
+		writeErrs := 0
+
+		tryWrite := func(data []byte) bool {
+			if err := writeMsg(data); err != nil {
+				writeErrs++
+				if writeErrs == 1 || writeErrs%10 == 0 {
+					log.Printf("[client-%d] write error (%d consecutive): %v",
+						clientID, writeErrs, err)
+				}
+				if writeErrs >= consecutiveErrLimit {
+					log.Printf("[client-%d] giving up after %d consecutive write errors",
+						clientID, writeErrs)
+					return false
+				}
+				return true
+			}
+			if writeErrs > 0 {
+				log.Printf("[client-%d] write recovered after %d errors", clientID, writeErrs)
+			}
+			writeErrs = 0
+			s.bytesSent.Add(uint64(len(data)))
+			return true
+		}
 
 		seq := 0
 		paddingBuf := make([]byte, 512)
@@ -139,10 +167,9 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 				return
 
 			case echoData := <-echoCh:
-				if err := writeMsg(echoData); err != nil {
+				if !tryWrite(echoData) {
 					return
 				}
-				s.bytesSent.Add(uint64(len(echoData)))
 
 			case <-ticker.C:
 				if quiesced.Load() {
@@ -155,10 +182,9 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 				for {
 					select {
 					case echoData := <-echoCh:
-						if err := writeMsg(echoData); err != nil {
+						if !tryWrite(echoData) {
 							return
 						}
-						s.bytesSent.Add(uint64(len(echoData)))
 					default:
 						break drainEchoes
 					}
@@ -171,10 +197,9 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 					Padding: paddingStr,
 				}
 				data, _ := json.Marshal(msg)
-				if err := writeMsg(data); err != nil {
+				if !tryWrite(data) {
 					return
 				}
-				s.bytesSent.Add(uint64(len(data)))
 				seq++
 			}
 		}

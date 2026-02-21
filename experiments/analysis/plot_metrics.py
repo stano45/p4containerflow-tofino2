@@ -73,13 +73,18 @@ parser.add_argument("--show", action="store_true")
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 def _save(fig, output_dir, filename, show):
-    """Save figure to disk or show interactively."""
+    """Save figure as both PDF (vector) and high-DPI PNG."""
     if show:
         plt.show()
     else:
-        path = os.path.join(output_dir, filename)
-        fig.savefig(path, dpi=150, bbox_inches="tight")
-        print(f"  {path}")
+        base, _ = os.path.splitext(filename)
+        for ext, kwargs in [
+            (".pdf", dict(bbox_inches="tight")),
+            # (".png", dict(dpi=300, bbox_inches="tight")),
+        ]:
+            path = os.path.join(output_dir, base + ext)
+            fig.savefig(path, **kwargs)
+            print(f"  {path}")
     plt.close(fig)
 
 
@@ -91,18 +96,10 @@ def _short_node(name):
 
 def _draw_migrations(ax, m_times, events=None, label=True):
     """Draw vertical dashed lines at each migration start time."""
-    colors = sns.color_palette("bright", max(len(m_times), 1))
+    color = "#D32F2F"
     for i, t in enumerate(m_times):
-        if not label:
-            lbl = None
-        elif events and i < len(events):
-            src = _short_node(events[i].get("source_node", ""))
-            tgt = _short_node(events[i].get("target_node", ""))
-            lbl = f"M{i+1} {src}\u2192{tgt}"
-        else:
-            lbl = f"Migration {i+1}"
-        ax.axvline(t, color=colors[i % len(colors)], ls="--", lw=1, alpha=0.7,
-                   label=lbl)
+        lbl = f"Migrations (n={len(m_times)})" if (label and i == 0) else None
+        ax.axvline(t, color=color, ls="--", lw=0.8, alpha=0.5, label=lbl)
 
 
 def _col(df, *candidates):
@@ -171,22 +168,10 @@ def _migration_times_sec(df, events):
 
 
 def _split_legend(ax, metric_loc="upper left", migration_loc="upper right"):
-    """Split an axes' legend into metric lines vs migration markers."""
+    """Place a single unified legend (migrations now have only one entry)."""
     handles, labels = ax.get_legend_handles_labels()
-    met_h, met_l, mig_h, mig_l = [], [], [], []
-    for h, l in zip(handles, labels):
-        if l.startswith("M") and "\u2192" in l:
-            mig_h.append(h); mig_l.append(l)
-        else:
-            met_h.append(h); met_l.append(l)
-    if met_h:
-        leg1 = ax.legend(met_h, met_l, loc=metric_loc, fontsize=8, framealpha=0.9)
-        ax.add_artist(leg1)
-    if mig_h:
-        ax.legend(mig_h, mig_l, loc=migration_loc, fontsize=7.5,
-                  framealpha=0.9, ncol=1, handlelength=1.5)
-    elif met_h:
-        ax.legend(met_h, met_l, loc=metric_loc, fontsize=8, framealpha=0.9)
+    if handles:
+        ax.legend(handles, labels, loc=metric_loc, fontsize=8, framealpha=0.9)
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -223,15 +208,10 @@ def plot_connection_health(df, m_times, output_dir, show, events=None):
     that migrations are transparent.
     """
     df = _trim_shutdown(df)
-    fig, axes = plt.subplots(2, 1, figsize=(12, 5.5), sharex=True,
-                             gridspec_kw={"height_ratios": [2, 1]})
+    fig, ax = plt.subplots(figsize=(12, 4))
     fig.suptitle("Client Connection Health", fontweight="bold")
     t = df["t_sec"]
 
-    # ── Top: connected clients ──
-    ax = axes[0]
-    # Prefer loadgen-reported count (always available).
-    # Fall back to server-reported count with gap masking for old CSVs.
     lg_col = _col(df, "lg_connected_clients")
     srv_col = _col(df, "connected_clients")
 
@@ -241,8 +221,6 @@ def plot_connection_health(df, m_times, output_dir, show, events=None):
                 label="Active connections (client)")
         ax.fill_between(t, 0, vals, alpha=0.10, color=sns.color_palette()[0])
 
-        # Overlay service-availability shading: mark intervals where
-        # connections exist but no echo data is being received (server frozen).
         rtt_col = _col(df, "ws_rtt_p50_ms")
         if rtt_col:
             rtt_vals = _numeric(df, rtt_col)
@@ -252,30 +230,16 @@ def plot_connection_health(df, m_times, output_dir, show, events=None):
                             step="mid")
     elif srv_col:
         vals = _numeric(df, srv_col).copy()
-        vals[vals == 0] = np.nan  # mask collection gaps
+        vals[vals == 0] = np.nan
         ax.plot(t, vals, lw=1.2, color=sns.color_palette()[0],
                 label="Active connections (server-reported, gaps = unreachable)")
         ax.fill_between(t, 0, vals, alpha=0.10, color=sns.color_palette()[0])
 
     ax.set_ylabel("Active Connections")
+    ax.set_xlabel("Time (s)")
     ax.set_ylim(bottom=0)
     _draw_migrations(ax, m_times, events=events)
     _split_legend(ax, metric_loc="lower left")
-
-    # ── Bottom: cumulative connection drops ──
-    ax = axes[1]
-    drop_col = _col(df, "connection_drops")
-    if drop_col:
-        drops = _numeric(df, drop_col)
-        ax.plot(t, drops, lw=1.5, color="red", label="Cumulative drops")
-        ax.fill_between(t, 0, drops, alpha=0.10, color="red")
-    ax.set_ylabel("Connection Drops")
-    ax.set_xlabel("Time (s)")
-    ymax = max(1, drops.max()) if drop_col else 1
-    ax.set_ylim(bottom=0, top=ymax * 1.1)
-    ax.yaxis.set_major_locator(mticker.MaxNLocator(integer=True))
-    ax.legend(loc="upper left", fontsize=9)
-    _draw_migrations(ax, m_times, label=False)
 
     plt.tight_layout()
     _save(fig, output_dir, "connection_health.png", show)
@@ -730,6 +694,381 @@ def plot_rtt_by_location(df, m_times, events, output_dir, show):
     _save(fig, output_dir, "rtt_by_location.png", show)
 
 
+def _compute_throughput_rate(df):
+    """Derive per-second throughput (KB/s) from cumulative bytes_sent."""
+    col = _col(df, "bytes_sent")
+    if not col:
+        return pd.Series(np.nan, index=df.index)
+    raw = _numeric(df, col).where(lambda x: x > 0)
+    dt = df["t_sec"].diff().fillna(1).clip(lower=0.1)
+    rate = (raw.diff().clip(lower=0) / dt) / 1024
+    return rate.rolling(3, min_periods=1, center=True).mean()
+
+
+def _client_perceived_downtime(df, m_times, events):
+    """For each migration, measure the RTT blackout as seen by the client.
+
+    Finds the zero-RTT gap around each migration event: the last sample with
+    RTT > 0 before the gap and the first sample with RTT > 0 after the gap.
+    This captures the actual service interruption the client experiences,
+    independent of the 1 Hz sampling granularity of the collector.
+
+    Returns list of dicts per migration.
+    """
+    rtt_col = _col(df, "ws_rtt_p50_ms")
+    if not rtt_col:
+        return []
+
+    t = df["t_sec"].values
+    rtt = _numeric(df, rtt_col).values
+
+    results = []
+    for i, m_t in enumerate(m_times):
+        win = (t >= m_t - 10) & (t <= m_t + 30)
+        t_win = t[win]
+        rtt_win = rtt[win]
+
+        # Find the zero-RTT gap nearest to the migration timestamp.
+        # The gap starts when RTT drops to 0 and ends when it becomes > 0 again.
+        zero_mask = (rtt_win <= 0) | np.isnan(rtt_win)
+        nonzero_idx = np.where(~zero_mask)[0]
+
+        if len(nonzero_idx) < 2:
+            results.append({"migration": i+1, "client_downtime_s": np.nan,
+                            "server_downtime_s": int(events[i].get("time_to_ready_ms", 0)) / 1000.0 if i < len(events) else np.nan})
+            continue
+
+        # Find the transition: last nonzero before the gap, first nonzero after
+        m_t_local = m_t
+        before = nonzero_idx[t_win[nonzero_idx] <= m_t_local + 2]
+        after = nonzero_idx[t_win[nonzero_idx] > m_t_local + 2]
+
+        last_before_t = t_win[before[-1]] if len(before) > 0 else np.nan
+        first_after_t = t_win[after[0]] if len(after) > 0 else np.nan
+
+        client_dt = first_after_t - last_before_t if np.isfinite(last_before_t) and np.isfinite(first_after_t) else np.nan
+        server_dt = int(events[i].get("time_to_ready_ms", 0)) / 1000.0 if i < len(events) else np.nan
+
+        results.append({
+            "migration": i + 1,
+            "last_valid_before": last_before_t,
+            "first_valid_after": first_after_t,
+            "client_downtime_s": client_dt,
+            "server_downtime_s": server_dt,
+        })
+    return results
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  MIGRATION-FOCUSED PLOTS — zoomed analysis of each migration event
+# ═════════════════════════════════════════════════════════════════════════
+
+
+def plot_migration_zoom_grid(df, m_times, events, output_dir, show):
+    """Small-multiples grid: RTT zoomed to [-5s, +20s] around each migration.
+
+    All panels share the same y-axis so recovery behaviour can be compared
+    across migrations at a glance.
+    """
+    if not events or "ws_rtt_p50_ms" not in df.columns:
+        return
+
+    n = len(m_times)
+    ncols = 5
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(3.2 * ncols, 2.8 * nrows),
+                             sharex=True, sharey=True)
+    fig.suptitle("RTT Around Each Migration Event", fontweight="bold", fontsize=13)
+    axes = np.atleast_2d(axes)
+
+    t = df["t_sec"]
+    rtt = _mask_stale_rtt(df, "ws_rtt_p50_ms")
+
+    window_before, window_after = 5, 20
+
+    # Pre-compute a shared y-limit: P95 of all recovery spikes across migrations
+    all_peaks = []
+    for m_t in m_times:
+        mask = (t >= m_t) & (t <= m_t + window_after)
+        vals = rtt[mask].dropna()
+        if not vals.empty:
+            all_peaks.append(vals.max())
+    y_max = np.percentile(all_peaks, 95) * 1.15 if all_peaks else 500
+
+    for idx in range(nrows * ncols):
+        row, col_idx = divmod(idx, ncols)
+        ax = axes[row][col_idx]
+
+        if idx >= n:
+            ax.set_visible(False)
+            continue
+
+        m_t = m_times[idx]
+        ev = events[idx]
+        mask = (t >= m_t - window_before) & (t <= m_t + window_after)
+        t_rel = t[mask] - m_t
+
+        rtt_win = rtt[mask].copy()
+        rtt_plot = rtt_win.where(rtt_win > 0)
+
+        ttr_s = int(ev.get("time_to_ready_ms", 0)) / 1000.0
+        ax.axvspan(0, ttr_s, alpha=0.10, color="#E53935", zorder=0)
+        ax.plot(t_rel, rtt_plot, lw=1.2, color=sns.color_palette()[0],
+                alpha=0.9, zorder=2)
+        ax.axvline(0, color="#E53935", ls="--", lw=1.0, alpha=0.7, zorder=1)
+
+        src = _short_node(ev.get("source_node", ""))
+        tgt = _short_node(ev.get("target_node", ""))
+        ttr_ms = int(ev.get("time_to_ready_ms", 0))
+        ax.set_title(f"M{idx+1} {src}\u2192{tgt} ({ttr_ms}ms)", fontsize=8, pad=3)
+
+        ax.tick_params(labelsize=7)
+        if row == nrows - 1 or idx + ncols >= n:
+            ax.set_xlabel("t \u2212 t_mig (s)", fontsize=7)
+        if col_idx == 0:
+            ax.set_ylabel("P50 RTT (ms)", fontsize=7)
+        ax.set_xlim(-window_before, window_after)
+        ax.set_ylim(0, y_max)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    _save(fig, output_dir, "migration_zoom_grid.png", show)
+
+
+def plot_ensemble_recovery(df, m_times, events, output_dir, show):
+    """Ensemble RTT recovery: all migrations aligned at t=0, with mean and CI."""
+    if not events or "ws_rtt_p50_ms" not in df.columns:
+        return
+
+    t = df["t_sec"]
+    rtt = _mask_stale_rtt(df, "ws_rtt_p50_ms")
+
+    window_before, window_after = 5, 25
+    t_grid = np.arange(-window_before, window_after + 0.5, 0.5)
+    traces = []
+
+    for m_t in m_times:
+        mask = (t >= m_t - window_before - 1) & (t <= m_t + window_after + 1)
+        t_rel = (t[mask] - m_t).values
+        vals = rtt[mask].values
+
+        valid = np.isfinite(vals) & (vals > 0)
+        if valid.sum() < 3:
+            continue
+        interp = np.interp(t_grid, t_rel[valid], vals[valid],
+                           left=np.nan, right=np.nan)
+        traces.append(interp)
+
+    if not traces:
+        return
+
+    traces = np.array(traces)
+    mean_trace = np.nanmean(traces, axis=0)
+    std_trace = np.nanstd(traces, axis=0)
+    p25 = np.nanpercentile(traces, 25, axis=0)
+    p75 = np.nanpercentile(traces, 75, axis=0)
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    fig.suptitle("Ensemble RTT Recovery Profile", fontweight="bold")
+
+    for i, trace in enumerate(traces):
+        ax.plot(t_grid, trace, lw=0.5, alpha=0.25, color="#90CAF9")
+
+    ax.fill_between(t_grid, p25, p75, alpha=0.25, color=sns.color_palette()[0],
+                    label="IQR (P25\u2013P75)")
+    ax.plot(t_grid, mean_trace, lw=2.0, color=sns.color_palette()[0],
+            label="Mean RTT", zorder=5)
+
+    ax.axvline(0, color="#E53935", ls="--", lw=1.5, label="Migration start")
+
+    mean_ttr = np.mean([int(ev.get("time_to_ready_ms", 0)) for ev in events]) / 1000.0
+    ax.axvline(mean_ttr, color="#FF9800", ls=":", lw=1.2,
+               label=f"Mean recovery ({mean_ttr:.1f}s)")
+
+    ax.set_xlabel("Time relative to migration start (s)")
+    ax.set_ylabel("P50 RTT (ms)")
+    ax.set_xlim(-window_before, window_after)
+    ax.set_ylim(bottom=0)
+    ax.legend(loc="upper right", fontsize=9, framealpha=0.9)
+
+    ax.text(0.01, 0.97,
+            f"n = {len(traces)} migrations aligned at t=0",
+            transform=ax.transAxes, fontsize=8, va="top", color="#555",
+            style="italic")
+
+    plt.tight_layout()
+    _save(fig, output_dir, "ensemble_rtt_recovery.png", show)
+
+
+def plot_client_vs_server_downtime(df, m_times, events, output_dir, show):
+    """Client-perceived vs server-reported downtime comparison."""
+    perceived = _client_perceived_downtime(df, m_times, events)
+    if not perceived:
+        return
+
+    mig_ids = [p["migration"] for p in perceived]
+    client_dt = np.array([p["client_downtime_s"] for p in perceived])
+    server_dt = np.array([p["server_downtime_s"] for p in perceived])
+
+    valid = np.isfinite(client_dt) & np.isfinite(server_dt)
+    if valid.sum() == 0:
+        return
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5),
+                                    gridspec_kw={"width_ratios": [2, 1]})
+    fig.suptitle("Client-Perceived vs Server-Reported Downtime", fontweight="bold")
+
+    x = np.arange(len(mig_ids))
+    w = 0.35
+    ax1.bar(x - w/2, server_dt, w, label="Server-reported (time_to_ready)",
+            color="#FF9800", alpha=0.8, edgecolor="white", lw=0.5)
+    ax1.bar(x + w/2, client_dt, w, label="Client-perceived (RTT gap)",
+            color=sns.color_palette()[0], alpha=0.8, edgecolor="white", lw=0.5)
+
+    ax1.set_xlabel("Migration #")
+    ax1.set_ylabel("Downtime (s)")
+    ax1.set_xticks(x[::2])
+    ax1.set_xticklabels([f"M{m}" for m in np.array(mig_ids)[::2]], fontsize=8)
+    ax1.legend(fontsize=8)
+    ax1.set_ylim(bottom=0)
+
+    d_max = max(np.nanmax(client_dt[valid]), np.nanmax(server_dt[valid])) * 1.15
+    ax2.scatter(server_dt[valid], client_dt[valid], s=40, alpha=0.7,
+                color=sns.color_palette()[0], edgecolor="white", lw=0.5, zorder=3)
+    ax2.plot([0, d_max], [0, d_max], ls="--", color="#999", lw=1, label="y = x")
+    ax2.set_xlabel("Server-reported (s)")
+    ax2.set_ylabel("Client-perceived (s)")
+    ax2.set_xlim(0, d_max)
+    ax2.set_ylim(0, d_max)
+    ax2.set_aspect("equal")
+    ax2.legend(fontsize=8)
+
+    delta = client_dt[valid] - server_dt[valid]
+    corr = np.corrcoef(server_dt[valid], client_dt[valid])[0, 1]
+    ax2.text(0.05, 0.95,
+             f"Mean \u0394: {np.mean(delta):+.2f}s\n"
+             f"Median \u0394: {np.median(delta):+.2f}s\n"
+             f"r = {corr:.3f}",
+             transform=ax2.transAxes, fontsize=8, va="top",
+             bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="#ccc", alpha=0.9))
+
+    fig.text(0.5, -0.02,
+             "Client-perceived = time between last and first non-zero P50 RTT around migration "
+             "(quantised to collector\u2019s 1 Hz polling interval)",
+             ha="center", fontsize=8, color="#666", style="italic")
+
+    plt.tight_layout()
+    fig.subplots_adjust(bottom=0.12)
+    _save(fig, output_dir, "downtime_comparison.png", show)
+
+
+def plot_downtime_cdf(df, m_times, events, output_dir, show):
+    """Empirical CDF of server-reported downtime (time_to_ready)."""
+    if not events:
+        return
+
+    server_vals = np.array([int(ev.get("time_to_ready_ms", 0)) for ev in events])
+    if len(server_vals) == 0:
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    fig.suptitle("Migration Downtime CDF", fontweight="bold")
+
+    color = "#FF9800"
+    sorted_v = np.sort(server_vals)
+    cdf = np.arange(1, len(sorted_v) + 1) / len(sorted_v)
+    ax.step(sorted_v, cdf, where="post", lw=2.2, color=color,
+            label=f"time_to_ready (n={len(sorted_v)})")
+
+    for pct, y_off in zip([50, 95, 99], [0.52, 0.92, 0.97]):
+        pval = np.percentile(sorted_v, pct)
+        ax.axvline(pval, color=color, ls=":", lw=0.8, alpha=0.5)
+        ax.text(pval + 20, y_off,
+                f"P{pct} = {pval:.0f} ms", fontsize=9, color=color,
+                style="italic")
+
+    ax.set_xlabel("Downtime (ms)")
+    ax.set_ylabel("Cumulative Probability")
+    ax.set_ylim(0, 1.05)
+    ax.legend(fontsize=9, loc="lower right")
+    ax.yaxis.set_major_formatter(mticker.PercentFormatter(1.0))
+
+    lo = np.min(sorted_v) * 0.92
+    hi = np.max(sorted_v) * 1.06
+    ax.set_xlim(lo, hi)
+
+    mean_dt = np.mean(sorted_v)
+    std_dt = np.std(sorted_v)
+    ax.text(0.02, 0.97,
+            f"Mean = {mean_dt:.0f} ms  (SD = {std_dt:.0f} ms)",
+            transform=ax.transAxes, fontsize=9, va="top", color="#333",
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="#ccc", alpha=0.9))
+
+    plt.tight_layout()
+    _save(fig, output_dir, "downtime_cdf.png", show)
+
+
+def plot_throughput_recovery(df, m_times, events, output_dir, show):
+    """Ensemble throughput around migration events."""
+    rate = _compute_throughput_rate(df)
+    if rate.isna().all():
+        return
+
+    t = df["t_sec"]
+    window_before, window_after = 5, 25
+    t_grid = np.arange(-window_before, window_after + 0.5, 0.5)
+    traces = []
+
+    for m_t in m_times:
+        mask = (t >= m_t - window_before - 1) & (t <= m_t + window_after + 1)
+        t_rel = (t[mask] - m_t).values
+        vals = rate[mask].values
+
+        valid = np.isfinite(vals) & (vals > 0)
+        if valid.sum() < 3:
+            continue
+        interp = np.interp(t_grid, t_rel[valid], vals[valid],
+                           left=np.nan, right=np.nan)
+        traces.append(interp)
+
+    if not traces:
+        return
+
+    traces = np.array(traces)
+    mean_trace = np.nanmean(traces, axis=0)
+    p25 = np.nanpercentile(traces, 25, axis=0)
+    p75 = np.nanpercentile(traces, 75, axis=0)
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    fig.suptitle("Ensemble Throughput Recovery Profile", fontweight="bold")
+
+    for trace in traces:
+        ax.plot(t_grid, trace, lw=0.5, alpha=0.2, color="#A5D6A7")
+
+    ax.fill_between(t_grid, p25, p75, alpha=0.25, color=sns.color_palette()[2],
+                    label="IQR (P25\u2013P75)")
+    ax.plot(t_grid, mean_trace, lw=2.0, color=sns.color_palette()[2],
+            label="Mean throughput", zorder=5)
+    ax.axvline(0, color="#E53935", ls="--", lw=1.5, label="Migration start")
+
+    mean_ttr = np.mean([int(ev.get("time_to_ready_ms", 0)) for ev in events]) / 1000.0
+    ax.axvline(mean_ttr, color="#FF9800", ls=":", lw=1.2,
+               label=f"Mean recovery ({mean_ttr:.1f}s)")
+
+    ax.set_xlabel("Time relative to migration start (s)")
+    ax.set_ylabel("Throughput (KB/s)")
+    ax.set_xlim(-window_before, window_after)
+    ax.set_ylim(bottom=0)
+    ax.legend(loc="upper right", fontsize=9, framealpha=0.9)
+
+    ax.text(0.01, 0.97,
+            f"n = {len(traces)} migrations aligned at t=0",
+            transform=ax.transAxes, fontsize=8, va="top", color="#555",
+            style="italic")
+
+    plt.tight_layout()
+    _save(fig, output_dir, "ensemble_throughput_recovery.png", show)
+
+
 def plot_downtime_strip(events, output_dir, show):
     """Per-migration stacked bars and phase variability box plots."""
     if not events or len(events) < 2:
@@ -759,10 +1098,11 @@ def plot_downtime_strip(events, output_dir, show):
         all_labels.append("Overhead")
 
     mig_df = pd.DataFrame(rows)
-    migrations = sorted(mig_df["migration"].unique())
+    migrations = sorted(mig_df["migration"].unique(),
+                        key=lambda s: int(s[1:]))
 
     # ── Stacked bar per migration ──
-    fig1, ax = plt.subplots(figsize=(8, 5))
+    fig1, ax = plt.subplots(figsize=(max(8, len(migrations) * 0.45), 5))
     fig1.suptitle("Per-Migration Phase Breakdown", fontweight="bold")
     bottoms = np.zeros(len(migrations))
     for phase in all_labels:
@@ -777,19 +1117,14 @@ def plot_downtime_strip(events, output_dir, show):
         ev = events[i]
         ttr = int(ev.get("time_to_ready_ms", ev.get("total_ms", 0)))
         ax.text(i, bottoms[i] + 100, f"{ttr/1000:.1f}s",
-                ha="center", va="bottom", fontsize=9, fontweight="bold")
-
-    for i, m in enumerate(migrations):
-        src = _short_node(events[i].get("source_node", ""))
-        tgt = _short_node(events[i].get("target_node", ""))
-        ax.text(i, -350, f"{src}\u2192{tgt}",
-                ha="center", va="top", fontsize=8, color="#555")
+                ha="center", va="bottom", fontsize=8, fontweight="bold")
 
     ax.set_ylabel("Duration (ms)")
-    ax.set_xlabel("Migration")
-    ax.legend(loc="upper left", fontsize=8)
-    ax.set_ylim(bottom=-400)
-    ax.axhline(0, color="black", lw=0.5)
+    ax.set_xlabel("Migration #")
+    ax.tick_params(axis="x", rotation=45, labelsize=8)
+    ax.legend(loc="upper left", fontsize=8,
+              bbox_to_anchor=(1.01, 1), borderaxespad=0)
+    ax.set_ylim(bottom=0)
     plt.tight_layout()
     _save(fig1, output_dir, "migration_bars.png", show)
 
@@ -871,6 +1206,13 @@ def main():
     plot_migration_timing(events, args.output_dir, args.show)
     plot_rtt_by_location(df, m_times, events, args.output_dir, args.show)
     plot_downtime_strip(events, args.output_dir, args.show)
+
+    # Migration-focused zoom plots
+    # plot_migration_zoom_grid(df, m_times, events, args.output_dir, args.show)
+    plot_ensemble_recovery(df, m_times, events, args.output_dir, args.show)
+    # plot_client_vs_server_downtime(df, m_times, events, args.output_dir, args.show)
+    plot_downtime_cdf(None, None, events, args.output_dir, args.show)
+    plot_throughput_recovery(df, m_times, events, args.output_dir, args.show)
     print("Done.")
 
 

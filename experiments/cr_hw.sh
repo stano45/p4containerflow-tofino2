@@ -265,7 +265,7 @@ on_target "
     _CTR_PID=\$(sudo podman inspect --format '{{.State.Pid}}' $RENAME_AFTER_RESTORE 2>/dev/null || sudo podman inspect --format '{{.State.Pid}}' $CONTAINER_NAME 2>/dev/null || echo 0)
     if [ \"\$_CTR_PID\" != '0' ] && [ -n \"\$_CTR_PID\" ]; then
         sudo nsenter -t \$_CTR_PID -n ip link del eth0 2>/dev/null || true
-        sudo ip link add cr_mv_eth0 link $TARGET_NIC address $H2_MAC type macvlan mode bridge
+        sudo ip link add cr_mv_eth0 link $TARGET_NIC address $H2_MAC type macvlan mode vepa
         sudo ip link set cr_mv_eth0 netns \$_CTR_PID
         sudo nsenter -t \$_CTR_PID -n ip link set cr_mv_eth0 name eth0
         sudo nsenter -t \$_CTR_PID -n ip addr add $SERVER_IP/24 dev eth0
@@ -304,12 +304,12 @@ SWITCH_UPDATE_START=$(date +%s%N)
 HTTP_CODE=$(on_source "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 4 \
     -X POST '${CONTROLLER_URL}/updateForward' \
     -H 'Content-Type: application/json' \
-    -d '{\"ipv4\":\"${SERVER_IP}\", \"sw_port\":${TARGET_SW_PORT}}'" 2>/dev/null || true)
+    -d '{\"ipv4\":\"${SERVER_IP}\", \"sw_port\":${TARGET_SW_PORT}, \"dst_mac\":\"${H2_MAC}\"}'" 2>/dev/null || true)
 if [[ -z "$HTTP_CODE" || "$HTTP_CODE" = "000" ]]; then
   HTTP_CODE=$(on_tofino "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 6 \
       -X POST 'http://127.0.0.1:5000/updateForward' \
       -H 'Content-Type: application/json' \
-      -d '{\"ipv4\":\"${SERVER_IP}\", \"sw_port\":${TARGET_SW_PORT}}'" 2>/dev/null || true)
+      -d '{\"ipv4\":\"${SERVER_IP}\", \"sw_port\":${TARGET_SW_PORT}, \"dst_mac\":\"${H2_MAC}\"}'" 2>/dev/null || true)
 fi
 if [[ -z "$HTTP_CODE" ]]; then HTTP_CODE=000; fi
 
