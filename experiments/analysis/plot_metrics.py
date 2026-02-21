@@ -61,13 +61,14 @@ parser.add_argument("--show", action="store_true")
 
 
 def _save(fig, output_dir, filename, show):
-    """Save figure as PDF (vector)."""
+    """Save figure as both PDF (vector) and PNG (for Markdown rendering)."""
     if show:
         plt.show()
     else:
         base, _ = os.path.splitext(filename)
         for ext, kwargs in [
             (".pdf", dict(bbox_inches="tight")),
+            (".png", dict(bbox_inches="tight", dpi=150)),
         ]:
             path = os.path.join(output_dir, base + ext)
             fig.savefig(path, **kwargs)

@@ -7,7 +7,12 @@ P4-based L3/TCP load balancer for Intel Tofino 1/2. This repository contains:
 - PTF-based tests for dataplane behavior and example controller workflows.
 - Makefile automation for building with [open-p4studio](https://github.com/p4lang/open-p4studio) and Intel proprietary SDE components.
 
-> **📖 For detailed technical documentation** about the P4 program architecture, control plane internals, packet flows, and ActionSelector implementation, see **[DOC.md](DOC.md)**.
+This README is a practical guide: how to build, run, and test the project. For deeper context, see the `docs/` directory:
+
+- **[docs/technical_report.md](docs/technical_report.md)** -- How everything works: open-p4studio build internals, hardware challenges, the V1Model-to-T2NA rewrite, packet flows, and the control plane architecture.
+- **[docs/experiment_report.md](docs/experiment_report.md)** -- Benchmarking setup, migration procedure, metrics collection, and results from a 25-migration experiment run.
+- **[docs/topology.md](docs/topology.md)** -- Lab testbed reference: equipment, IPs, interfaces, and cabling.
+- **[docs/cpu-port-internet-access.md](docs/cpu-port-internet-access.md)** -- Investigation into using the Tofino CPU port for container internet access (abandoned; documents the macvlan-shim workaround).
 
 ## Table of Contents
 - [p4containerflow-tofino2](#p4containerflow-tofino2)
@@ -158,8 +163,6 @@ echo 'source ~/setup-open-p4studio.bash' >> ~/.bashrc
 # For zsh
 echo 'source ~/setup-open-p4studio.bash' >> ~/.zshrc
 ```
-
-> **For step-by-step setup** with fine-grained control, see [Model Setup (Step-by-Step)](DOC.md#model-setup-step-by-step) in DOC.md.
 
 ### Building the P4 Program
 
@@ -350,7 +353,7 @@ make build
 make switch
 ```
 
-> **For step-by-step setup** with fine-grained control, see [Hardware Setup (Step-by-Step)](DOC.md#hardware-setup-step-by-step) in DOC.md.
+For a detailed breakdown of what each build step does under the hood, see the [Hardware Setup](docs/technical_report.md#hardware-setup) section of the technical report.
 
 ### Building the P4 Program
 
