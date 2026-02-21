@@ -1,23 +1,5 @@
 # Local Client Access for Live Migration Experiments
 
-## Status
-
-**Active approach: macvlan-shim + SSH tunnel** (see below).
-
-The CPU port approach (D_P 64) was explored but abandoned due to `bf_kpkt`
-configuration issues: `bf_switchd` skips pkt-mgr init when `bf_kpkt` is loaded,
-leaving `pkt_extraction_credits=0` for D_P 64. This means the ASIC can inject
-packets into the CPU port (TX works) but cannot extract packets from it (RX
-blocked). The CPU port architecture and findings are preserved below for reference.
-
----
-
-## Active Approach: Macvlan-Shim + SSH Tunnel
-
-### How It Works
-
-A macvlan sub-interface ("shim") on lakewood gives the host network access to the
-container subnet (192.168.12.0/24). An SSH tunnel from th- [Local Client Access for Live Migration Experiments](#local-client-access-for-live-migration-experiments)
 - [Local Client Access for Live Migration Experiments](#local-client-access-for-live-migration-experiments)
   - [Status](#status)
   - [Active Approach: Macvlan-Shim + SSH Tunnel](#active-approach-macvlan-shim--ssh-tunnel)
@@ -51,6 +33,26 @@ container subnet (192.168.12.0/24). An SSH tunnel from th- [Local Client Access 
     - [Risks and Mitigations](#risks-and-mitigations)
   - [Alternative: Englewood Ports (1/0-1/3)](#alternative-englewood-ports-10-13)
   - [Quick Test Plan](#quick-test-plan)
+
+## Status
+
+**Active approach: macvlan-shim + SSH tunnel** (see below).
+
+The CPU port approach (D_P 64) was explored but abandoned due to `bf_kpkt`
+configuration issues: `bf_switchd` skips pkt-mgr init when `bf_kpkt` is loaded,
+leaving `pkt_extraction_credits=0` for D_P 64. This means the ASIC can inject
+packets into the CPU port (TX works) but cannot extract packets from it (RX
+blocked). The CPU port architecture and findings are preserved below for reference.
+
+---
+
+## Active Approach: Macvlan-Shim + SSH Tunnel
+
+### How It Works
+
+A macvlan sub-interface ("shim") on lakewood gives the host network access to the
+container subnet (192.168.12.0/24). An SSH tunnel from th- [Local Client Access for Live Migration Experiments](#local-client-access-for-live-migration-experiments)
+
 
 ```
 Local Machine (loadgen + collector)

@@ -1,3 +1,7 @@
+# P4ContainerFlow: Experiment Report
+
+This document describes how we benchmarked live container migration through a P4-programmable switch. It covers the testbed, the workload, the migration procedure, metrics collection, and results from a 25-migration run.
+
 - [P4ContainerFlow: Experiment Report](#p4containerflow-experiment-report)
   - [Testbed](#testbed)
   - [Workload](#workload)
@@ -19,9 +23,6 @@
     - [Observations and Limitations](#observations-and-limitations)
   - [Experiment Automation](#experiment-automation)
     - [Reproducing](#reproducing)
-# P4ContainerFlow: Experiment Report
-
-This document describes how we benchmarked live container migration through a P4-programmable switch. It covers the testbed, the workload, the migration procedure, metrics collection, and results from a 25-migration run.
 
 ## Testbed
 

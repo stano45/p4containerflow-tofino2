@@ -2,9 +2,6 @@
 
 This document describes the design and implementation of P4ContainerFlow on Intel Tofino hardware. It covers the build environment (open-p4studio), practical challenges when working with the Tofino switch, the P4 program architecture and its rewrite from V1Model to T2NA, and the Python control plane.
 
-## Setting Up Open-P4Studio
-
-Compiling and running P4 programs on an Intel Tofino switch requires the P4 Software Development Environment (SDE). This project uses open-p4studio, the open-source variant of Intel's P4Studio, pinned as a Git submodule at SDE version 9.13.4. The build system wraps the process behind - [P4ContainerFlow: Technical Report](#p4containerflow-technical-report)
 - [P4ContainerFlow: Technical Report](#p4containerflow-technical-report)
   - [Setting Up Open-P4Studio](#setting-up-open-p4studio)
     - [Prerequisites](#prerequisites)
@@ -32,6 +29,11 @@ Compiling and running P4 programs on an Intel Tofino switch requires the P4 Soft
     - [Table Management](#table-management)
     - [HTTP API](#http-api)
     - [Controller Startup Script](#controller-startup-script)
+
+
+## Setting Up Open-P4Studio
+
+Compiling and running P4 programs on an Intel Tofino switch requires the P4 Software Development Environment (SDE). This project uses open-p4studio, the open-source variant of Intel's P4Studio, pinned as a Git submodule at SDE version 9.13.4. The build system wraps the process behind - [P4ContainerFlow: Technical Report](#p4containerflow-technical-report)
 
 ### Prerequisites
 
