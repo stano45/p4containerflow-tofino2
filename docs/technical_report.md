@@ -55,8 +55,8 @@ The Tofino switch has a lot of undocumented behavior that you only discover by r
 ### Testbed Topology
 
 ```
-                  Management Network (131.130.124.0/26)
-          .74            .93                .79
+          Management Network (out of band, SSH access)
+          .........+..............+..............+
      +---------+    +---------+        +---------+
      | Tofino  |    |lakewood |        |loveland |
      | Switch  |    |Dell R740|        |Dell R740|

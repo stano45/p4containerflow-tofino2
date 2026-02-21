@@ -1,17 +1,18 @@
-## Network Topology Reference (updated 2026-02-18)
+## Network Topology Reference
+
+> This file documents the specific testbed used during development.
+> Adapt the IPs, interfaces, and hostnames to match your own deployment.
+> SSH targets and NIC names are configured in `experiments/config_hw.env`.
 
 ### Equipment
 
 | Device | Hardware | Management IP | Access |
 |--------|----------|---------------|--------|
-| wedge100bf | Wedge100BF-32X, Tofino 1, 32x QSFP28 | 131.130.124.74/26 | ssh kosorins32 |
-| lakewood | DELL R740, 20c/192G | 131.130.124.93/26 | ssh kosorins32 |
-| loveland | DELL R740, 20c/192G | 131.130.124.79/26 | ssh kosorins32 |
-| englewood | Management node | 131.130.124.92 | No access |
-| sos | Monitoring/mgmt (sos.ct.univie.ac.at) | 131.130.124.122 | Unknown |
+| tofino-switch | Wedge100BF-32X, Tofino 1, 32x QSFP28 | (management IP) | ssh user |
+| source-server (lakewood) | DELL R740, 20c/192G | (management IP) | ssh user |
+| target-server (loveland) | DELL R740, 20c/192G | (management IP) | ssh user |
 
-Campus subnet: `131.130.124.64/26`, gateway: `131.130.124.65`.
-Internet-reachable ports: **SSH (22)** and **TCP 80** (no HTTP server) on all three lab hosts.
+The three nodes share a management subnet for SSH access. The data plane uses separate NICs connected through the switch.
 
 ### V6 Topology (hybrid, confirmed)
 
@@ -96,7 +97,7 @@ through the P4 data plane.
 
 ### Switch Configuration
 
-- SDE: `/home/kosorins32/p4containerflow-tofino2/open-p4studio`
+- SDE: `$HOME/p4containerflow-tofino2/open-p4studio`
 - Env: `source ~/setup-open-p4studio.bash`
 - Start: `make switch ARCH=tf1` (loads `tna_load_balancer`)
 - Port config: **25G RS FEC** (NONE did not work after fresh switchd start)
@@ -106,7 +107,7 @@ through the P4 data plane.
 
 1. **Lakewood enp101s0np0**: NIC reports `Port: Other` (no cable detected). NIC hardware is fine (driver loads, IRQs assigned). Physical inspection needed -- cable missing or bad connector.
 2. **Static ARP required**: P4 program drops ARP, so static entries needed for any IP communication through the switch.
-3. **Cage 1 (Englewood ports)**: 4 channels with transceivers present but never configured. Englewood (131.130.124.92) has no SSH access. These are NOT campus uplinks — campus connectivity is via the management interfaces (eno1/enp2s0).
+3. **Cage 1 (Englewood ports)**: 4 channels with transceivers present but never configured. These are NOT campus uplinks. Campus connectivity is via the management interfaces (eno1/enp2s0).
 4. **CPU port (D_P 64)**: Available via bf_kpkt/veth250 but never used. Can be used to bridge internet traffic into the P4 data plane. See `docs/cpu-port-internet-access.md`.
 
 ### Quick Start (from clean state)
@@ -127,7 +128,7 @@ sudo ip link set enp101s0np1 up
 
 | Interface | Purpose | Network |
 |-----------|---------|---------|
-| enp2s0 (131.130.124.74) | Management, SSH, internet access | Campus /26 |
+| enp2s0 | Management, SSH, internet access | Campus subnet |
 | enx020000000002 | BMC management (USB CDC) | Link-local only |
 | veth0-veth63 | PTF test interfaces (one pair per port channel) | Internal |
 | veth250/veth251 | CPU port (D_P 64) packet I/O via bf_kpkt | Can bridge to data plane |

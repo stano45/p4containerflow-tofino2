@@ -91,14 +91,11 @@ migrating server container.
 
 | Device | Hardware | Management IP | SSH |
 |--------|----------|---------------|-----|
-| wedge100bf | Wedge100BF-32X, Tofino 1 | 131.130.124.74/26 | kosorins32 |
-| lakewood | DELL R740, 20c/192G | 131.130.124.93/26 | kosorins32 |
-| loveland | DELL R740, 20c/192G | 131.130.124.79/26 | kosorins32 |
-| englewood | Management node | 131.130.124.92 | No access |
-| sos | Monitoring/mgmt | 131.130.124.122 | Unknown |
+| tofino-switch | Wedge100BF-32X, Tofino 1 | (management IP) | user |
+| source-server | DELL R740, 20c/192G | (management IP) | user |
+| target-server | DELL R740, 20c/192G | (management IP) | user |
 
-All devices share the same /26 campus subnet (`131.130.124.64/26`).
-Gateway: `131.130.124.65` (campus router).
+All devices share the same management subnet. See `experiments/config_hw.env` for connection details.
 
 ### Internet-facing ports (from outside university)
 
@@ -135,7 +132,7 @@ All other ports: RDY=NO (no transceiver), not configured.
 ```
 Lakewood                              Loveland
 ┌────────────────────┐                ┌────────────────────┐
-│ eno1          ─────── campus LAN ──────── eno1           │  131.130.124.x
+│ eno1          ─────── campus LAN ──────── eno1           │  mgmt subnet
 │                    │                │                    │
 │ enp179s0f0np0 ●──────25G DAC──────────● enp179s0f0      │  192.168.10.x (direct)
 │ enp179s0f1np1 ●──────25G DAC──────────● enp179s0f1      │  192.168.11.x (direct)
@@ -156,7 +153,7 @@ Lakewood                              Loveland
                │     ↕ bf_kpkt kernel module                        │
                │     ↕ veth250 (kernel) / veth251 (ASIC)            │
                │                                                    │
-               │  enp2s0 = Management interface (131.130.124.74)    │
+               │  enp2s0 = Management interface (MGMT_IP)           │
                │  enx020000000002 = BMC USB CDC Ethernet (NOT ASIC) │
                └────────────────────────────────────────────────────┘
 ```
@@ -244,9 +241,9 @@ CPU port), we need to either:
 ```
 Internet Client (your machine)
     │
-    │ TCP to wedge100bf.ct.univie.ac.at:80
+    │ TCP to <switch-mgmt-ip>:80
     ▼
-┌─ Switch Linux Kernel (enp2s0, 131.130.124.74) ─┐
+┌─ Switch Linux Kernel (enp2s0, MGMT_IP) ────────┐
 │                                                  │
 │  iptables NAT:                                   │
 │    PREROUTING:  DNAT dst → 192.168.12.2:8080     │
@@ -282,7 +279,7 @@ Internet Client (your machine)
 
 ### Why This Works with CRIU Migration
 
-1. Client's TCP connection is to the switch's public IP (131.130.124.74:80)
+1. Client's TCP connection is to the switch's management IP (MGMT_IP:80)
 2. The switch does NAT, presenting itself as 192.168.12.1 to the server
 3. Server's TCP state (checkpointed by CRIU) includes peer = 192.168.12.1:X
 4. After restore on loveland, server expects packets from 192.168.12.1:X
@@ -359,7 +356,7 @@ cd experiments && go build -o /tmp/loadgen ./cmd/loadgen/
 
 # Connect to the switch's public IP
 /tmp/loadgen \
-  -server http://131.130.124.74:80 \
+  -server http://<switch-mgmt-ip>:80 \
   -connections 8 \
   -metrics-port 9090
 ```
@@ -392,7 +389,7 @@ cd experiments && go build -o /tmp/loadgen ./cmd/loadgen/
 ## Alternative: Englewood Ports (1/0-1/3)
 
 Ports 1/0-1/3 (D_P 132-135) have transceivers but are not configured. They are
-presumed to connect to Englewood (131.130.124.92, a management server we don't
+presumed to connect to a management server (we don't
 have access to). These are NOT uplinks to the campus network — the campus
 connectivity goes through the management interface (enp2s0) on each device.
 

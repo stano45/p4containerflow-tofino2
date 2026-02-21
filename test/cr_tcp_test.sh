@@ -10,8 +10,8 @@
 #   ./cr_tcp_test.sh <source_ssh> <target_ssh>      # cross-node C/R
 #
 # Examples:
-#   ./cr_tcp_test.sh stan@131.130.124.71                              # lakewood only
-#   ./cr_tcp_test.sh stan@131.130.124.71 stan@131.130.124.72          # lakewood → loveland
+#   ./cr_tcp_test.sh user@source-server                        # local C/R on one node
+#   ./cr_tcp_test.sh user@source-server user@target-server     # cross-node C/R
 # =============================================================================
 
 set -euo pipefail
