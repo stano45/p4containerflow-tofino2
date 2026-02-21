@@ -15,6 +15,16 @@
 The three nodes share a management subnet for SSH access. The data plane uses separate NICs connected through the switch.
 
 ### V6 Topology (hybrid, confirmed)
+- [Network Topology Reference](#network-topology-reference)
+  - [Equipment](#equipment)
+  - [V6 Topology (hybrid, confirmed)](#v6-topology-hybrid-confirmed)
+  - [NIC Details](#nic-details)
+  - [Switch Port Map (confirmed via bounce tests + bfshell `pm show -a`)](#switch-port-map-confirmed-via-bounce-tests--bfshell-pm-show--a)
+  - [CPU Port Details (D\_P 64, Port 33/0)](#cpu-port-details-d_p-64-port-330)
+  - [Switch Configuration](#switch-configuration)
+  - [Open Issues](#open-issues)
+  - [Quick Start (from clean state)](#quick-start-from-clean-state)
+  - [Switch Interface Summary](#switch-interface-summary)
 
 ```
 Lakewood                          Loveland

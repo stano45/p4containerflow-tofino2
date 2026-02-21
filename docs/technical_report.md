@@ -4,7 +4,34 @@ This document describes the design and implementation of P4ContainerFlow on Inte
 
 ## Setting Up Open-P4Studio
 
-Compiling and running P4 programs on an Intel Tofino switch requires the P4 Software Development Environment (SDE). This project uses open-p4studio, the open-source variant of Intel's P4Studio, pinned as a Git submodule at SDE version 9.13.4. The build system wraps the process behind Make targets, but the compilation itself is heavy. A full build takes at least 30 minutes on a fast machine and over an hour when building directly on the switch itself.
+Compiling and running P4 programs on an Intel Tofino switch requires the P4 Software Development Environment (SDE). This project uses open-p4studio, the open-source variant of Intel's P4Studio, pinned as a Git submodule at SDE version 9.13.4. The build system wraps the process behind - [P4ContainerFlow: Technical Report](#p4containerflow-technical-report)
+- [P4ContainerFlow: Technical Report](#p4containerflow-technical-report)
+  - [Setting Up Open-P4Studio](#setting-up-open-p4studio)
+    - [Prerequisites](#prerequisites)
+    - [Model Setup (Software Simulation)](#model-setup-software-simulation)
+    - [Hardware Setup](#hardware-setup)
+  - [Challenges and Solutions When Using the Tofino Switch](#challenges-and-solutions-when-using-the-tofino-switch)
+    - [Testbed Topology](#testbed-topology)
+    - [Port Configuration and FEC](#port-configuration-and-fec)
+    - [ARP and Static Routing](#arp-and-static-routing)
+    - [Kernel Modules and Device Access](#kernel-modules-and-device-access)
+    - [CPU Port and Internet Access](#cpu-port-and-internet-access)
+    - [gRPC Connection Lifecycle](#grpc-connection-lifecycle)
+  - [Rewriting a P4 Program from V1Model to T2NA](#rewriting-a-p4-program-from-v1model-to-t2na)
+    - [Pipeline Overview](#pipeline-overview)
+    - [Pipeline Structure](#pipeline-structure)
+    - [Metadata](#metadata)
+    - [Checksum Handling](#checksum-handling)
+    - [Load Balancing with ActionSelector](#load-balancing-with-actionselector)
+    - [Ingress Apply Logic](#ingress-apply-logic)
+    - [Packet Flow](#packet-flow)
+    - [Compiler Constraints](#compiler-constraints)
+  - [The Control Plane](#the-control-plane)
+    - [Architecture](#architecture)
+    - [Configuration](#configuration)
+    - [Table Management](#table-management)
+    - [HTTP API](#http-api)
+    - [Controller Startup Script](#controller-startup-script)
 
 ### Prerequisites
 

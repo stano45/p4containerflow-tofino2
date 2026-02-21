@@ -17,9 +17,40 @@ blocked). The CPU port architecture and findings are preserved below for referen
 ### How It Works
 
 A macvlan sub-interface ("shim") on lakewood gives the host network access to the
-container subnet (192.168.12.0/24). An SSH tunnel from the local machine forwards
-ports through lakewood to the server container via the shim. After CRIU migration,
-the shim routes through the P4 switch to wherever the server currently lives.
+container subnet (192.168.12.0/24). An SSH tunnel from th- [Local Client Access for Live Migration Experiments](#local-client-access-for-live-migration-experiments)
+- [Local Client Access for Live Migration Experiments](#local-client-access-for-live-migration-experiments)
+  - [Status](#status)
+  - [Active Approach: Macvlan-Shim + SSH Tunnel](#active-approach-macvlan-shim--ssh-tunnel)
+    - [How It Works](#how-it-works)
+    - [Why It Survives Migration](#why-it-survives-migration)
+    - [Key Configuration](#key-configuration)
+  - [CPU Port Approach (Abandoned — Reference Only)](#cpu-port-approach-abandoned--reference-only)
+    - [Overview (original plan)](#overview-original-plan)
+  - [Topology (Confirmed 2026-02-18)](#topology-confirmed-2026-02-18)
+    - [Equipment](#equipment)
+    - [Internet-facing ports (from outside university)](#internet-facing-ports-from-outside-university)
+    - [Switch Data Plane — Full Port Map](#switch-data-plane--full-port-map)
+    - [Physical Cabling](#physical-cabling)
+    - [NIC Details](#nic-details)
+  - [CPU Port Architecture](#cpu-port-architecture)
+    - [What is the CPU Port?](#what-is-the-cpu-port)
+    - [Kernel Interfaces](#kernel-interfaces)
+    - [P4 Program (Current State)](#p4-program-current-state)
+  - [Implementation Plan: Internet → CPU Port → Server](#implementation-plan-internet--cpu-port--server)
+    - [Traffic Flow](#traffic-flow)
+    - [Why This Works with CRIU Migration](#why-this-works-with-criu-migration)
+    - [Step-by-Step Setup](#step-by-step-setup)
+      - [1. Configure veth250 (CPU port Linux interface)](#1-configure-veth250-cpu-port-linux-interface)
+      - [2. Add route for macvlan subnet](#2-add-route-for-macvlan-subnet)
+      - [3. Enable IP forwarding](#3-enable-ip-forwarding)
+      - [4. Set up iptables NAT](#4-set-up-iptables-nat)
+      - [5. Add P4 forwarding entries (via controller API)](#5-add-p4-forwarding-entries-via-controller-api)
+      - [6. Static ARP entries (since P4 drops ARP between CPU port and containers)](#6-static-arp-entries-since-p4-drops-arp-between-cpu-port-and-containers)
+      - [7. Run the loadgen locally](#7-run-the-loadgen-locally)
+    - [Required Changes](#required-changes)
+    - [Risks and Mitigations](#risks-and-mitigations)
+  - [Alternative: Englewood Ports (1/0-1/3)](#alternative-englewood-ports-10-13)
+  - [Quick Test Plan](#quick-test-plan)
 
 ```
 Local Machine (loadgen + collector)
