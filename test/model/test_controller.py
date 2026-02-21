@@ -15,8 +15,6 @@ import ptf
 logger = get_logger()
 swports = get_sw_ports()
 
-print("SW Ports: ", swports)
-
 CONFIG_PATH = os.path.join(
     os.path.dirname(__file__), "..", "..", "controller", "controller_config.json"
 )
@@ -171,8 +169,6 @@ class TestController(AbstractTest):
 
         nodes = MASTER_CONFIG["nodes"]
         self.loadBalancerIp = MASTER_CONFIG["load_balancer_ip"]
-
-        self.nodesByIp = {node["ipv4"]: node for node in nodes}
 
         self.lbNodes = [n for n in nodes if n.get("is_lb_node", False)]
         clientNodes = [n for n in nodes if not n.get("is_lb_node", False)]

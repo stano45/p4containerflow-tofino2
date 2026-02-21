@@ -84,7 +84,6 @@ class SwitchController(AbstractSwitchController):
             self.sw_name = self.bfrt_info.p4_name_get()
 
         self.interface.bind_pipeline_config(self.sw_name)
-        # Set target to all pipes on device self.sw_id.
         self.target = gc.Target(device_id=self.sw_id, pipe_id=0xFFFF)
         self.bfrt_info = self.interface.bfrt_info_get(self.sw_name)
 
@@ -291,51 +290,6 @@ class SwitchController(AbstractSwitchController):
         self.deleteTableEntry(
             "pipe.SwitchIngress.arp_forward",
             [gc.KeyTuple("hdr.arp.target_proto_addr", gc.ipv4_to_bytes(target_ip))],
-        )
-
-    def deleteTableEntry(self, tableName: str, keyFields=None):
-        """Delete a specific table entry by key."""
-        table = self.bfrt_info.table_get(tableName)
-        if keyFields:
-            keyList = [table.make_key(keyFields)]
-            table.entry_del(self.target, keyList)
-        else:
-            # Delete all entries if no key specified
-            table.entry_del(self.target)
-
-    def deleteForwardEntry(self, dst_addr: str):
-        """Delete a forward table entry."""
-        self.deleteTableEntry(
-            "pipe.SwitchIngress.forward",
-            [gc.KeyTuple("hdr.ipv4.dst_addr", gc.ipv4_to_bytes(dst_addr))],
-        )
-
-    def deleteClientSnatEntry(self, src_port: int):
-        """Delete a client SNAT table entry."""
-        self.deleteTableEntry(
-            "pipe.SwitchIngress.client_snat",
-            [gc.KeyTuple("hdr.tcp.src_port", src_port)],
-        )
-
-    def deleteActionTableEntry(self, node_index: int):
-        """Delete an action table entry."""
-        self.deleteTableEntry(
-            "pipe.SwitchIngress.action_selector_ap",
-            [gc.KeyTuple("$ACTION_MEMBER_ID", node_index)],
-        )
-
-    def deleteSelectionTableEntry(self, group_id: int = 1):
-        """Delete a selection table entry."""
-        self.deleteTableEntry(
-            "pipe.SwitchIngress.action_selector",
-            [gc.KeyTuple("$SELECTOR_GROUP_ID", group_id)],
-        )
-
-    def deleteNodeSelectorEntry(self, dst_addr: str):
-        """Delete a node selector table entry."""
-        self.deleteTableEntry(
-            "pipe.SwitchIngress.node_selector",
-            [gc.KeyTuple("hdr.ipv4.dst_addr", gc.ipv4_to_bytes(dst_addr))],
         )
 
     def deleteTableEntry(self, tableName: str, keyFields=None):

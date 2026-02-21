@@ -38,8 +38,6 @@ on_loveland "ip link show $LOVELAND_NIC >/dev/null 2>&1" || { echo "FAIL: $LOVEL
 printf "Preflight OK\n"
 
 # -----------------------------------------------------------------------------
-# Lakewood: macvlan network + server container (no client — runs locally)
-# -----------------------------------------------------------------------------
 printf "\n===== [lakewood] Creating macvlan network + server container =====\n"
 
 on_lakewood "
@@ -80,8 +78,6 @@ on_lakewood "
     echo 'lakewood setup complete'
 "
 
-# -----------------------------------------------------------------------------
-# Loveland: CRIU+crun (for restore), server image + macvlan network
 # -----------------------------------------------------------------------------
 printf "\n===== [loveland] Ensuring CRIU and crun (for restore) =====\n"
 NEED_CRIU=false
@@ -152,8 +148,6 @@ on_loveland "
     echo 'loveland setup complete'
 "
 
-# -----------------------------------------------------------------------------
-# Lakewood: macvlan-shim (host-side access to the container subnet)
 # -----------------------------------------------------------------------------
 printf "\n===== [lakewood] Creating macvlan-shim (%s) =====\n" "$MACSHIM_IF"
 

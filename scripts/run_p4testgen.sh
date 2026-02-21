@@ -1,8 +1,6 @@
 PROGRAM_NAME="t2na_load_balancer"
 PROGRAM_DIR="/home/vagrant/sde/bf-sde-9.13.4/pkgsrc/p4-examples/p4_16_programs/$PROGRAM_NAME"
 STRATEGY="GREEDY_STATEMENT_SEARCH"
-# STRATEGY="RANDOM_BACKTRACK" 
-# STRATEGY="RANDOM_STATEMENT_SEARCH"
 MAX_TESTS=200
 
 p4testgen --target tofino2 \

@@ -40,12 +40,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 # -----------------------------------------------------------------------------
-# Run directory (timestamped); config + logs + results go here
-# -----------------------------------------------------------------------------
 RUN_DIR="$SCRIPT_DIR/$RESULTS_DIR/run_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$RUN_DIR"
 
-# Log configuration
 {
   echo "run_dir=$RUN_DIR"
   echo "steady_state_wait=$STEADY_STATE_WAIT"
@@ -61,7 +58,6 @@ mkdir -p "$RUN_DIR"
   echo "controller_url=$CONTROLLER_URL"
 } > "$RUN_DIR/config.txt"
 
-# Tee all output to experiment log
 exec > >(tee "$RUN_DIR/experiment.log") 2>&1
 
 # -----------------------------------------------------------------------------
@@ -345,7 +341,6 @@ printf "╚═══════════════════════
 COLLECTOR_OUTPUT="$RUN_DIR/metrics.csv"
 MIGRATION_FLAG="$RUN_DIR/migration_event"
 
-# Build binaries
 printf "Building collector binary...\n"
 (cd "$SCRIPT_DIR" && CGO_ENABLED=0 go build -o "$SCRIPT_DIR/bin/stream-collector" ./cmd/collector/)
 
@@ -355,7 +350,6 @@ scp $SSH_OPTS /tmp/stream-client-build "$LAKEWOOD_SSH:/tmp/stream-client"
 rm -f /tmp/stream-client-build
 echo "Loadgen deployed to lakewood:/tmp/stream-client"
 
-# Kill any stale loadgen on lakewood from a previous run
 on_lakewood "sudo pkill -f '[s]tream-client' 2>/dev/null || true"
 
 # Start loadgen on lakewood — connects directly to the server container
@@ -369,7 +363,6 @@ on_lakewood "nohup /tmp/stream-client \
     -metrics-port $LOADGEN_METRICS_PORT \
     > /tmp/loadgen.log 2>&1 &"
 sleep 2
-# Verify loadgen started
 if ! on_lakewood "pgrep -f stream-client >/dev/null 2>&1"; then
     echo "FAIL: Loadgen did not start on lakewood."
     on_lakewood "cat /tmp/loadgen.log 2>/dev/null" || true
@@ -428,7 +421,6 @@ for i in $(seq 1 40); do
     fi
     if [[ $i -eq 40 ]]; then
         echo "WARNING: Server health check failed after 20s. Check macshim + container."
-        echo "Debug: ssh lakewood 'curl -sf http://${H2_IP}:${SIGNALING_PORT}/health'"
     fi
     sleep 0.5
 done
@@ -452,7 +444,6 @@ for (( i=1; i <= MIGRATION_COUNT; i++ )); do
   printf "║  Step 9.%d: CRIU migration %s (%d/%d)   ║\n" "$i" "$direction" "$i" "$MIGRATION_COUNT"
   printf "╚══════════════════════════════════════════╝\n\n"
 
-  # Signal the collector that a migration is starting
   touch "$MIGRATION_FLAG"
 
   # Run cr_hw.sh ON the source node — local commands, direct-link to target
@@ -460,7 +451,6 @@ for (( i=1; i <= MIGRATION_COUNT; i++ )); do
   ssh $SSH_OPTS -o ForwardAgent=yes "$migration_ssh" \
     "cd $REMOTE_PROJECT_DIR/experiments && CR_RUN_LOCAL=1 CR_HW_RESULTS_PATH=$REMOTE_RESULTS_DIR bash cr_hw.sh $direction"
 
-  # Copy migration_timing.txt back (per-migration file + latest as migration_timing.txt)
   scp $SSH_OPTS "$migration_ssh:$REMOTE_RESULTS_DIR/migration_timing.txt" "$RUN_DIR/migration_timing_${i}.txt"
   cp "$RUN_DIR/migration_timing_${i}.txt" "$RUN_DIR/migration_timing.txt"
 

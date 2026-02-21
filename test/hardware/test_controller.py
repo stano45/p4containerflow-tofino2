@@ -319,7 +319,6 @@ class TestCleanupAndReinitialize:
         if not lb_nodes:
             pytest.skip("No LB nodes in config")
 
-        # Clean, then reinitialize
         api_client.cleanup()
         resp = api_client.reinitialize()
         assert resp is not None and resp.status_code == 200

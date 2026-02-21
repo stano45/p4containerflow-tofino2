@@ -1,7 +1,6 @@
 #!/bin/bash
 # Install podman on Ubuntu 22.04+
 
-# Print script commands and exit on errors.
 set -xe
 
 sudo apt-get install -y \
@@ -46,4 +45,3 @@ sudo GOPATH=/usr/bin/go PATH=$GOPATH/bin:$PATH make install PREFIX=/usr
 podman --version
 
 cd ..
-# rm -rf podman

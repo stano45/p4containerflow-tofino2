@@ -1,15 +1,6 @@
 #!/usr/bin/env python3
 """
 plot_metrics.py — Generate analysis charts from a live-migration experiment.
-
-Each plot covers exactly one concern:
-
-  connection_health.png  — Client-side TCP connection continuity (THE key result)
-  ws_latency.png         — Application-layer RTT percentiles + jitter (client-side)
-  throughput.png         — Server data throughput over time
-  ping_rtt.png           — Network-layer ICMP latency
-  container_resources.png— Container CPU utilisation
-  migration_timing.png   — Phase-level migration breakdown
 """
 
 import argparse
@@ -60,8 +51,6 @@ PING_LABELS = {
     "192.168.12.3":   "Target (192.168.12.3)",
 }
 
-# ── CLI ───────────────────────────────────────────────────────────────────
-
 parser = argparse.ArgumentParser(description="Plot experiment metrics")
 parser.add_argument("--csv", default="results/metrics.csv")
 parser.add_argument("--migration-flag", default="/tmp/migration_event",
@@ -70,17 +59,15 @@ parser.add_argument("--output-dir", default="results")
 parser.add_argument("--show", action="store_true")
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────
 
 def _save(fig, output_dir, filename, show):
-    """Save figure as both PDF (vector) and high-DPI PNG."""
+    """Save figure as PDF (vector)."""
     if show:
         plt.show()
     else:
         base, _ = os.path.splitext(filename)
         for ext, kwargs in [
             (".pdf", dict(bbox_inches="tight")),
-            # (".png", dict(dpi=300, bbox_inches="tight")),
         ]:
             path = os.path.join(output_dir, base + ext)
             fig.savefig(path, **kwargs)
@@ -94,7 +81,7 @@ def _short_node(name):
     return abbrevs.get(name, name[:3].upper() if name else "?")
 
 
-def _draw_migrations(ax, m_times, events=None, label=True):
+def _draw_migrations(ax, m_times, label=True):
     """Draw vertical dashed lines at each migration start time."""
     color = "#D32F2F"
     for i, t in enumerate(m_times):
@@ -115,7 +102,6 @@ def _numeric(df, col):
     return pd.to_numeric(df[col], errors="coerce")
 
 
-# ── Migration event helpers ───────────────────────────────────────────────
 
 def _load_migration_event(path):
     if not os.path.isfile(path):
@@ -167,16 +153,11 @@ def _migration_times_sec(df, events):
     return [(m - t0) / 1000.0 for m in ms_list]
 
 
-def _split_legend(ax, metric_loc="upper left", migration_loc="upper right"):
+def _split_legend(ax, metric_loc="upper left"):
     """Place a single unified legend (migrations now have only one entry)."""
     handles, labels = ax.get_legend_handles_labels()
     if handles:
         ax.legend(handles, labels, loc=metric_loc, fontsize=8, framealpha=0.9)
-
-
-# ═════════════════════════════════════════════════════════════════════════
-#  PLOTS — one function per figure, one concept per figure
-# ═════════════════════════════════════════════════════════════════════════
 
 
 def _trim_shutdown(df):
@@ -238,7 +219,7 @@ def plot_connection_health(df, m_times, output_dir, show, events=None):
     ax.set_ylabel("Active Connections")
     ax.set_xlabel("Time (s)")
     ax.set_ylim(bottom=0)
-    _draw_migrations(ax, m_times, events=events)
+    _draw_migrations(ax, m_times)
     _split_legend(ax, metric_loc="lower left")
 
     plt.tight_layout()
@@ -258,13 +239,11 @@ def _mask_stale_rtt(df, col):
     if vals.empty:
         return vals
 
-    # Build runs of identical values
     shifted = vals.shift(1)
     same = (vals == shifted) & vals.notna()
     groups = (~same).cumsum()
     run_len = same.groupby(groups).transform("count") + 1
 
-    # Mask runs of 5+ identical values (keep the first occurrence)
     mask = (run_len >= 5) & same
     vals[mask] = np.nan
     return vals
@@ -292,7 +271,6 @@ def plot_ws_latency(df, m_times, output_dir, show, events=None):
 
     t = df["t_sec"]
 
-    # ── RTT percentiles (log scale) ──
     fig_rtt, ax = plt.subplots(figsize=(12, 4.5))
     fig_rtt.suptitle("Application-Layer RTT (client-measured)", fontweight="bold")
     for col, lbl, color, ls, lw in present:
@@ -310,7 +288,7 @@ def plot_ws_latency(df, m_times, output_dir, show, events=None):
     ax.yaxis.set_minor_locator(
         mticker.LogLocator(base=10, subs=np.arange(2, 10) * 0.1, numticks=50))
     ax.yaxis.set_minor_formatter(mticker.NullFormatter())
-    _draw_migrations(ax, m_times, events=events)
+    _draw_migrations(ax, m_times)
 
     _split_legend(ax)
 
@@ -321,7 +299,6 @@ def plot_ws_latency(df, m_times, output_dir, show, events=None):
     plt.tight_layout()
     _save(fig_rtt, output_dir, "ws_rtt.png", show)
 
-    # ── Jitter ──
     jitter_col = _col(df, "ws_jitter_ms")
     if jitter_col:
         fig_jit, ax = plt.subplots(figsize=(12, 4.5))
@@ -339,7 +316,7 @@ def plot_ws_latency(df, m_times, output_dir, show, events=None):
         ax.yaxis.set_minor_locator(
             mticker.LogLocator(base=10, subs=np.arange(2, 10) * 0.1, numticks=50))
         ax.yaxis.set_minor_formatter(mticker.NullFormatter())
-        _draw_migrations(ax, m_times, events=events)
+        _draw_migrations(ax, m_times)
         _split_legend(ax)
         plt.tight_layout()
         _save(fig_jit, output_dir, "ws_jitter.png", show)
@@ -368,7 +345,6 @@ def plot_throughput(df, m_times, output_dir, show, events=None):
     dt = t.diff().fillna(1).clip(lower=0.1)
     rate_kbs = (raw.diff().clip(lower=0) / dt) / 1024
     rate_smooth = rate_kbs.rolling(3, min_periods=1, center=True).mean()
-    # Mask zeros during migration (collection gap, not real)
     rate_plot = rate_smooth.copy()
     rate_plot[rate_plot <= 0] = np.nan
 
@@ -390,7 +366,7 @@ def plot_throughput(df, m_times, output_dir, show, events=None):
     ax.set_ylabel("Throughput (KB/s)")
     ax.set_xlabel("Time (s)")
     ax.set_ylim(bottom=0)
-    _draw_migrations(ax, m_times, events=events)
+    _draw_migrations(ax, m_times)
     _split_legend(ax)
 
     plt.tight_layout()
@@ -431,7 +407,7 @@ def plot_ping_rtt(df, m_times, output_dir, show, events=None):
     ax.set_xlabel("Time (s)")
     ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
     ax.set_ylim(bottom=0)
-    _draw_migrations(ax, m_times, events=events)
+    _draw_migrations(ax, m_times)
     _split_legend(ax)
 
     if unreachable:
@@ -480,7 +456,7 @@ def plot_container_resources(df, m_times, output_dir, show, events=None):
     ax.set_ylabel("CPU %")
     ax.set_xlabel("Time (s)")
     ax.set_ylim(bottom=0)
-    _draw_migrations(ax, m_times, events=events)
+    _draw_migrations(ax, m_times)
     _split_legend(ax)
 
     plt.tight_layout()
@@ -596,7 +572,6 @@ def _build_location_windows(df, events, m_times):
     for i in range(len(m_times)):
         tgt = events[i].get("target_node", "")
 
-        # Pre-migration stable window
         stable_start = prev_end + RECOVERY_BUFFER if prev_end > 0 else 0
         if m_times[i] > stable_start:
             mask = (t >= stable_start) & (t < m_times[i])
@@ -606,7 +581,6 @@ def _build_location_windows(df, events, m_times):
         location = tgt
         prev_end = m_ends[i]
 
-    # Final window after last migration
     mask = t >= prev_end + RECOVERY_BUFFER
     if mask.any():
         windows.append((location.capitalize(), mask))
@@ -624,7 +598,6 @@ def plot_rtt_by_location(df, m_times, events, output_dir, show):
     if not windows:
         return
 
-    # Collect P50 RTT samples per location category, dropping recovery spikes
     categories = {}
     for label, mask in windows:
         vals = _numeric(df.loc[mask], "ws_rtt_p50_ms").dropna()
@@ -641,7 +614,6 @@ def plot_rtt_by_location(df, m_times, events, output_dir, show):
     if not categories:
         return
 
-    # Merge samples per category
     box_data = []
     box_labels = []
     order = ["Lakewood", "Loveland", "Migration"]
@@ -703,135 +675,6 @@ def _compute_throughput_rate(df):
     dt = df["t_sec"].diff().fillna(1).clip(lower=0.1)
     rate = (raw.diff().clip(lower=0) / dt) / 1024
     return rate.rolling(3, min_periods=1, center=True).mean()
-
-
-def _client_perceived_downtime(df, m_times, events):
-    """For each migration, measure the RTT blackout as seen by the client.
-
-    Finds the zero-RTT gap around each migration event: the last sample with
-    RTT > 0 before the gap and the first sample with RTT > 0 after the gap.
-    This captures the actual service interruption the client experiences,
-    independent of the 1 Hz sampling granularity of the collector.
-
-    Returns list of dicts per migration.
-    """
-    rtt_col = _col(df, "ws_rtt_p50_ms")
-    if not rtt_col:
-        return []
-
-    t = df["t_sec"].values
-    rtt = _numeric(df, rtt_col).values
-
-    results = []
-    for i, m_t in enumerate(m_times):
-        win = (t >= m_t - 10) & (t <= m_t + 30)
-        t_win = t[win]
-        rtt_win = rtt[win]
-
-        # Find the zero-RTT gap nearest to the migration timestamp.
-        # The gap starts when RTT drops to 0 and ends when it becomes > 0 again.
-        zero_mask = (rtt_win <= 0) | np.isnan(rtt_win)
-        nonzero_idx = np.where(~zero_mask)[0]
-
-        if len(nonzero_idx) < 2:
-            results.append({"migration": i+1, "client_downtime_s": np.nan,
-                            "server_downtime_s": int(events[i].get("time_to_ready_ms", 0)) / 1000.0 if i < len(events) else np.nan})
-            continue
-
-        # Find the transition: last nonzero before the gap, first nonzero after
-        m_t_local = m_t
-        before = nonzero_idx[t_win[nonzero_idx] <= m_t_local + 2]
-        after = nonzero_idx[t_win[nonzero_idx] > m_t_local + 2]
-
-        last_before_t = t_win[before[-1]] if len(before) > 0 else np.nan
-        first_after_t = t_win[after[0]] if len(after) > 0 else np.nan
-
-        client_dt = first_after_t - last_before_t if np.isfinite(last_before_t) and np.isfinite(first_after_t) else np.nan
-        server_dt = int(events[i].get("time_to_ready_ms", 0)) / 1000.0 if i < len(events) else np.nan
-
-        results.append({
-            "migration": i + 1,
-            "last_valid_before": last_before_t,
-            "first_valid_after": first_after_t,
-            "client_downtime_s": client_dt,
-            "server_downtime_s": server_dt,
-        })
-    return results
-
-
-# ═════════════════════════════════════════════════════════════════════════
-#  MIGRATION-FOCUSED PLOTS — zoomed analysis of each migration event
-# ═════════════════════════════════════════════════════════════════════════
-
-
-def plot_migration_zoom_grid(df, m_times, events, output_dir, show):
-    """Small-multiples grid: RTT zoomed to [-5s, +20s] around each migration.
-
-    All panels share the same y-axis so recovery behaviour can be compared
-    across migrations at a glance.
-    """
-    if not events or "ws_rtt_p50_ms" not in df.columns:
-        return
-
-    n = len(m_times)
-    ncols = 5
-    nrows = int(np.ceil(n / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(3.2 * ncols, 2.8 * nrows),
-                             sharex=True, sharey=True)
-    fig.suptitle("RTT Around Each Migration Event", fontweight="bold", fontsize=13)
-    axes = np.atleast_2d(axes)
-
-    t = df["t_sec"]
-    rtt = _mask_stale_rtt(df, "ws_rtt_p50_ms")
-
-    window_before, window_after = 5, 20
-
-    # Pre-compute a shared y-limit: P95 of all recovery spikes across migrations
-    all_peaks = []
-    for m_t in m_times:
-        mask = (t >= m_t) & (t <= m_t + window_after)
-        vals = rtt[mask].dropna()
-        if not vals.empty:
-            all_peaks.append(vals.max())
-    y_max = np.percentile(all_peaks, 95) * 1.15 if all_peaks else 500
-
-    for idx in range(nrows * ncols):
-        row, col_idx = divmod(idx, ncols)
-        ax = axes[row][col_idx]
-
-        if idx >= n:
-            ax.set_visible(False)
-            continue
-
-        m_t = m_times[idx]
-        ev = events[idx]
-        mask = (t >= m_t - window_before) & (t <= m_t + window_after)
-        t_rel = t[mask] - m_t
-
-        rtt_win = rtt[mask].copy()
-        rtt_plot = rtt_win.where(rtt_win > 0)
-
-        ttr_s = int(ev.get("time_to_ready_ms", 0)) / 1000.0
-        ax.axvspan(0, ttr_s, alpha=0.10, color="#E53935", zorder=0)
-        ax.plot(t_rel, rtt_plot, lw=1.2, color=sns.color_palette()[0],
-                alpha=0.9, zorder=2)
-        ax.axvline(0, color="#E53935", ls="--", lw=1.0, alpha=0.7, zorder=1)
-
-        src = _short_node(ev.get("source_node", ""))
-        tgt = _short_node(ev.get("target_node", ""))
-        ttr_ms = int(ev.get("time_to_ready_ms", 0))
-        ax.set_title(f"M{idx+1} {src}\u2192{tgt} ({ttr_ms}ms)", fontsize=8, pad=3)
-
-        ax.tick_params(labelsize=7)
-        if row == nrows - 1 or idx + ncols >= n:
-            ax.set_xlabel("t \u2212 t_mig (s)", fontsize=7)
-        if col_idx == 0:
-            ax.set_ylabel("P50 RTT (ms)", fontsize=7)
-        ax.set_xlim(-window_before, window_after)
-        ax.set_ylim(0, y_max)
-
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-    _save(fig, output_dir, "migration_zoom_grid.png", show)
 
 
 def plot_ensemble_recovery(df, m_times, events, output_dir, show):
@@ -897,68 +740,6 @@ def plot_ensemble_recovery(df, m_times, events, output_dir, show):
 
     plt.tight_layout()
     _save(fig, output_dir, "ensemble_rtt_recovery.png", show)
-
-
-def plot_client_vs_server_downtime(df, m_times, events, output_dir, show):
-    """Client-perceived vs server-reported downtime comparison."""
-    perceived = _client_perceived_downtime(df, m_times, events)
-    if not perceived:
-        return
-
-    mig_ids = [p["migration"] for p in perceived]
-    client_dt = np.array([p["client_downtime_s"] for p in perceived])
-    server_dt = np.array([p["server_downtime_s"] for p in perceived])
-
-    valid = np.isfinite(client_dt) & np.isfinite(server_dt)
-    if valid.sum() == 0:
-        return
-
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5),
-                                    gridspec_kw={"width_ratios": [2, 1]})
-    fig.suptitle("Client-Perceived vs Server-Reported Downtime", fontweight="bold")
-
-    x = np.arange(len(mig_ids))
-    w = 0.35
-    ax1.bar(x - w/2, server_dt, w, label="Server-reported (time_to_ready)",
-            color="#FF9800", alpha=0.8, edgecolor="white", lw=0.5)
-    ax1.bar(x + w/2, client_dt, w, label="Client-perceived (RTT gap)",
-            color=sns.color_palette()[0], alpha=0.8, edgecolor="white", lw=0.5)
-
-    ax1.set_xlabel("Migration #")
-    ax1.set_ylabel("Downtime (s)")
-    ax1.set_xticks(x[::2])
-    ax1.set_xticklabels([f"M{m}" for m in np.array(mig_ids)[::2]], fontsize=8)
-    ax1.legend(fontsize=8)
-    ax1.set_ylim(bottom=0)
-
-    d_max = max(np.nanmax(client_dt[valid]), np.nanmax(server_dt[valid])) * 1.15
-    ax2.scatter(server_dt[valid], client_dt[valid], s=40, alpha=0.7,
-                color=sns.color_palette()[0], edgecolor="white", lw=0.5, zorder=3)
-    ax2.plot([0, d_max], [0, d_max], ls="--", color="#999", lw=1, label="y = x")
-    ax2.set_xlabel("Server-reported (s)")
-    ax2.set_ylabel("Client-perceived (s)")
-    ax2.set_xlim(0, d_max)
-    ax2.set_ylim(0, d_max)
-    ax2.set_aspect("equal")
-    ax2.legend(fontsize=8)
-
-    delta = client_dt[valid] - server_dt[valid]
-    corr = np.corrcoef(server_dt[valid], client_dt[valid])[0, 1]
-    ax2.text(0.05, 0.95,
-             f"Mean \u0394: {np.mean(delta):+.2f}s\n"
-             f"Median \u0394: {np.median(delta):+.2f}s\n"
-             f"r = {corr:.3f}",
-             transform=ax2.transAxes, fontsize=8, va="top",
-             bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="#ccc", alpha=0.9))
-
-    fig.text(0.5, -0.02,
-             "Client-perceived = time between last and first non-zero P50 RTT around migration "
-             "(quantised to collector\u2019s 1 Hz polling interval)",
-             ha="center", fontsize=8, color="#666", style="italic")
-
-    plt.tight_layout()
-    fig.subplots_adjust(bottom=0.12)
-    _save(fig, output_dir, "downtime_comparison.png", show)
 
 
 def plot_downtime_cdf(df, m_times, events, output_dir, show):
@@ -1101,7 +882,6 @@ def plot_downtime_strip(events, output_dir, show):
     migrations = sorted(mig_df["migration"].unique(),
                         key=lambda s: int(s[1:]))
 
-    # ── Stacked bar per migration ──
     fig1, ax = plt.subplots(figsize=(max(8, len(migrations) * 0.45), 5))
     fig1.suptitle("Per-Migration Phase Breakdown", fontweight="bold")
     bottoms = np.zeros(len(migrations))
@@ -1128,7 +908,6 @@ def plot_downtime_strip(events, output_dir, show):
     plt.tight_layout()
     _save(fig1, output_dir, "migration_bars.png", show)
 
-    # ── Box plots: phase variability across migrations ──
     fig2, ax = plt.subplots(figsize=(7, 5))
     fig2.suptitle("Migration Phase Variability", fontweight="bold")
     phase_data = []
@@ -1157,8 +936,6 @@ def plot_downtime_strip(events, output_dir, show):
     plt.tight_layout()
     _save(fig2, output_dir, "phase_variability.png", show)
 
-
-# ── Main ──────────────────────────────────────────────────────────────────
 
 def main():
     args = parser.parse_args()
@@ -1207,10 +984,7 @@ def main():
     plot_rtt_by_location(df, m_times, events, args.output_dir, args.show)
     plot_downtime_strip(events, args.output_dir, args.show)
 
-    # Migration-focused zoom plots
-    # plot_migration_zoom_grid(df, m_times, events, args.output_dir, args.show)
     plot_ensemble_recovery(df, m_times, events, args.output_dir, args.show)
-    # plot_client_vs_server_downtime(df, m_times, events, args.output_dir, args.show)
     plot_downtime_cdf(None, None, events, args.output_dir, args.show)
     plot_throughput_recovery(df, m_times, events, args.output_dir, args.show)
     print("Done.")

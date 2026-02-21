@@ -40,9 +40,7 @@ def main(config_file_path):
             program_name = "t2na_load_balancer"
         logger.info(f"Using program name: {program_name} (ARCH={arch})")
 
-        switch_controllers = []
         master_config = None
-
         for config in switch_configs:
             if config.get("master", False):
                 if master_config is not None:
@@ -50,17 +48,6 @@ def main(config_file_path):
                         "Multiple master switches specified in the configuration file."
                     )
                 master_config = config
-                continue
-
-            switch_controller = SwitchController(
-                logger=logger,
-                sw_name=program_name,
-                sw_addr=config["addr"],
-                sw_id=config["id"],
-                client_id=config["client_id"],
-                load_balancer_ip=config["load_balancer_ip"],
-            )
-            switch_controllers.append(switch_controller)
 
         if master_config is None:
             raise Exception("No master switch specified in the configuration file.")

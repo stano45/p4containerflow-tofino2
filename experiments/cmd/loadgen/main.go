@@ -94,10 +94,7 @@ var (
 	connectionDrops atomic.Int64
 )
 
-// computeMetrics returns per-interval metrics and resets the windowed RTT/jitter
-// accumulators.  This makes each /metrics poll return fresh data for the current
-// collection interval rather than cumulative values that get permanently dragged
-// up by migration-induced spikes.
+// computeMetrics returns per-interval metrics and resets RTT/jitter accumulators.
 func computeMetrics() aggregatedMetrics {
 	connsMu.RLock()
 	defer connsMu.RUnlock()

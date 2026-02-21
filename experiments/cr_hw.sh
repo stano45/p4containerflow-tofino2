@@ -24,10 +24,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/config_hw.env"
 
-# Direction: lakewood_loveland (default) or loveland_lakewood
 MIGRATION_DIRECTION="${1:-lakewood_loveland}"
 
-# Switch port mapping
 LAKEWOOD_SW_PORT=${LAKEWOOD_SW_PORT:-140}
 LOVELAND_SW_PORT=${LOVELAND_SW_PORT:-148}
 
@@ -57,7 +55,6 @@ else
   TARGET_NIC=$LOVELAND_NIC
 fi
 
-# The server always keeps the same IP
 SERVER_IP="$H2_IP"
 
 if [[ "${CR_RUN_LOCAL:-}" = "1" ]]; then

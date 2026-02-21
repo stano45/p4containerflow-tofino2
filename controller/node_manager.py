@@ -14,7 +14,6 @@ class NodeManager(object):
         self.switch_controller = switch_controller
         self.logger = logger
 
-        # Store the original config so we can reinitialize later
         self._initial_nodes_config = initial_nodes
 
         # ipv4 -> Node map
@@ -211,7 +210,7 @@ class NodeManager(object):
         if old_ipv4 == new_ipv4:
             self.logger.info(f"Migration to same IP {old_ipv4} is a no-op")
             return
-        
+
         if old_ipv4 not in self.lb_nodes:
             raise Exception(
                 f"Failed to update node {old_ipv4=}, {new_ipv4=}: Node with IP {old_ipv4} is not LB node"
@@ -262,7 +261,6 @@ class NodeManager(object):
             self.lb_nodes[new_ipv4] = node_index
             del self.lb_nodes[old_ipv4]
 
-            # Create new node entry and update nodes map
             new_node = Node(
                 idx=old_node.idx,
                 ipv4=new_ipv4,
@@ -340,7 +338,6 @@ class NodeManager(object):
         except Exception as e:
             self.logger.warning(f"Failed to delete client SNAT entry: {e}")
 
-        # Clear internal state
         self.nodes.clear()
         self.lb_nodes.clear()
         self.logger.info("Cleanup complete")

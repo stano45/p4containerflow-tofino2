@@ -14,7 +14,6 @@ from ptf.testutils import (
 logger = get_logger()
 swports = get_sw_ports()
 
-print("SW Ports: ", swports)
 
 def ip(ip_string) -> int:
     return int(ip_address(ip_string))
@@ -157,7 +156,6 @@ class AbstractTest(BfRuntimeTest):
         self.tearDown()
         logger.info("Done!")
 
-    # Placeholder methods to be overridden by subclasses
     def setupCtrlPlane(self):
         pass
 
