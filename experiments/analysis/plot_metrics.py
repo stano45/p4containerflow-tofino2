@@ -69,6 +69,7 @@ def _save(fig, output_dir, filename, show):
         for ext, kwargs in [
             (".pdf", dict(bbox_inches="tight")),
             (".png", dict(bbox_inches="tight", dpi=150)),
+            (".svg", dict(bbox_inches="tight")),
         ]:
             path = os.path.join(output_dir, base + ext)
             fig.savefig(path, **kwargs)

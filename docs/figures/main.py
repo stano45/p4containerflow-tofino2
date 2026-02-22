@@ -228,7 +228,7 @@ sequenceDiagram
 """,
 }
 
-FORMATS = ["png", "pdf"]
+FORMATS = ["png", "svg", "pdf"]
 
 
 def render(name: str, mmd_content: str) -> None:
@@ -236,7 +236,10 @@ def render(name: str, mmd_content: str) -> None:
         out_path = OUTPUT_DIR / f"{name}.{fmt}"
         print(f"  {name}.{fmt} ...", end=" ", flush=True)
         try:
-            mermaido.render(mmd_content.strip(), str(out_path), fmt=fmt)
+            kwargs = {}
+            if fmt == "pdf":
+                kwargs["pdf_fit"] = True
+            mermaido.render(mmd_content.strip(), str(out_path), **kwargs)
             print("OK")
         except Exception as e:
             print(f"FAILED ({e!s:.120})")
