@@ -33,7 +33,7 @@ This document describes the design and implementation of P4ContainerFlow on Inte
 
 ## Setting Up Open-P4Studio
 
-Compiling and running P4 programs on an Intel Tofino switch requires the P4 Software Development Environment (SDE). This project uses open-p4studio, the open-source variant of Intel's P4Studio, pinned as a Git submodule at SDE version 9.13.4. The build system wraps the process behind - [P4ContainerFlow: Technical Report](#p4containerflow-technical-report)
+Compiling and running P4 programs on an Intel Tofino switch requires the P4 Software Development Environment (SDE). This project uses open-p4studio, the open-source variant of Intel's P4Studio, pinned as a Git submodule at SDE version 9.13.4. The build system wraps the process behind Make targets, but the compilation itself is heavy. A full build takes at least 30 minutes on a fast machine and over an hour when building directly on the switch itself.
 
 ### Prerequisites
 
