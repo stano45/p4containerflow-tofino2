@@ -63,6 +63,8 @@ exec > >(tee "$RUN_DIR/experiment.log") 2>&1
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
+mkdir -p "$SSH_MUX_DIR"
+
 on_lakewood() { ssh $SSH_OPTS "$LAKEWOOD_SSH" "$@"; }
 on_loveland() { ssh $SSH_OPTS "$LOVELAND_SSH" "$@"; }
 on_tofino()   { ssh $SSH_OPTS "$TOFINO_SSH" "$@"; }
@@ -82,6 +84,11 @@ cleanup_on_exit() {
         kill "$SSH_TUNNEL_PID" 2>/dev/null || true
         wait "$SSH_TUNNEL_PID" 2>/dev/null || true
     fi
+    # Tear down SSH multiplexed master connections
+    for sock in "$SSH_MUX_DIR"/*; do
+        [[ -e "$sock" ]] && ssh -o ControlPath="$sock" -O exit _ 2>/dev/null || true
+    done
+    rm -rf "$SSH_MUX_DIR"
 }
 exit_trap() {
     local ex=$?
@@ -155,13 +162,6 @@ on_lakewood "command -v socat >/dev/null 2>&1 || { sudo dnf install -y socat 2>/
 on_loveland "command -v socat >/dev/null 2>&1 || { sudo dnf install -y socat 2>/dev/null || sudo apt-get install -y socat; }"
 echo "socat OK"
 
-echo "--- root@lakewood SSH to loveland (for collector fallback / manual debug) ---"
-on_lakewood "sudo test -f /root/.ssh/id_ed25519 || sudo ssh-keygen -t ed25519 -N '' -f /root/.ssh/id_ed25519 -q" 2>/dev/null || true
-ROOT_PUB=$(on_lakewood "sudo cat /root/.ssh/id_ed25519.pub" 2>/dev/null || true)
-if [[ -n "$ROOT_PUB" ]]; then
-    on_loveland "mkdir -p ~/.ssh && chmod 700 ~/.ssh && grep -qF '$(echo "$ROOT_PUB" | head -1)' ~/.ssh/authorized_keys 2>/dev/null || echo '$(echo "$ROOT_PUB" | head -1)' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" 2>/dev/null || true
-    echo "root SSH key authorized on loveland"
-fi
 
 # =============================================================================
 # Step 2: Build container images on lakewood (always — ensures latest code)
@@ -181,7 +181,8 @@ fi
 echo "Syncing server image lakewood→loveland..."
 SYNC_TMP=/tmp/cr_image_sync_$$
 on_lakewood "sudo podman save -o $SYNC_TMP.img $SERVER_IMAGE_ID && sudo chown \$(whoami) $SYNC_TMP.img"
-ssh $SSH_OPTS -o ForwardAgent=yes "$LAKEWOOD_SSH" "scp -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=60 $SYNC_TMP.img $LOVELAND_SSH:$SYNC_TMP.img"
+ssh -o ControlPath=none -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ForwardAgent=yes "$LAKEWOOD_SSH" \
+    "scp -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=60 $SYNC_TMP.img $LOVELAND_SSH:$SYNC_TMP.img"
 on_lakewood "rm -f $SYNC_TMP.img"
 on_loveland "sudo podman load -i $SYNC_TMP.img && rm -f $SYNC_TMP.img && sudo podman tag $SERVER_IMAGE_ID $SERVER_IMAGE"
 echo "Server image synced."
@@ -382,7 +383,9 @@ ssh -N \
     -o ExitOnForwardFailure=yes \
     -o ServerAliveInterval=10 \
     -o ServerAliveCountMax=6 \
-    $SSH_OPTS "$LAKEWOOD_SSH" &
+    -o ControlPath=none \
+    -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+    "$LAKEWOOD_SSH" &
 SSH_TUNNEL_PID=$!
 sleep 2
 if ! kill -0 "$SSH_TUNNEL_PID" 2>/dev/null; then
@@ -447,8 +450,9 @@ for (( i=1; i <= MIGRATION_COUNT; i++ )); do
   touch "$MIGRATION_FLAG"
 
   # Run cr_hw.sh ON the source node — local commands, direct-link to target
-  # ForwardAgent so the source node can SSH to tofino for the switch update
-  ssh $SSH_OPTS -o ForwardAgent=yes "$migration_ssh" \
+  # ForwardAgent so the source node can SSH to tofino for the switch update.
+  # Bypass ControlPath: the master was created without ForwardAgent.
+  ssh -o ControlPath=none -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ForwardAgent=yes "$migration_ssh" \
     "cd $REMOTE_PROJECT_DIR/experiments && CR_RUN_LOCAL=1 CR_HW_RESULTS_PATH=$REMOTE_RESULTS_DIR bash cr_hw.sh $direction"
 
   scp $SSH_OPTS "$migration_ssh:$REMOTE_RESULTS_DIR/migration_timing.txt" "$RUN_DIR/migration_timing_${i}.txt"

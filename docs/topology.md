@@ -2,7 +2,7 @@
 
 > This file documents the specific testbed used during development.
 > Adapt the IPs, interfaces, and hostnames to match your own deployment.
-> SSH targets and NIC names are configured in `experiments/config_hw.env`.
+> SSH targets and NIC names are configured in `experiments/config_hw.env` (copy `config_hw.env.example` to get started).
 
 - [Network Topology Reference](#network-topology-reference)
   - [Equipment](#equipment)

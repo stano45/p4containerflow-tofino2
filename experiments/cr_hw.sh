@@ -23,6 +23,7 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/config_hw.env"
+mkdir -p "$SSH_MUX_DIR"
 
 MIGRATION_DIRECTION="${1:-lakewood_loveland}"
 
@@ -298,10 +299,15 @@ printf "\n----- Step 4: Update switch forward table (.2 -> port %d) -----\n" "$T
 
 SWITCH_UPDATE_START=$(date +%s%N)
 
-HTTP_CODE=$(on_source "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 4 \
-    -X POST '${CONTROLLER_URL}/updateForward' \
+# Derive the controller's network-reachable URL from TOFINO_SSH hostname.
+# Direct HTTP avoids the ~500ms SSH overhead on the critical path.
+_TOFINO_HOST="${TOFINO_SSH#*@}"
+_CTRL_URL="http://${_TOFINO_HOST}:5000"
+
+HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 4 \
+    -X POST "${_CTRL_URL}/updateForward" \
     -H 'Content-Type: application/json' \
-    -d '{\"ipv4\":\"${SERVER_IP}\", \"sw_port\":${TARGET_SW_PORT}, \"dst_mac\":\"${H2_MAC}\"}'" 2>/dev/null || true)
+    -d "{\"ipv4\":\"${SERVER_IP}\", \"sw_port\":${TARGET_SW_PORT}, \"dst_mac\":\"${H2_MAC}\"}" 2>/dev/null || true)
 if [[ -z "$HTTP_CODE" || "$HTTP_CODE" = "000" ]]; then
   HTTP_CODE=$(on_tofino "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 6 \
       -X POST 'http://127.0.0.1:5000/updateForward' \

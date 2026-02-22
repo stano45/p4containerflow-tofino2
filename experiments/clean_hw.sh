@@ -6,6 +6,7 @@
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/config_hw.env"
+mkdir -p "$SSH_MUX_DIR"
 
 on_lakewood() { ssh $SSH_OPTS "$LAKEWOOD_SSH" "$@"; }
 on_loveland() { ssh $SSH_OPTS "$LOVELAND_SSH" "$@"; }

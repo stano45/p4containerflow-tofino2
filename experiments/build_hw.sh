@@ -17,6 +17,7 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/config_hw.env"
+mkdir -p "$SSH_MUX_DIR"
 
 # -----------------------------------------------------------------------------
 # Helpers
@@ -114,7 +115,8 @@ else
     echo "Syncing server image lakewood→loveland..."
     SYNC_TMP=/tmp/cr_image_sync_$$
     on_lakewood "sudo podman save -o $SYNC_TMP.img $SERVER_IMAGE_ID && sudo chown \$(whoami) $SYNC_TMP.img"
-    ssh $SSH_OPTS -o ForwardAgent=yes "$LAKEWOOD_SSH" "scp -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=60 $SYNC_TMP.img $LOVELAND_SSH:$SYNC_TMP.img"
+    ssh -o ControlPath=none -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ForwardAgent=yes "$LAKEWOOD_SSH" \
+        "scp -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=60 $SYNC_TMP.img $LOVELAND_SSH:$SYNC_TMP.img"
     on_lakewood "rm -f $SYNC_TMP.img"
     on_loveland "sudo podman load -i $SYNC_TMP.img && rm -f $SYNC_TMP.img && sudo podman tag $SERVER_IMAGE_ID $SERVER_IMAGE"
     echo "Server image synced."

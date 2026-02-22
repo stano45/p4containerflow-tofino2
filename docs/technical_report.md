@@ -182,7 +182,7 @@ With the program tested on both model and hardware, the final challenge is runni
 
 ![Experiment Orchestration](figures/out/experiment_orchestration.png)
 
-The experiment configuration is split into two layers: a base config (`experiments/config.env`) with IP addresses, ports, container images, and application parameters, and a hardware-specific overlay (`experiments/config_hw.env`) that adds SSH targets, NIC names, direct-link IPs, and remote project paths. The overlay sources the base config and overrides what needs to change for the lab environment. This keeps the base config portable and the hardware-specific details in one place.
+The experiment configuration is split into two layers: a base config (`experiments/config.env`) with IP addresses, ports, container images, and application parameters, and a hardware-specific overlay (`experiments/config_hw.env`, created by copying `config_hw.env.example`) that adds SSH targets, NIC names, direct-link IPs, and remote project paths. The overlay sources the base config and overrides what needs to change for the lab environment. This keeps the base config portable and the hardware-specific details in one place.
 
 Remote commands are wrapped in thin shell functions (`on_lakewood`, `on_loveland`, `on_tofino`) that handle SSH connection options and error propagation. This keeps the main orchestration script readable and avoids repeating SSH flags everywhere. The same pattern is used for file transfers: `rsync` pushes the experiment scripts and controller code to the lab machines before each run.
 

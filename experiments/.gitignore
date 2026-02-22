@@ -9,5 +9,8 @@ results/*.csv
 results/*.png
 results/*.json
 
+# Local config (copy config_hw.env.example to config_hw.env and edit)
+config_hw.env
+
 # Go build cache
 /vendor/

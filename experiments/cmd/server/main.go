@@ -217,14 +217,6 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Drop stale pings buffered during CRIU freeze.
-		if cm.Ts > 0 {
-			ageMs := float64(time.Now().UnixNano()-cm.Ts) / 1e6
-			if ageMs > 1000 {
-				continue
-			}
-		}
-
 		echo := echoMsg{
 			Seq:      cm.Seq,
 			ClientTs: cm.Ts,
