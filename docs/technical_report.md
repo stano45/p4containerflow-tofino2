@@ -41,62 +41,11 @@ With the model environment ready, the next question is what P4 program to run. T
 
 V1Model defines a single linear pipeline with six programmer-supplied blocks:
 
-```
-                            V1Model Pipeline (BMv2)
-
-  Packet In
-      |
-      v
-  +--------+   +----------+   +---------+   +--------+   +---------+   +----------+
-  | Parser |-->| Verify   |-->| Ingress |-->| Egress |-->| Compute |-->| Deparser |
-  |        |   | Checksum |   |         |   |        |   | Checksum|   |          |
-  +--------+   +----------+   +---------+   +--------+   +---------+   +----------+
-                                                                            |
-                                                                        Packet Out
-
-  V1Switch(Parser, VerifyChecksum, Ingress, Egress, ComputeChecksum, Deparser)
-```
+![V1Model Pipeline](figures/out/v1model_pipeline.png)
 
 T2NA splits the pipeline into two independent halves (ingress and egress), separated by the traffic manager. Each half has its own parser, control block, and deparser. Checksum operations are embedded in the parsers and deparsers rather than being standalone blocks.
 
-```
-                               T2NA Pipeline
-
-  Packet In
-      |
-      v
-  +---------------------------------------------------------------------------+
-  |                              INGRESS                                      |
-  |                                                                           |
-  |  +---------------+       +----------+       +------------------+          |
-  |  | IngressParser |------>| Ingress  |------>| IngressDeparser  |          |
-  |  |               |       |          |       |                  |          |
-  |  | parse headers |       | match-   |       | checksum compute |          |
-  |  | checksum      |       | action   |       | emit headers     |          |
-  |  | verify        |       | tables   |       |                  |          |
-  |  +---------------+       +----------+       +------------------+          |
-  +---------------------------------------------------------------------------+
-      |
-      v  Traffic Manager (queuing, replication, scheduling)
-      |
-  +---------------------------------------------------------------------------+
-  |                              EGRESS                                       |
-  |                                                                           |
-  |  +---------------+       +----------+       +------------------+          |
-  |  | EgressParser  |------>| Egress   |------>| EgressDeparser   |          |
-  |  |               |       |          |       |                  |          |
-  |  | parse headers |       | match-   |       | checksum compute |          |
-  |  | checksum      |       | action   |       | emit headers     |          |
-  |  | verify        |       | tables   |       |                  |          |
-  |  +---------------+       +----------+       +------------------+          |
-  +---------------------------------------------------------------------------+
-      |
-      v
-  Packet Out
-
-  Pipeline(IngressParser, Ingress, IngressDeparser,
-           EgressParser,  Egress,  EgressDeparser)
-```
+![T2NA Pipeline](figures/out/t2na_pipeline.png)
 
 Since the load balancer performs all processing in ingress, the egress pipeline is left empty and bypassed using the `BypassEgress()` extern (V1Model has no equivalent):
 
@@ -137,113 +86,13 @@ Three other tables complete the forwarding logic. The `forward` table maps the r
 
 The ingress `apply` block ties these tables together in a specific order:
 
-```
-                     Ingress Apply Flow
-
-                    +-------------+
-                    | Packet In   |
-                    +------+------+
-                           |
-                    +------v------+
-                    | ARP valid?  |--yes--> arp_forward --> bypass_egress --> out
-                    +------+------+
-                           | no
-                    +------v------+
-                    | IPv4 valid  |--no---> drop
-                    | && TTL >= 1 |
-                    +------+------+
-                           | yes
-                    +------v------+
-                    |node_selector|  (ActionSelector: hash 5-tuple,
-                    | match VIP?  |   rewrite dst to backend IP)
-                    +------+------+
-                           |
-                    +------v------+
-                    |is_lb_packet |--yes--> skip SNAT
-                    |   == false? |
-                    +------+------+
-                           | no (server reply)
-                    +------v------+
-                    | client_snat |  (rewrite src IP to VIP)
-                    +------+------+
-                           |
-                    +------v------+
-                    |   forward   |  (set egress port)
-                    +------+------+
-                           |
-                    +------v------+
-                    |bypass_egress|
-                    +------+------+
-                           |
-                    +------v------+
-                    | Packet Out  |
-                    +-------------+
-```
+![Ingress Apply Flow](figures/out/ingress_apply_flow.png)
 
 ARP packets hit `arp_forward`, bypass egress, and return immediately. Invalid IPv4 packets (bad header or TTL below 1) are dropped. Valid IPv4/TCP packets go through `node_selector` (which may rewrite the destination to a backend server), then `client_snat` (which rewrites the source address for server-to-client replies, but only if the packet was not a load-balanced packet), then `forward` (which sets the egress port), and finally `bypass_egress`. Packets with IPv4 checksum errors are tagged by overwriting the destination MAC with `0x0000deadbeef` for debugging purposes rather than being dropped, which makes them easy to identify in packet captures.
 
 A concrete example illustrates the full packet flow through the pipeline:
 
-```
-  Client-to-Server (request)
-  ============================================================
-
-  Client 10.0.0.100:54321                   VIP 10.0.0.10:8080
-         |                                         |
-         |  src: 10.0.0.100:54321                  |
-         |  dst: 10.0.0.10:8080                    |
-         +---------> [ Tofino Pipeline ] ----------+
-                          |
-                   node_selector
-                   match dst = 10.0.0.10 (VIP)
-                   hash(5-tuple) -> member 0
-                   action: rewrite dst to 10.0.0.2
-                   is_lb_packet = true
-                          |
-                   client_snat
-                   SKIPPED (is_lb_packet == true)
-                          |
-                   forward
-                   match dst = 10.0.0.2 -> egress port 140
-                          |
-                   deparser
-                   recompute IPv4 + TCP checksums
-                          |
-                          v
-                   Backend 10.0.0.2:8080
-                   receives: src 10.0.0.100:54321
-                             dst 10.0.0.2:8080
-
-
-  Server-to-Client (response)
-  ============================================================
-
-  Backend 10.0.0.2:8080                 Client 10.0.0.100:54321
-         |                                         |
-         |  src: 10.0.0.2:8080                     |
-         |  dst: 10.0.0.100:54321                  |
-         +---------> [ Tofino Pipeline ] ----------+
-                          |
-                   node_selector
-                   dst = 10.0.0.100 (not VIP)
-                   NO MATCH
-                   is_lb_packet = false
-                          |
-                   client_snat
-                   match src_port = 8080
-                   action: rewrite src to 10.0.0.10 (VIP)
-                          |
-                   forward
-                   match dst = 10.0.0.100 -> egress port 148
-                          |
-                   deparser
-                   recompute IPv4 + TCP checksums
-                          |
-                          v
-                   Client 10.0.0.100:54321
-                   receives: src 10.0.0.10:8080  (VIP)
-                             dst 10.0.0.100:54321
-```
+![Packet Flow](figures/out/packet_flow.png)
 
 A client at `10.0.0.100:54321` sends a TCP packet to the VIP `10.0.0.10:8080`. The parser extracts Ethernet, IPv4, and TCP headers and verifies the IPv4 checksum. In ingress, `node_selector` matches on the destination (the VIP), hashes the five-tuple, and selects member 0, whose action rewrites the destination to `10.0.0.2` (the chosen backend). Because this is a load-balanced packet, `client_snat` is skipped. The `forward` table maps the rewritten destination to an egress port, and the deparser recomputes both checksums because the destination address changed. For the return path, the backend responds with its own IP as the source. This time `node_selector` does not match (the destination is the client, not the VIP), so `client_snat` kicks in and rewrites the source from `10.0.0.2` back to the VIP. The client never sees the backend's real IP. From its perspective, every packet comes from `10.0.0.10`. This is what allows CRIU to migrate the container to a different backend without breaking the TCP connection: the control plane updates the ActionSelector member to point to the new server, but the VIP and the five-tuple hash remain unchanged.
 
@@ -305,41 +154,7 @@ One new concern on hardware is port configuration. Physical ports do not link au
 
 The control plane is a Python application with three components: a Flask HTTP API (`controller.py`), a BF Runtime switch controller (`bf_switch_controller.py`), and a node manager (`node_manager.py`). It runs on the switch itself and talks to `switchd` over a localhost gRPC connection.
 
-```
- HTTP clients                          Tofino Switch
- (experiment                     +---------------------------+
-  scripts,                       |                           |
-  curl)                          |  Flask API  (port 5000)   |
-    |                            |  /migrateNode             |
-    |   POST /updateForward      |  /updateForward           |
-    +--------------------------->|  /cleanup                  |
-                                 |  /reinitialize            |
-                                 +----------|----------------+
-                                            |
-                                 +----------v----------------+
-                                 |      NodeManager          |
-                                 |  nodes{}  lb_nodes{}      |
-                                 |  migrateNode()            |
-                                 |  updateForward()          |
-                                 +----------|----------------+
-                                            |
-                                 +----------v----------------+
-                                 |    SwitchController       |
-                                 |    (bf_switch_controller)  |
-                                 |                           |
-                                 |  gRPC to bf_switchd       |
-                                 |  127.0.0.1:50052          |
-                                 +----------|----------------+
-                                            |
-                                 +----------v----------------+
-                                 |      bf_switchd           |
-                                 |  P4 pipeline (ASIC)       |
-                                 |  node_selector            |
-                                 |  action_selector          |
-                                 |  forward / arp_forward    |
-                                 |  client_snat              |
-                                 +---------------------------+
-```
+![Control Plane Architecture](figures/out/control_plane.png)
 
 On startup, the controller loads a JSON configuration file that identifies the switch connection (device ID, gRPC address, P4 program name), the load balancer's virtual IP and service port, and a list of backend nodes. The program name is selected based on the `ARCH` environment variable (`tna_load_balancer` for Tofino 1, `t2na_load_balancer` for Tofino 2). The `SwitchController` connects to `switchd` via the `bfrt_grpc.client` library, binds to the P4 pipeline, and configures physical ports. The `NodeManager` then populates all five P4 tables: the ActionSelector group in `node_selector`, one `action_selector_ap` entry per backend, forwarding and ARP entries for every node, and a `client_snat` entry for the service port. These tables have referential dependencies, so cleanup must proceed in reverse insertion order: `node_selector` first, then the group, then the members, and finally the independent tables. Violating this order causes gRPC errors from BF Runtime's referential integrity checks.
 
