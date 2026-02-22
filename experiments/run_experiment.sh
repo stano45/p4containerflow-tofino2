@@ -499,10 +499,7 @@ SSH_TUNNEL_PID=""
 
 if [[ -f "$SCRIPT_DIR/analysis/plot_metrics.py" ]] && [[ -f "$COLLECTOR_OUTPUT" ]]; then
     cd "$SCRIPT_DIR/analysis"
-    pip install -q -r requirements.txt 2>/dev/null || true
-    # Pillow may be needed for matplotlib; upgrade if plot fails with _imaging error
-    (pip install -q --upgrade Pillow 2>/dev/null || true)
-    if python3 plot_metrics.py \
+    if uv run plot_metrics.py \
         --csv "$COLLECTOR_OUTPUT" \
         --migration-flag "$RUN_DIR" \
         --output-dir "$RUN_DIR"; then

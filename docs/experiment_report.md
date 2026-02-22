@@ -117,30 +117,29 @@ The `analysis/plot_metrics.py` script reads the CSV and migration timing files a
 
 ## Results
 
-The results discussed here come from experiment run `run_20260222_183130`, which performed 20 CRIU migrations alternating between lakewood and loveland with 30-second intervals. This run includes the TCP retransmission recovery tuning described above (`rto_min 5ms`, TCP metrics flush, keepalive). Plots are not checked into git. To generate them locally, run:
+The results discussed here come from experiment run `run_20260222_183130`, which performed 20 CRIU migrations alternating between lakewood and loveland with 30-second intervals. This run includes the TCP retransmission recovery tuning described above (`rto_min 5ms`, TCP metrics flush, keepalive). The reference data (metrics CSV, migration timing files, and plots) is stored in [`docs/experiment_results/`](experiment_results/) so that plots render in the repository. To regenerate the plots from the CSV:
 
 ```bash
-cd experiments
-pip install -r analysis/requirements.txt
-python3 analysis/plot_metrics.py \
-  --csv results/run_20260222_183130/metrics.csv \
-  --migration-flag results/run_20260222_183130 \
-  --output-dir results/run_20260222_183130
+cd experiments/analysis
+uv run plot_metrics.py \
+  --csv ../../docs/experiment_results/metrics.csv \
+  --migration-flag ../../docs/experiment_results \
+  --output-dir ../../docs/experiment_results
 ```
 
 ### Steady-State Performance
 
 During the 30-second warm-up phase with four concurrent WebSocket connections and no migrations, latency was stable and low. Average round-trip times settled between 0.28 and 0.35 ms. The median (p50) hovered around 0.25 to 0.33 ms. The 95th percentile was typically between 0.37 and 0.54 ms. Jitter remained consistently low at 0.03 to 0.08 ms. Per-connection throughput was approximately 116 KB/s (about 71 KB/s of server data frames plus the echo and ping overhead). Server CPU usage was 1 to 2% and memory was stable at 7 to 11 MB.
 
-![Application-Layer RTT](../experiments/results/run_20260222_183130/ws_rtt.png)
+![Application-Layer RTT](experiment_results/ws_rtt.png)
 
 The RTT plot above shows p50, p95, and p99 latency on a log scale over the full experiment duration. Each migration event is visible as a vertical shaded band where no echo responses are received (gaps in the trace). Between migrations, RTT returns to sub-millisecond levels within 1 to 2 seconds, with a single spike of 250 to 400 ms as the backed-off TCP retransmit timer fires for the first time after the freeze.
 
-![Application-Layer Jitter](../experiments/results/run_20260222_183130/ws_jitter.png)
+![Application-Layer Jitter](experiment_results/ws_jitter.png)
 
 Jitter follows the same pattern: near-zero during steady state with brief spikes at each migration boundary.
 
-![Server Throughput](../experiments/results/run_20260222_183130/throughput.png)
+![Server Throughput](experiment_results/throughput.png)
 
 Throughput drops to zero during each migration (the container is frozen) and recovers to its steady-state level of roughly 70 KB/s within seconds of restore.
 
@@ -148,7 +147,7 @@ Throughput drops to zero during each migration (the container is frozen) and rec
 
 Across the 20 migrations, total script runtime ranged from 3967 ms to 4771 ms (average 4266 ms). The per-phase breakdown was consistent across all runs:
 
-![Migration Phase Breakdown](../experiments/results/run_20260222_183130/migration_timing.png)
+![Migration Phase Breakdown](experiment_results/migration_timing.png)
 
 Checkpoint time averaged 1564 ms (standard deviation 117 ms), including the quiesce signal, send queue drain, and CRIU dump. Transfer averaged 156 ms (standard deviation 3 ms). The checkpoint tarball grew from 6.4 MB (migration 1) to 7.7 MB (migration 15) and then fluctuated around 7.2 to 7.5 MB for the remaining migrations. The growth reflects accumulation of WebSocket session state (goroutine stacks, connection maps, buffer allocations). Transfer speed over the direct 25G link was approximately 42 to 46 MB/s.
 
@@ -156,13 +155,13 @@ Restore averaged 1797 ms (standard deviation 189 ms), making up roughly 42% of t
 
 Switch table update averaged 32 ms (standard deviation 1 ms) across all 20 migrations. This represents the time for the controller to receive the HTTP POST, execute two gRPC calls to `switchd` (one for `forward`, one for `arp_forward`), and return. The gRPC calls modify TCAM entries on the ASIC, which happens at wire speed.
 
-![Per-Migration Bars](../experiments/results/run_20260222_183130/migration_bars.png)
+![Per-Migration Bars](experiment_results/migration_bars.png)
 
 The per-migration bar chart above shows that the phase breakdown is consistent across all 20 migrations, with restore always dominating. Odd-numbered migrations (lakewood to loveland) and even-numbered migrations (loveland to lakewood) show no systematic difference in timing.
 
 Client-visible downtime (`time_to_ready_ms`) ranged from 3605 to 4419 ms. This is the interval from checkpoint start to switch table update completion, after which packets are routed to the restored container on the new host.
 
-![Downtime CDF](../experiments/results/run_20260222_183130/downtime_cdf.png)
+![Downtime CDF](experiment_results/downtime_cdf.png)
 
 The downtime CDF shows that 50% of migrations complete in under 3881 ms, 95% in under 4166 ms, and 99% in under 4419 ms. The mean is 3909 ms with a standard deviation of 212 ms.
 
@@ -170,25 +169,25 @@ The downtime CDF shows that 50% of migrations complete in under 3881 ms, 95% in 
 
 TCP connections survive each migration transparently. CRIU checkpoints the full TCP socket state (sequence numbers, window sizes, connection parameters) on the source and restores it on the target. The load generator's connection drop counter stays at zero across all 20 migrations. The metrics CSV shows `connected_clients` briefly dropping to 0 during the restore phase (when the collector cannot reach the server's metrics endpoint) and recovering to 4 within one to two collection intervals after the switch table is updated. This is a metrics collection artifact, not a real connection drop: the load generator remains connected throughout, as confirmed by the `connection_drops` field staying at 0. The server tolerates up to 30 consecutive write errors before dropping a client, so the server-side goroutine does not exit during the brief freeze.
 
-![Connection Health](../experiments/results/run_20260222_183130/connection_health.png)
+![Connection Health](experiment_results/connection_health.png)
 
 The connection health plot shows the drop-and-recovery pattern across all 20 migrations. Each vertical dip corresponds to a migration event where all 4 connections briefly show as frozen, then recover.
 
-![Ensemble RTT Recovery](../experiments/results/run_20260222_183130/ensemble_rtt_recovery.png)
+![Ensemble RTT Recovery](experiment_results/ensemble_rtt_recovery.png)
 
 The ensemble recovery plot aligns all 20 migrations at t=0 and overlays their RTT recovery profiles. The interquartile range (p25 to p75) is shown as a shaded band. RTT returns to sub-millisecond levels within 1 to 2 seconds after the migration completes (approximately 5 to 6 seconds from migration start), with a single RTT spike of 250 to 400 ms on the first successful echo as the backed-off TCP timer fires.
 
-![RTT by Location](../experiments/results/run_20260222_183130/rtt_by_location.png)
+![RTT by Location](experiment_results/rtt_by_location.png)
 
 The RTT-by-location plot segments latency by which server (lakewood or loveland) is currently hosting the container. There is no measurable difference in steady-state RTT between the two hosts, which makes sense given the symmetric topology.
 
 No migrations failed in this run. All 20 completed with TCP connections surviving the checkpoint/restore cycle. The `skip-in-flight` CRIU option combined with the send-queue drain procedure avoids the most common failure: EPIPE on restore because of stale data in the send queue.
 
-![Phase Variability](../experiments/results/run_20260222_183130/phase_variability.png)
+![Phase Variability](experiment_results/phase_variability.png)
 
-![Ensemble Throughput Recovery](../experiments/results/run_20260222_183130/ensemble_throughput_recovery.png)
+![Ensemble Throughput Recovery](experiment_results/ensemble_throughput_recovery.png)
 
-![Container Resources](../experiments/results/run_20260222_183130/container_resources.png)
+![Container Resources](experiment_results/container_resources.png)
 
 ### TCP Retransmission Recovery
 
@@ -227,4 +226,4 @@ cd experiments
 ./run_experiment.sh --steady-state 30 --post-migration 30 --migrations 20
 ```
 
-This requires SSH access to lakewood, loveland, and the tofino switch, with the connection details configured in `config_hw.env` (see `config_hw.env.example`). The switch must have `switchd` running with the P4 load balancer program loaded. Podman, CRIU, and crun must be installed on both servers (the script will install CRIU and crun on loveland automatically if they are missing). The control machine needs Go 1.24+ (to build the collector and load generator), Python 3 with matplotlib/pandas/seaborn (for plotting), and Rust (optional, for the checkpoint editing tool).
+This requires SSH access to lakewood, loveland, and the tofino switch, with the connection details configured in `config_hw.env` (see `config_hw.env.example`). The switch must have `switchd` running with the P4 load balancer program loaded. Podman, CRIU, and crun must be installed on both servers (the script will install CRIU and crun on loveland automatically if they are missing). The control machine needs Go 1.24+ (to build the collector and load generator), Python 3 with [uv](https://docs.astral.sh/uv/) (for plotting; dependencies are managed via `experiments/analysis/pyproject.toml`), and Rust (optional, for the checkpoint editing tool).

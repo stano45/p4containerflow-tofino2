@@ -63,8 +63,7 @@ collector:
 		-output results/metrics.csv
 
 plot:
-	cd analysis && pip install -q -r requirements.txt && \
-		python3 plot_metrics.py --csv ../results/metrics.csv --output-dir ../results/
+	cd analysis && uv run plot_metrics.py --csv ../results/metrics.csv --output-dir ../results/
 
 # ---------------------------------------------------------------------------
 # Cleanup

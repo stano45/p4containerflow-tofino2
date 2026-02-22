@@ -1,0 +1,11 @@
+[project]
+name = "p4containerflow-analysis"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+    "numpy>=1.24",
+    "seaborn>=0.13",
+    "pillow>=10.0",
+]

@@ -1,0 +1,12 @@
+run_dir=/home/stan/projects/p4containerflow-tofino2/experiments/results/run_20260222_183130
+steady_state_wait=30
+post_migration_wait=30
+migration_count=20
+h2_ip=192.168.12.2
+h3_ip=192.168.12.3
+vip=192.168.12.10
+lakewood_ssh=kosorins32@lakewood.ct.univie.ac.at
+loveland_ssh=kosorins32@loveland.ct.univie.ac.at
+checkpoint_dir=/tmp/checkpoints
+server_image=stream-server
+controller_url=http://127.0.0.1:5000

@@ -20,7 +20,7 @@ try:
     import seaborn as sns
 except ImportError as e:
     print(f"Missing dependency: {e}", file=sys.stderr)
-    print("pip install matplotlib pandas numpy seaborn", file=sys.stderr)
+    print("Run via: uv run plot_metrics.py (deps in pyproject.toml)", file=sys.stderr)
     sys.exit(1)
 
 sns.set_theme(style="whitegrid", context="paper", font_scale=1.15)
