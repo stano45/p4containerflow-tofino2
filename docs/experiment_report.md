@@ -26,36 +26,17 @@ This document describes how we benchmarked live container migration through a P4
 
 ## Testbed
 
-```
-    Control Machine                    Container Subnet 192.168.12.0/24
-    (orchestrator)
-         |                     +--- macvlan-shim .100 (loadgen data path)
-         | SSH                 |
-         |          +----------+----------+              +-----------------+
-         +--------->|      lakewood       |  25G direct  |    loveland     |
-         |          |  stream-server .2   |<============>|  (restore tgt)  |
-         |          |  loadgen (native)   | Mellanox DAC |                 |
-         |          +--------|------------+  checkpoint  +--------|--------+
-         |                   | NFP 25G                            | NFP 25G
-         |                   |                                    |
-         |          +--------+--------------------------------+---+--------+
-         +--------->|              Tofino Switch (Wedge100BF-32X)          |
-                    |  bf_switchd + P4 load balancer                       |
-                    |  Controller API :5000                                |
-                    |  Port 2/0 (D_P 140) <---> lakewood                  |
-                    |  Port 3/0 (D_P 148) <---> loveland                  |
-                    +---------------------------------------------------------+
+The experiment runs on a three-node testbed. A Wedge100BF-32X switch (Tofino 1, 32 QSFP28 ports) sits between two Dell R740 servers (lakewood and loveland), each with 20 cores and 192 GB of RAM. The servers connect to the switch via Netronome NFP 25G NICs. They also have a direct 25G DAC link between them using Mellanox ConnectX NICs, which is used exclusively for checkpoint transfer during migration and never carries application traffic.
 
-    Data path:    loadgen --> macvlan-shim --> P4 switch --> server container
-    Metrics path: collector --> SSH tunnel --> loadgen :9090 + server :8081
-    Checkpoint:   source --> socat (25G direct) --> target
-```
+![Testbed Topology](figures/out/testbed_topology.png)
 
-The experiment runs on a three-node testbed. A Wedge100BF-32X switch (Tofino 1, 32 QSFP28 ports) sits between two Dell R740 servers (lakewood and loveland), each with 20 cores and 192 GB of RAM. The servers connect to the switch via Netronome NFP 25G NICs. They also have a direct 25G DAC link between them using Mellanox ConnectX NICs, which is used exclusively for checkpoint transfer during migration and never carries application traffic. All switch ports run at 25G with Reed-Solomon Forward Error Correction (RS FEC). The controller configures ports automatically through entries in `controller_config_hw.json`, using the `$PORT` BF Runtime table to set speed, FEC type, and auto-negotiation per device port. Port 2/0 (device port 140) connects to lakewood and port 3/0 (device port 148) connects to loveland. The switch runs `bf_switchd` with the P4 load balancer program and the Python controller, which exposes an HTTP API on port 5000. The entire experiment is orchestrated from a separate control machine via SSH.
+All switch ports run at 25G with Reed-Solomon Forward Error Correction (RS FEC). The controller configures ports automatically through entries in `controller_config_hw.json`, using the `$PORT` BF Runtime table to set speed, FEC type, and auto-negotiation per device port. Port 2/0 (device port 140) connects to lakewood and port 3/0 (device port 148) connects to loveland. The switch runs `bf_switchd` with the P4 load balancer program and the Python controller, which exposes an HTTP API on port 5000. The entire experiment is orchestrated from a separate control machine via SSH.
 
-One difference between the two servers: lakewood's Netronome interfaces carry `np0`/`np1` suffixes (for example `enp101s0np0`), while loveland's interfaces do not, despite identical hardware and driver versions. The interface names on each server need to be verified manually.
+The Netronome NICs connected to the switch are `enp101s0np1` on both servers. The Mellanox direct link interfaces differ slightly: `enp179s0f0np0` on lakewood and `enp179s0f0` on loveland (the `np0` suffix is absent on loveland despite identical hardware and driver versions). All interface names are configured in `config_hw.env`.
 
 The container subnet is `192.168.12.0/24`. The server container runs at `192.168.12.2` with a fixed MAC address (`02:42:c0:a8:0c:02`). A macvlan-shim interface on lakewood (`192.168.12.100`) gives the load generator host-level access to the container without traversing an SSH tunnel for the data path. The virtual IP served by the load balancer is `192.168.12.10`, though the current experiment uses same-IP migration and the load generator connects directly to `192.168.12.2`.
+
+![Data Path](figures/out/data_path.png)
 
 ## Workload
 
@@ -89,29 +70,7 @@ The choice to use same-IP migration (the container keeps `192.168.12.2` on both 
 
 ## Migration Procedure
 
-```
-  Migration Timeline (single migration, typical ~5.8s downtime)
-
-  t=0                                                          t=6.1s
-  |                                                              |
-  |  Checkpoint       Transfer     Restore            Switch     |
-  |  (CRIU dump)      (socat)      (CRIU restore +    (gRPC      |
-  |                                 macvlan fix)       update)   |
-  |<--- 1550 ms --->|<- 430 ms ->|<---- 3270 ms ---->|<30ms>|   |
-  |                 |            |                    |      |   |
-  |  SIGUSR2        |  source    |  source rm'd      | /update  |
-  |  quiesce        |  listens   |  macvlan recreated | Forward  |
-  |  drain TCP      |  target    |  SIGUSR2 resume   |      |   |
-  |  podman ckpt    |  pulls     |  grat ARP         |      |   |
-  |                 |            |                    |      |   |
-  |=== container frozen (TCP unresponsive) ===========|======|   |
-  |                                                          |   |
-  |<----------- client-visible downtime (5.8s) ------------>||   |
-  |                                                   ready  |   |
-  |                                                          |   |
-  |                                              post-switch |   |
-  |                                              housekeeping|   |
-```
+![Migration Phases](figures/out/migration_phases.png)
 
 Each migration is performed by `cr_hw.sh`, which runs on the source node and communicates with the target node over the direct Mellanox link. The script runs in `CR_RUN_LOCAL=1` mode, meaning it executes locally on the source rather than over SSH, to minimize latency in the checkpoint phase.
 
@@ -143,36 +102,7 @@ Client-visible downtime begins at the checkpoint (when the container is frozen a
 
 ## Metrics Collection
 
-```
-  Metrics Pipeline
-
-  +-------------+        +-------------+
-  | server      |        | loadgen     |
-  | :8081       |        | :9090       |
-  | /metrics    |        | /metrics    |
-  +------+------+        +------+------+
-         |                       |
-    macvlan-shim            localhost
-    192.168.12.2            lakewood
-         |                       |
-  +------+-----------------------+------+
-  |         SSH tunnel (lakewood)       |
-  |  -L 18081:192.168.12.2:8081        |
-  |  -L 19090:localhost:9090           |
-  +------------------+------------------+
-                     |
-          +----------v-----------+
-          |  collector (local)   |
-          |  scrape every 1s     |
-          |  write metrics.csv   |
-          |  check migration_flag|
-          +----------+-----------+
-                     |
-          +----------v-----------+
-          |  plot_metrics.py     |
-          |  12 PDF plots        |
-          +----------------------+
-```
+![Metrics Pipeline](figures/out/metrics_pipeline.png)
 
 Metrics come from three sources: the server's built-in metrics endpoint, the load generator's metrics endpoint, and a standalone collector binary.
 
@@ -271,18 +201,7 @@ The direct Mellanox link for checkpoint transfer is specific to this testbed. In
 
 ## Experiment Automation
 
-```
-  Experiment Timeline (run_20260218_222451)
-
-  |  Setup  | Warm-up |  M1  | wait |  M2  | wait | ... |  M25 | wait  | Collect |
-  |         |  30s    |      | 30s  |      | 30s  |     |      | 30s   |         |
-  |<------->|<------->|<---->|<---->|<---->|<---->|     |<---->|<----->|<------->|
-  0s                  30s          ~68s         ~106s        ~1020s        ~1050s
-
-  Setup: SSH checks, build images, start switchd + controller, create containers
-  M1..M25: alternating lakewood-->loveland and loveland-->lakewood
-  Collect: stop loadgen + collector, copy logs, generate plots
-```
+![Experiment Orchestration](figures/out/experiment_orchestration.png)
 
 The whole experiment is driven by `run_experiment.sh`, which accepts three parameters: `--steady-state` (seconds to wait before the first migration, default 15), `--post-migration` (seconds between migrations and after the last one, default 30), and `--migrations` (number of CRIU migrations to perform, default 1). The run that produced these results used `--steady-state 30 --post-migration 30 --migrations 25`.
 

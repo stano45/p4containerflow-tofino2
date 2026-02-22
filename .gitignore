@@ -171,6 +171,7 @@ cython_debug/
 # load_balancer/common is now a local copy (not a symlink), tracked in git
 
 Makefile.save
+node_modules/
 
 # Experiment metrics and run outputs
 experiments/results/
