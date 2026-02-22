@@ -122,6 +122,50 @@ flowchart LR
     style Flask fill:#c8e6c9,stroke:#388e3c
     style SW fill:#e8eaf6,stroke:#3f51b5
 """,
+    "experiment_orchestration": """
+sequenceDiagram
+    participant Ctrl as Control Machine
+    participant T as Tofino Switch
+    participant L as Lakewood (Server 1)
+    participant V as Loveland (Server 2)
+
+    Note over Ctrl,V: Step 1: Connectivity + sync
+    Ctrl->>L: SSH check + rsync scripts
+    Ctrl->>V: SSH check + rsync scripts
+    Ctrl->>T: SSH check + rsync controller
+
+    Note over Ctrl,V: Step 2: Build container images
+    Ctrl->>L: Build server image
+    L->>V: Sync image (podman save/load)
+
+    Note over Ctrl,V: Step 3-4: Start infrastructure
+    Ctrl->>T: Ensure switchd running
+    Ctrl->>T: Ensure controller running
+    Ctrl->>T: POST /reinitialize
+
+    Note over Ctrl,V: Step 5-6: Setup experiment
+    Ctrl->>L: Create network + container
+    Ctrl->>V: Create network + container
+
+    Note over Ctrl,V: Step 7: Start measurement
+    Ctrl->>L: Start load generator
+    Ctrl->>Ctrl: Start metrics collector (via SSH tunnel)
+
+    Note over Ctrl,V: Step 8: Steady-state wait
+    Ctrl->>L: Health check server
+    Ctrl->>Ctrl: Wait for steady-state
+
+    Note over Ctrl,V: Step 9: CRIU migration
+    Ctrl->>L: Checkpoint container
+    L->>V: Transfer checkpoint (direct link)
+    Ctrl->>V: Restore container
+    Ctrl->>T: POST /updateForward
+
+    Note over Ctrl,V: Step 10-11: Collect results
+    Ctrl->>Ctrl: Wait post-migration
+    Ctrl->>Ctrl: Stop collector, generate plots
+    Ctrl->>L: Collect logs
+""",
 }
 
 
