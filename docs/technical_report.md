@@ -49,7 +49,7 @@ T2NA splits the pipeline into two independent halves (ingress and egress), separ
 
 Since the load balancer performs all processing in ingress, the egress pipeline is left empty and bypassed using the `BypassEgress()` extern (V1Model has no equivalent):
 
-```p4
+```c
 Pipeline(SwitchIngressParser(),
          SwitchIngress(),
          SwitchIngressDeparser(),
@@ -74,7 +74,7 @@ This ties directly into how checksumming works on Tofino. In V1Model, `MyVerifyC
 
 V1Model implementations of consistent hashing typically use `hash()` calls inside actions with manual member selection logic. T2NA provides a native `ActionSelector` extern that handles this at the hardware level. The load balancer declares a CRC16 hash, an `ActionProfile` with capacity for four members, and an `ActionSelector` that ties them together in `FAIR` mode:
 
-```p4
+```c
 Hash<bit<16>>(HashAlgorithm_t.CRC16) sel_hash;
 ActionProfile(4) action_selector_ap;
 ActionSelector(action_selector_ap, sel_hash, SelectorMode_t.FAIR, 4, 1) action_selector;
