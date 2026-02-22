@@ -1,22 +1,16 @@
 """
 Generate Mermaid diagrams for the technical and experiment reports.
 
-Renders each diagram to SVG, PNG, and PDF using the Mermaid CLI (mmdc),
-which uses Puppeteer/Chromium for accurate rendering including vector PDFs.
-
 Usage:
     cd docs/figures
-    npm install          # first time only
-    npm run generate     # or: python3 generate.py
+    uv run mermaido install   # first time only
+    uv run python main.py
 """
 
-import subprocess
-import tempfile
+import mermaido
 from pathlib import Path
 
 OUTPUT_DIR = Path(__file__).parent / "out"
-MMDC = str(Path(__file__).parent / "node_modules" / ".bin" / "mmdc")
-PUPPETEER_CONFIG = str(Path(__file__).parent / "puppeteer-config.json")
 
 DIAGRAMS: dict[str, str] = {
     "v1model_pipeline": """
@@ -234,34 +228,18 @@ sequenceDiagram
 """,
 }
 
-FORMATS = ["svg", "png", "pdf"]
+FORMATS = ["png", "pdf"]
 
 
 def render(name: str, mmd_content: str) -> None:
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".mmd", delete=False
-    ) as f:
-        f.write(mmd_content.strip())
-        mmd_path = f.name
-
-    try:
-        for fmt in FORMATS:
-            out_path = OUTPUT_DIR / f"{name}.{fmt}"
-            print(f"  {name}.{fmt} ...", end=" ", flush=True)
-            result = subprocess.run(
-                [MMDC, "-i", mmd_path, "-o", str(out_path), "-b", "white",
-                 "-p", PUPPETEER_CONFIG],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if result.returncode == 0:
-                print("OK")
-            else:
-                stderr = result.stderr.strip()
-                print(f"FAILED ({stderr[:120]})")
-    finally:
-        Path(mmd_path).unlink(missing_ok=True)
+    for fmt in FORMATS:
+        out_path = OUTPUT_DIR / f"{name}.{fmt}"
+        print(f"  {name}.{fmt} ...", end=" ", flush=True)
+        try:
+            mermaido.render(mmd_content.strip(), str(out_path), fmt=fmt)
+            print("OK")
+        except Exception as e:
+            print(f"FAILED ({e!s:.120})")
 
 
 def main() -> None:

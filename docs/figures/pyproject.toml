@@ -1,0 +1,9 @@
+[project]
+name = "figures"
+version = "0.1.0"
+description = "Mermaid diagrams for the technical and experiment reports"
+requires-python = ">=3.9"
+dependencies = [
+    "mermaido>=0.1.0",
+]
+
