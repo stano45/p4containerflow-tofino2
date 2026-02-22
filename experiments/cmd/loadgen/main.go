@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -165,6 +166,18 @@ func connectWS(ctx context.Context, id int, serverURL string) (*conn, error) {
 	wsURL := "ws" + serverURL[4:] + "/ws"
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 5 * time.Second,
+		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			d := net.Dialer{}
+			c, err := d.DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			if tc, ok := c.(*net.TCPConn); ok {
+				tc.SetKeepAlive(true)
+				tc.SetKeepAlivePeriod(1 * time.Second)
+			}
+			return c, nil
+		},
 	}
 	ws, _, err := dialer.DialContext(ctx, wsURL, nil)
 	if err != nil {

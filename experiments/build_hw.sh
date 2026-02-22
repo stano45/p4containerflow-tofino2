@@ -181,6 +181,21 @@ else
     echo "WARNING: Could not set static ARP on server container (PID not found)"
 fi
 
+# Aggressive TCP keepalive and low rto_min so that after CRIU migration
+# (3-4 s freeze) the backed-off TCP connections recover in ~1 s instead
+# of 15-30 s.
+printf "Tuning TCP for fast post-migration recovery...\n"
+on_lakewood "
+    sudo ip route change 192.168.12.0/24 dev $MACSHIM_IF rto_min 5ms 2>/dev/null || true
+    sudo sysctl -qw net.ipv4.tcp_keepalive_time=1 net.ipv4.tcp_keepalive_intvl=1 net.ipv4.tcp_keepalive_probes=3 2>/dev/null || true
+"
+if [[ -n "$SERVER_PID" && "$SERVER_PID" != "0" ]]; then
+    on_lakewood "
+        sudo nsenter -t $SERVER_PID -n ip route change 192.168.12.0/24 dev eth0 rto_min 5ms 2>/dev/null || true
+    "
+fi
+echo "TCP tuning applied"
+
 # -----------------------------------------------------------------------------
 # Done
 # -----------------------------------------------------------------------------

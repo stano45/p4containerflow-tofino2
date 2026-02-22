@@ -23,7 +23,20 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/config_hw.env"
+
+# Each cr_hw.sh invocation gets its own mux dir. Stale masters from a
+# previous migration (whose network topology has since changed) cause
+# "Connection refused" on reuse.
+SSH_MUX_DIR="/tmp/p4cf-ssh-mux-cr-$$"
+SSH_OPTS="-o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ControlMaster=auto -o ControlPath=${SSH_MUX_DIR}/%r@%h:%p -o ControlPersist=30"
 mkdir -p "$SSH_MUX_DIR"
+cr_cleanup_mux() {
+    for sock in "$SSH_MUX_DIR"/*; do
+        [[ -e "$sock" ]] && ssh -o ControlPath="$sock" -O exit _ 2>/dev/null || true
+    done
+    rm -rf "$SSH_MUX_DIR"
+}
+trap cr_cleanup_mux EXIT
 
 MIGRATION_DIRECTION="${1:-lakewood_loveland}"
 
@@ -164,7 +177,7 @@ on_source "sudo fuser -k ${TRANSFER_PORT}/tcp 2>/dev/null || true"
 PRE_TRANSFER_DONE=$(date +%s%N)
 PRE_TRANSFER_MS=$(( (PRE_TRANSFER_DONE - PRE_TRANSFER_START) / 1000000 ))
 
-( sleep 0.005; on_target "socat STDIO TCP:${SOURCE_DIRECT_IP}:${TRANSFER_PORT} > $CHECKPOINT_DIR/checkpoint.tar" ) &
+( sleep 0.1; on_target "socat STDIO TCP:${SOURCE_DIRECT_IP}:${TRANSFER_PORT} > $CHECKPOINT_DIR/checkpoint.tar" ) &
 TARGET_PID=$!
 TRANSFER_START=$(date +%s%N)
 on_source "sudo bash -c \"socat TCP-LISTEN:${TRANSFER_PORT},bind=${SOURCE_DIRECT_IP},reuseaddr STDIN < ${CHECKPOINT_DIR}/checkpoint.tar\"" || {
@@ -269,6 +282,9 @@ on_target "
         sudo nsenter -t \$_CTR_PID -n ip addr add $SERVER_IP/24 dev eth0
         sudo nsenter -t \$_CTR_PID -n ip link set eth0 up
 
+        # Set aggressive rto_min so backed-off TCP connections recover quickly
+        sudo nsenter -t \$_CTR_PID -n ip route change 192.168.12.0/24 dev eth0 rto_min 5ms 2>/dev/null || true
+
         # Flush the route cache so TCP sockets do a fresh lookup through the new eth0
         sudo nsenter -t \$_CTR_PID -n ip route flush cache 2>/dev/null || true
 
@@ -328,8 +344,40 @@ else
     printf "WARNING: Switch update returned HTTP %s\n" "$HTTP_CODE"
 fi
 
-# No loadgen ARP update needed — loadgen connects through an SSH tunnel via
-# lakewood's macvlan-shim. The shim's ARP cache is on lakewood's kernel.
+# Update the macvlan-shim ARP on lakewood so the loadgen's packets reach
+# the correct MAC immediately.  The gratuitous ARP from the restored
+# container may not reach the macshim (VEPA + P4 switch broadcast), so we
+# explicitly set the entry on whichever node hosts the macshim.
+if [[ "${CR_RUN_LOCAL:-}" = "1" ]]; then
+  if [[ "$SOURCE_NODE" = "lakewood" ]]; then
+    sudo ip neigh replace "$SERVER_IP" lladdr "$H2_MAC" dev "$MACSHIM_IF" nud reachable 2>/dev/null || true
+  else
+    ssh $SSH_OPTS "$LAKEWOOD_DIRECT_IP" \
+      "sudo ip neigh replace $SERVER_IP lladdr $H2_MAC dev $MACSHIM_IF nud reachable 2>/dev/null || true" 2>/dev/null || true
+  fi
+else
+  ssh $SSH_OPTS "$LAKEWOOD_SSH" \
+    "sudo ip neigh replace $SERVER_IP lladdr $H2_MAC dev $MACSHIM_IF nud reachable 2>/dev/null || true" 2>/dev/null || true
+fi
+
+# Flush TCP metrics cache on both sides so the kernel re-evaluates RTO
+# using the rto_min set on the route (5ms), instead of using stale cached
+# SRTT/RTO from before the migration freeze.
+on_target "
+    _CTR_PID=\$(sudo podman inspect --format '{{.State.Pid}}' $RENAME_AFTER_RESTORE 2>/dev/null || sudo podman inspect --format '{{.State.Pid}}' $CONTAINER_NAME 2>/dev/null || echo 0)
+    if [ \"\$_CTR_PID\" != '0' ] && [ -n \"\$_CTR_PID\" ]; then
+        sudo nsenter -t \$_CTR_PID -n ip tcp_metrics flush all 2>/dev/null || true
+    fi
+" 2>/dev/null || true
+if [[ "${CR_RUN_LOCAL:-}" = "1" ]]; then
+  if [[ "$SOURCE_NODE" = "lakewood" ]]; then
+    sudo ip tcp_metrics flush all 2>/dev/null || true
+  else
+    ssh $SSH_OPTS "$LAKEWOOD_DIRECT_IP" "sudo ip tcp_metrics flush all 2>/dev/null || true" 2>/dev/null || true
+  fi
+else
+  ssh $SSH_OPTS "$LAKEWOOD_SSH" "sudo ip tcp_metrics flush all 2>/dev/null || true" 2>/dev/null || true
+fi
 
 # =============================================================================
 # Step 5: Source container already removed (done during pre-restore to prevent
