@@ -1,7 +1,22 @@
 flowchart TB
-    LG["Load Generator"] --> MS["macvlan-shim"] --> SW["P4 Switch"] --> C["Server Container"]
+    subgraph LAKEWOOD [lakewood]
+        LG["Load Generator"]
+        MS["macvlan-shim .12.100"]
+        CTR["Container .12.2"]
+        NIC["Netronome NIC"]
+        LG -- "connects to .12.2" --> MS
+        MS --> NIC
+        NIC --> CTR
+    end
+
+    SW["P4 Switch port 140"]
+
+    NIC --> SW
+    SW -- "hairpin" --> NIC
 
     style LG fill:#fff3e0,stroke:#f57c00
-    style MS fill:#fff3e0,stroke:#f57c00
+    style MS fill:#f7f9fb,stroke:#434343
+    style NIC fill:#f7f9fb,stroke:#434343
     style SW fill:#e3f2fd,stroke:#1976d2
-    style C fill:#c8e6c9,stroke:#388e3c
+    style CTR fill:#c8e6c9,stroke:#388e3c
+    style LAKEWOOD fill:#f7f9fb,stroke:#b2b2b2,stroke-dasharray: 5 5
