@@ -1,0 +1,16 @@
+flowchart TB
+    HTTP[HTTP Clients]
+    HTTP --> Flask
+
+    subgraph Switch[Tofino Switch]
+        direction TB
+        Flask[Flask API]
+        Flask --> NM[NodeManager]
+        NM --> SC[SwitchController]
+        SC --> SW[bf_switchd]
+    end
+
+    style HTTP fill:#fff3e0,stroke:#f57c00
+    style Switch fill:#e3f2fd,stroke:#1976d2
+    style Flask fill:#c8e6c9,stroke:#388e3c
+    style SW fill:#e8eaf6,stroke:#3f51b5

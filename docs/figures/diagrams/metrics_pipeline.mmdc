@@ -1,0 +1,24 @@
+flowchart TB
+    S[Server /metrics]
+    LG[Loadgen /metrics]
+
+    S --> T1
+    LG --> T2
+
+    subgraph Tunnel[SSH Tunnel]
+        direction LR
+        T1[L 18081:8081]
+        T2[L 19090:9090]
+    end
+
+    T1 --> C
+    T2 --> C
+
+    C[Collector]
+    C --> P[Plots]
+
+    style S fill:#e8f5e9,stroke:#388e3c
+    style LG fill:#e8f5e9,stroke:#388e3c
+    style Tunnel fill:#fff3e0,stroke:#f57c00
+    style C fill:#e3f2fd,stroke:#1976d2
+    style P fill:#e8eaf6,stroke:#3f51b5

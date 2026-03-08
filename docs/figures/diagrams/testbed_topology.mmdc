@@ -1,0 +1,15 @@
+flowchart TB
+    CTRL[local controller]
+
+    CTRL -- SSH --> SW
+    CTRL -- SSH --> L
+    CTRL -- SSH --> V
+
+    L[lakewood] -- 25G --- SW[Tofino Switch]
+    SW -- 25G --- V[loveland]
+    L -- 25G DAC --- V
+
+    style L fill:#c8e6c9,stroke:#388e3c
+    style V fill:#c8e6c9,stroke:#388e3c
+    style SW fill:#e3f2fd,stroke:#1976d2
+    style CTRL fill:#fff3e0,stroke:#f57c00

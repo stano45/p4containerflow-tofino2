@@ -1,0 +1,11 @@
+flowchart LR
+    A[Packet In] --> B[Parser]
+    B --> C[Verify\nChecksum]
+    C --> D[Ingress]
+    D --> E[Egress]
+    E --> F[Compute\nChecksum]
+    F --> G[Deparser]
+    G --> H[Packet Out]
+
+    style A fill:#e8f5e9,stroke:#388e3c
+    style H fill:#e8f5e9,stroke:#388e3c

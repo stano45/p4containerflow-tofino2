@@ -1,0 +1,27 @@
+sequenceDiagram
+    participant Ctrl as Control
+    participant T as Tofino
+    participant L as Lakewood
+    participant V as Loveland
+
+    Note over Ctrl,V: Sync + build
+    Ctrl->>L: rsync + build
+    Ctrl->>V: rsync
+    Ctrl->>T: rsync controller
+
+    Note over Ctrl,V: Start
+    Ctrl->>T: switchd, controller, /reinitialize
+    Ctrl->>L: network + container
+    Ctrl->>V: network + container
+    Ctrl->>L: loadgen
+    Ctrl->>Ctrl: metrics collector
+
+    Note over Ctrl,V: Migrate
+    Ctrl->>L: Checkpoint
+    L->>V: Transfer
+    Ctrl->>V: Restore
+    Ctrl->>T: /updateForward
+
+    Note over Ctrl,V: Collect
+    Ctrl->>Ctrl: plots
+    Ctrl->>L: logs

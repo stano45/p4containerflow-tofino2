@@ -1,0 +1,21 @@
+flowchart TD
+    A[Packet In] --> B{ARP?}
+    B -- yes --> C[arp_forward]
+    C --> D1[bypass_egress]
+    D1 --> Z1[Packet Out]
+
+    B -- no --> E{IPv4 + TTL?}
+    E -- no --> DROP[Drop]
+
+    E -- yes --> F[node_selector]
+    F --> G{is_lb_packet?}
+    G -- no --> H[client_snat]
+    G -- yes --> I[forward]
+    H --> I
+    I --> D2[bypass_egress]
+    D2 --> Z2[Packet Out]
+
+    style A fill:#e8f5e9,stroke:#388e3c
+    style Z1 fill:#e8f5e9,stroke:#388e3c
+    style Z2 fill:#e8f5e9,stroke:#388e3c
+    style DROP fill:#ffcdd2,stroke:#c62828

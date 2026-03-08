@@ -1,0 +1,40 @@
+flowchart TB
+    subgraph NS[node_selector table]
+        direction LR
+        VIP["VIP match<br/>(exact)"] --> GRP["selector group"]
+        TUPLE["5-tuple<br/>(selector keys)"] --> GRP
+    end
+
+    subgraph SEL[action_selector group]
+        direction LR
+        M0["member 0<br/>active"]
+        M1["member 1<br/>active"]
+        M2["member 2<br/>active"]
+        M3["member 3<br/>active"]
+    end
+
+    GRP --> M0
+    GRP --> M1
+    GRP --> M2
+    GRP --> M3
+
+    subgraph AP["action_selector_ap<br/>(backend IP per member)"]
+        direction LR
+        IP0["backend A<br/>10.0.0.1"]
+        IP1["backend B<br/>10.0.0.2"]
+        IP2["backend C<br/>10.0.0.3"]
+        IP3["backend D<br/>10.0.0.4"]
+    end
+
+    M0 --> IP0
+    M1 --> IP1
+    M2 --> IP2
+    M3 --> IP3
+
+    style NS fill:#e3f2fd,stroke:#1976d2
+    style SEL fill:#fff3e0,stroke:#f57c00
+    style AP fill:#e8f5e9,stroke:#388e3c
+    style M0 fill:#c8e6c9,stroke:#388e3c
+    style M1 fill:#c8e6c9,stroke:#388e3c
+    style M2 fill:#c8e6c9,stroke:#388e3c
+    style M3 fill:#c8e6c9,stroke:#388e3c

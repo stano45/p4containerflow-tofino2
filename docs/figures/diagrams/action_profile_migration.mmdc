@@ -1,0 +1,21 @@
+flowchart TB
+    subgraph BEFORE[Before migration]
+        direction LR
+        M0B["member 0"] --> A["backend A\n10.0.0.1"]
+        M1B["member 1\n(migrating)"] --> B["backend B\n10.0.0.2"]
+    end
+
+    subgraph AFTER[After: one gRPC call]
+        direction LR
+        M0A["member 0"] --> A2["backend A\n10.0.0.1"]
+        M1A["member 1\n(updated)"] --> C["backend C\n10.0.0.3"]
+    end
+
+    BEFORE --> AFTER
+
+    style BEFORE fill:#e3f2fd,stroke:#1976d2
+    style AFTER fill:#e8f5e9,stroke:#388e3c
+    style M1B fill:#ffcdd2,stroke:#c62828
+    style M1A fill:#c8e6c9,stroke:#388e3c
+    style B fill:#ffcdd2,stroke:#c62828
+    style C fill:#c8e6c9,stroke:#388e3c

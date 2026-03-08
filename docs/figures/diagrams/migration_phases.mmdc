@@ -1,0 +1,17 @@
+flowchart LR
+    Q[Quiesce] --> D[Drain]
+    D --> CK[Checkpoint]
+    CK --> TX[Transfer]
+    TX --> RM[Remove]
+    RM --> RS[Restore]
+    RS --> RES[Resume]
+    RES --> SW[Switch Update]
+
+    style CK fill:#ffcdd2,stroke:#c62828
+    style TX fill:#fff3e0,stroke:#f57c00
+    style RS fill:#ffcdd2,stroke:#c62828
+    style SW fill:#c8e6c9,stroke:#388e3c
+    style Q fill:#e3f2fd,stroke:#1976d2
+    style D fill:#e3f2fd,stroke:#1976d2
+    style RM fill:#e3f2fd,stroke:#1976d2
+    style RES fill:#e3f2fd,stroke:#1976d2

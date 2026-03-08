@@ -1,0 +1,9 @@
+sequenceDiagram
+    participant C as Client
+    participant T as Switch
+    participant B as Backend
+
+    C->>T: to VIP
+    T->>B: to backend
+    B->>T: reply
+    T->>C: from VIP

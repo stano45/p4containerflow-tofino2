@@ -1,0 +1,7 @@
+flowchart TB
+    LG["Load Generator"] --> MS["macvlan-shim"] --> SW["P4 Switch"] --> C["Server Container"]
+
+    style LG fill:#fff3e0,stroke:#f57c00
+    style MS fill:#fff3e0,stroke:#f57c00
+    style SW fill:#e3f2fd,stroke:#1976d2
+    style C fill:#c8e6c9,stroke:#388e3c
