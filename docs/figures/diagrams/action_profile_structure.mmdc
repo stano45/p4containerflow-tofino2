@@ -9,7 +9,7 @@ flowchart TB
         direction LR
         M0["member 0<br/>active"]
         M1["member 1<br/>active"]
-        M2["member 2<br/>active"]
+        M2["member 2<br/>inactive"]
         M3["member 3<br/>active"]
     end
 
@@ -18,17 +18,17 @@ flowchart TB
     GRP --> M2
     GRP --> M3
 
-    subgraph AP["action_selector_ap<br/>(backend IP per member)"]
+    subgraph AP[action_selector_ap]
         direction LR
         IP0["backend A<br/>10.0.0.1"]
         IP1["backend B<br/>10.0.0.2"]
-        IP2["backend C<br/>10.0.0.3"]
+        IP2["backend C<br/>10.0.0.3 ✗<br/>(inactive)"]
         IP3["backend D<br/>10.0.0.4"]
     end
 
     M0 --> IP0
     M1 --> IP1
-    M2 --> IP2
+    M2 -. inactive .-> IP2
     M3 --> IP3
 
     style NS fill:#e3f2fd,stroke:#1976d2
@@ -36,5 +36,6 @@ flowchart TB
     style AP fill:#e8f5e9,stroke:#388e3c
     style M0 fill:#c8e6c9,stroke:#388e3c
     style M1 fill:#c8e6c9,stroke:#388e3c
-    style M2 fill:#c8e6c9,stroke:#388e3c
+    style M2 fill:#ffcdd2,stroke:#c62828,color:#c62828
     style M3 fill:#c8e6c9,stroke:#388e3c
+    style IP2 fill:#ffcdd2,stroke:#c62828,color:#c62828
