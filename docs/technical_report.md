@@ -33,6 +33,10 @@ One problem that is easy to hit early: open-p4studio depends on `distutils`, a P
 
 When the build finishes, a helper script (`create-setup-script.sh`) generates a shell script that sets `SDE`, `SDE_INSTALL`, `LD_LIBRARY_PATH`, and `PATH`. Every other tool in the project (the compiler, switchd, the controller, the test runner) assumes these environment variables exist. The Vagrant provisioner adds this script to `.bashrc` so it is sourced automatically on login. After provisioning completes, the VM is ready to compile and run P4 programs.
 
+The following sections walk through each stage of the model development cycle: writing the P4 program, compiling it, running it on the model, and testing it. The full cycle is iterative. Changes to the P4 source or controller trigger a recompile and retest, all within the VM, until the program is ready for hardware.
+
+![Model Development Pipeline](figures/out/dev_pipeline_model.png)
+
 ## Porting the P4 Program from V1Model to T2NA
 
 With the model environment ready, the next question is what P4 program to run. The load balancer at the heart of P4ContainerFlow was originally written for the V1Model architecture (BMv2) in [p4containerflow](https://github.com/stano45/p4containerflow). That version runs on the software switch and handles the core forwarding and SNAT logic, but BMv2 is a software reference model, not a hardware target. Deploying it on a real Tofino 2 ASIC required a full rewrite targeting the Tofino 2 Native Architecture (T2NA). Both architectures use P4-16, but the pipeline structure, available externs, metadata handling, and compiler constraints are quite different. This section walks through those differences and the reasoning behind each change. While specific to a load balancer, the concepts apply broadly to any V1Model-to-Tofino port.
@@ -98,6 +102,8 @@ A client at `10.0.0.100:54321` sends a TCP packet to the VIP `10.0.0.10:8080`. T
 
 At the BF Runtime level, the ActionSelector is programmed through three related tables. The `action_selector_ap` table maps `$ACTION_MEMBER_ID` (an integer index, 0 through 3) to a `set_rewrite_dst` action with the backend's IP address. The `action_selector` table defines a group identified by `$SELECTOR_GROUP_ID`, with `$MAX_GROUP_SIZE` set to 4, and arrays of `$ACTION_MEMBER_ID` and `$ACTION_MEMBER_STATUS` (active or inactive) that control which members participate. The `node_selector` table ties a VIP (exact match on destination address) to this group. When the controller needs to migrate traffic, it modifies the action profile member's destination IP via the `action_selector_ap` table. The group membership and hash remain unchanged, so the member index stays the same and existing connections are not disrupted.
 
+![ActionSelector Structure](figures/out/action_profile_structure.png)
+
 The Tofino compiler enforces hardware constraints that BMv2 does not. Tables must fit into physical pipeline stages. The Packet Header Vector (PHV) has a fixed allocation budget. Hash distribution units are shared resources. Multi-step arithmetic that works on BMv2 may need to be restructured to fit within a single stage or split across stages in a way the compiler can schedule. Some of these constraints only show up during compilation. The P4 source uses conditional compilation (`#if __TARGET_TOFINO__ == 3 ... #elif __TARGET_TOFINO__ == 2 ... #else ... #endif`) to support TNA, T2NA, and T3NA from a single file, selecting the correct platform includes at compile time.
 
 ## Compiling the Program and Exploring the Model
@@ -125,6 +131,10 @@ A few challenges with model testing are worth noting. The `$PORT` BF Runtime tab
 ## Building for Hardware
 
 At this point, the P4 program works on the model and has automated tests passing. Moving to real hardware requires rebuilding the SDE with two additional components: the proprietary driver sources and the Board Support Package (BSP). This is the most involved part of the setup, and the most likely to produce confusing errors. The [README](../README.md) covers the commands. This section explains what is happening underneath and what went wrong when we did it.
+
+The hardware development cycle mirrors the model cycle. The compiled P4 binary is the same, but the SDE must be rebuilt with proprietary drivers, and testing shifts from virtual Ethernet pairs to real ports and cables. The cycle is again iterative: rebuild, deploy, test, fix, repeat.
+
+![Hardware Development Pipeline](figures/out/dev_pipeline_hw.png)
 
 ### Driver Grafting
 

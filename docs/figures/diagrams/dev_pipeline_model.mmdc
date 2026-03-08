@@ -1,0 +1,21 @@
+flowchart TB
+    VU["vagrant up"]
+    ED["edit P4 / controller"]
+    CO["p4c compile"]
+    MO["bf_switchd + tofino-model"]
+    TE["PTF + controller tests"]
+    SI["full simulation on model"]
+
+    VU --> ED
+    ED --> CO
+    CO --> MO
+    MO --> TE
+    TE -- "iterate" --> ED
+    TE --> SI
+
+    style VU fill:#e3f2fd,stroke:#1976d2,color:#1976d2,font-weight:bold
+    style ED fill:#f7f9fb,stroke:#434343
+    style CO fill:#f7f9fb,stroke:#434343
+    style MO fill:#f7f9fb,stroke:#434343
+    style TE fill:#f7f9fb,stroke:#434343
+    style SI fill:#c8e6c9,stroke:#388e3c,color:#388e3c,font-weight:bold

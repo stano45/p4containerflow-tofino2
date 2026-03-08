@@ -1,0 +1,21 @@
+flowchart TB
+    SB["rebuild SDE with drivers + BSP"]
+    DP["deploy P4 binary"]
+    KM["load kernel modules"]
+    SW["bf_switchd on hardware"]
+    TE["pytest + manual verification"]
+    EX["run experiments on testbed"]
+
+    SB --> DP
+    DP --> KM
+    KM --> SW
+    SW --> TE
+    TE -- "iterate" --> SB
+    TE --> EX
+
+    style SB fill:#fff3e0,stroke:#f57c00,color:#f57c00,font-weight:bold
+    style DP fill:#f7f9fb,stroke:#434343
+    style KM fill:#f7f9fb,stroke:#434343
+    style SW fill:#f7f9fb,stroke:#434343
+    style TE fill:#f7f9fb,stroke:#434343
+    style EX fill:#c8e6c9,stroke:#388e3c,color:#388e3c,font-weight:bold

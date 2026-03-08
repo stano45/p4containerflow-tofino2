@@ -37,6 +37,8 @@ SLIDES_DIAGRAMS: dict[str, str] = {
     "v1model_pipeline_vert": load("v1model_pipeline_vert"),
     "migration_phases_vert": load("migration_phases_vert"),
     "data_path_vert": load("data_path_vert"),
+    "dev_pipeline_model": load("dev_pipeline_model"),
+    "dev_pipeline_hw": load("dev_pipeline_hw"),
 }
 
 FORMATS = ["png", "svg", "pdf"]
