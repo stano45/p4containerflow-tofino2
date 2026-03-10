@@ -12,7 +12,6 @@ This README is a practical guide: how to build, run, and test the project. For d
 - **[docs/technical_report.md](docs/technical_report.md)** -- How everything works: open-p4studio build internals, hardware challenges, the V1Model-to-T2NA rewrite, packet flows, and the control plane architecture.
 - **[docs/experiment_report.md](docs/experiment_report.md)** -- Benchmarking setup, migration procedure, metrics collection, and results from a 25-migration experiment run.
 - **[docs/topology.md](docs/topology.md)** -- Lab testbed reference: equipment, IPs, interfaces, and cabling.
-- **[docs/cpu-port-internet-access.md](docs/cpu-port-internet-access.md)** -- Investigation into using the Tofino CPU port for container internet access (abandoned; documents the macvlan-shim workaround).
 
 ## Table of Contents
 - [p4containerflow-tofino2](#p4containerflow-tofino2)

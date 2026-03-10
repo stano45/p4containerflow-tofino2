@@ -104,9 +104,6 @@ P4 pipeline.
 
 **Packet path**: Linux → veth250 → veth251 → bf_kpkt → ASIC D_P 64 → P4 pipeline.
 
-See `docs/cpu-port-internet-access.md` for using this to route internet traffic
-through the P4 data plane.
-
 ### Switch Configuration
 
 - SDE: `$HOME/p4containerflow-tofino2/open-p4studio`
@@ -120,7 +117,7 @@ through the P4 data plane.
 1. **Lakewood enp101s0np0**: NIC reports `Port: Other` (no cable detected). NIC hardware is fine (driver loads, IRQs assigned). Physical inspection needed -- cable missing or bad connector.
 2. **Static ARP required**: P4 program drops ARP, so static entries needed for any IP communication through the switch.
 3. **Cage 1 (Englewood ports)**: 4 channels with transceivers present but never configured. These are NOT campus uplinks. Campus connectivity is via the management interfaces (eno1/enp2s0).
-4. **CPU port (D_P 64)**: Available via bf_kpkt/veth250 but never used. Can be used to bridge internet traffic into the P4 data plane. See `docs/cpu-port-internet-access.md`.
+4. **CPU port (D_P 64)**: Available via bf_kpkt/veth250 but never used.
 
 ### Quick Start (from clean state)
 
